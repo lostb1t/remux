@@ -5963,13 +5963,16 @@ impl Media {
         // catches up shortly after import), or keep trying indefinitely while
         // the title itself is recent enough (released_at < 1 year) that a
         // digital release is still plausible — otherwise stop selecting it.
+        // Movies only: TMDB never sets a digital date on a series row, so
+        // series rely on the status branch above instead.
         const WHERE: &str = r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
             OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
             OR (
-              digital_released_at IS NULL
+              kind = 'movie'
+              AND digital_released_at IS NULL
               AND datetime(created_at) < datetime('now', '-1 hour')
               AND (
                 datetime(created_at) >= datetime('now', '-7 days')
@@ -9955,6 +9958,117 @@ mod tests {
         assert!(
             ids.contains(&id_recent_release),
             "recently-released item must keep being retried regardless of import age"
+        );
+    }
+
+    /// Series never get a digital date from TMDB, so the missing-digital-date
+    /// retry must not pick up ended series; they rely on the status branch.
+    #[tokio::test]
+    async fn get_refreshable_missing_digital_date_branch_is_movie_only() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let make_id = |kind: MediaKind, imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: kind.clone(),
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        // Ended series, created 2 days ago, already refreshed once, and (like
+        // almost every series in practice) never got a `digital_released_at`.
+        // It has already had its refreshed_at set and its status is 'ended',
+        // so neither retry branch should select it.
+        let (id_ended, ext_ended) = make_id(MediaKind::Series, "tt9990401");
+        let mut ended_series = Media {
+            id: id_ended,
+            title: "Ended, No Digital Date".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_ended,
+            status: Some(MediaStatus::Ended),
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        ended_series
+            .save(db)
+            .await
+            .unwrap();
+
+        // Movie with no digital date, created 2 days ago, already refreshed
+        // once — still within its week-long grace period, so it must remain
+        // refreshable exactly as before this fix.
+        let (id_movie, ext_movie) = make_id(MediaKind::Movie, "tt9990402");
+        let mut movie = Media {
+            id: id_movie,
+            title: "Movie, No Digital Date".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_movie,
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        // Ongoing series, created 2 days ago, already refreshed once, no
+        // digital date — must still be refreshable via the status-based
+        // series branch (unaffected by this fix).
+        let (id_ongoing, ext_ongoing) = make_id(MediaKind::Series, "tt9990403");
+        let mut ongoing_series = Media {
+            id: id_ongoing,
+            title: "Ongoing, No Digital Date".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_ongoing,
+            status: Some(MediaStatus::Continuing),
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        ongoing_series
+            .save(db)
+            .await
+            .unwrap();
+
+        let (batch, _) = Media::get_refreshable(db, 100, None, false)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = batch
+            .iter()
+            .map(|m| m.id)
+            .collect();
+
+        assert!(
+            !ids.contains(&id_ended),
+            "ended series with no digital date and a recent refresh must not be refreshable"
+        );
+        assert!(
+            ids.contains(&id_movie),
+            "movie with no digital date must still get its week-long grace period"
+        );
+        assert!(
+            ids.contains(&id_ongoing),
+            "ongoing series must still be refreshable via the status-based branch"
         );
     }
 
