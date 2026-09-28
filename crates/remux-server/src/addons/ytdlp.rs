@@ -862,6 +862,12 @@ impl YtDlpAddon {
                         .unwrap_or_default(),
                 ),
                 name: Some(f.label()),
+                // Stream dedup keys on filename/size/addon; without a per-format
+                // filename every format of a video collapses into the first one.
+                filename: f
+                    .format_id
+                    .as_ref()
+                    .map(|id| format!("ytdlp-{id}")),
                 probe_data: Some(api::MediaSourceInfo {
                     container: f
                         .container()
@@ -893,9 +899,11 @@ impl YtDlpAddon {
             }
         };
 
+        // yt-dlp lists formats worst-first; offer the best audio first.
         let audio_only: Vec<crate::stream::StreamInfo> = video
             .formats
             .iter()
+            .rev()
             .filter(|f| {
                 f.url
                     .is_some()
