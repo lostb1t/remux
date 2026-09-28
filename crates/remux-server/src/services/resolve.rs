@@ -201,6 +201,7 @@ impl MediaResolveService {
                 .execute(
                     sdks::tmdb::SearchTvEndpoint {
                         query: title.to_string(),
+                        language: None,
                     }
                     .with_cache(ID_CACHE_TTL),
                 )
@@ -216,6 +217,7 @@ impl MediaResolveService {
                     sdks::tmdb::SearchMovieEndpoint {
                         query: title.to_string(),
                         year,
+                        language: None,
                     }
                     .with_cache(ID_CACHE_TTL),
                 )

@@ -278,6 +278,7 @@ pub struct SeriesSearchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchTvEndpoint {
     pub query: String,
+    pub language: Option<String>,
 }
 
 impl Endpoint for SearchTvEndpoint {

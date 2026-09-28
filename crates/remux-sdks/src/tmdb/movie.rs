@@ -133,6 +133,7 @@ pub struct MovieSearchResponse {
 pub struct SearchMovieEndpoint {
     pub query: String,
     pub year: Option<i64>,
+    pub language: Option<String>,
 }
 
 impl Endpoint for SearchMovieEndpoint {
