@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use remux_sdks::remux::PlayMethod;
@@ -93,6 +96,15 @@ impl PlaybackContext {
     }
 }
 
+/// Every client progress report, kept separate from PlaybackProgress because
+/// that signal intentionally represents pause transitions for integrations.
+#[derive(Debug, Clone)]
+pub struct PlaybackPosition {
+    pub context: PlaybackContext,
+    pub reported_at: Instant,
+    pub video_is_copied: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MarkPlayedInfo {
     pub user_id: Uuid,
@@ -156,6 +168,7 @@ pub struct RemoteCommandInfo {
 pub enum Event {
     PlaybackStarted(PlaybackContext),
     PlaybackProgress(PlaybackContext),
+    PlaybackPosition(PlaybackPosition),
     PlaybackStopped(PlaybackContext),
     MarkPlayed(MarkPlayedInfo),
     MarkUnplayed(MarkUnplayedInfo),
@@ -175,6 +188,7 @@ pub enum Event {
 pub enum EventType {
     PlaybackStarted,
     PlaybackProgress,
+    PlaybackPosition,
     PlaybackStopped,
     MarkPlayed,
     MarkUnplayed,
@@ -195,6 +209,7 @@ impl Event {
         match self {
             Event::PlaybackStarted(_) => EventType::PlaybackStarted,
             Event::PlaybackProgress(_) => EventType::PlaybackProgress,
+            Event::PlaybackPosition(_) => EventType::PlaybackPosition,
             Event::PlaybackStopped(_) => EventType::PlaybackStopped,
             Event::MarkPlayed(_) => EventType::MarkPlayed,
             Event::MarkUnplayed(_) => EventType::MarkUnplayed,

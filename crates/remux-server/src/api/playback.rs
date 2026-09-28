@@ -695,7 +695,7 @@ async fn items_playbackinfo_inner(
     }
 
     // Rank sources by how well they match the device's capabilities (transcode
-    // cost, confident 4K, HDR tier, bit depth, audio quality, embedded subs)
+    // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio quality, embedded subs)
     // so the auto-play source below is the best version, not just the first
     // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
     // lockstep — the later zip below pairs them back up by index.
@@ -723,6 +723,10 @@ async fn items_playbackinfo_inner(
         let ranking = SourceRankingContext {
             mode: sort_mode,
             device_profile: sort_device_profile.as_ref(),
+            is_4k_capable: session
+                .device
+                .is_4k_capable
+                == Some(true),
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
             max_bitrate: sort_max_bitrate,
@@ -751,6 +755,9 @@ async fn items_playbackinfo_inner(
     // When no specific stream was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
     // Group and specific-stream requests keep their own UUIDs (specific_stream_requested = true).
+    let original_first_source_id = media_sources
+        .first()
+        .map(|source| source.id);
     if !specific_stream_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
@@ -849,6 +856,25 @@ async fn items_playbackinfo_inner(
     } else {
         None
     };
+
+    if session
+        .device
+        .is_4k_capable
+        != Some(true)
+    {
+        crate::services::four_k_capability::remember_sources(
+            &state.ctx,
+            session
+                .user
+                .id,
+            &session
+                .device
+                .id,
+            &play_session_id,
+            &media_sources,
+            original_first_source_id,
+        );
+    }
 
     let info = api::PlaybackInfoResponse {
         media_sources,
