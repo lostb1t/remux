@@ -1842,6 +1842,9 @@ async fn search_tmdb_movie(
         .execute(sdks::tmdb::SearchMovieEndpoint {
             query: query.to_string(),
             year: None,
+            language: config
+                .preferred_metadata_language
+                .clone(),
         })
         .await?;
     Ok(resp
@@ -1866,6 +1869,9 @@ async fn search_tmdb_series(
     let resp = client
         .execute(sdks::tmdb::SearchTvEndpoint {
             query: query.to_string(),
+            language: config
+                .preferred_metadata_language
+                .clone(),
         })
         .await?;
     Ok(resp
