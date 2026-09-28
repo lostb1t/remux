@@ -3292,7 +3292,7 @@ struct UpdateItemRequest {
 #[post("/items/{id}")]
 pub async fn update_item(
     State(state): State<AppState>,
-    _session: auth::AdminSession,
+    session: auth::AdminSession,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateItemRequest>,
 ) -> Result<StatusCode> {
@@ -3304,11 +3304,40 @@ pub async fn update_item(
     )
     .await?
     .context_not_found("Item not found")?;
+    // Name and Overview are edited in the admin's own metadata language.
+    let editor_language = session
+        .metadata_language(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
 
-    if let Some(name) = payload.name {
-        media.title = name;
+    if let Some(language) = &editor_language {
+        db::MediaTranslation::save_edit(
+            &state
+                .ctx
+                .db,
+            &media,
+            language,
+            payload
+                .name
+                .as_deref(),
+            payload
+                .overview
+                .as_deref(),
+            payload
+                .locked_fields
+                .as_deref(),
+        )
+        .await
+        .context_bad_request("Failed to save translation")?;
+    } else {
+        if let Some(name) = payload.name {
+            media.title = name;
+        }
+        merge_option(&mut media.description, &payload.overview, true);
     }
-    merge_option(&mut media.description, &payload.overview, true);
     if let Some(premiere_date) = payload.premiere_date {
         media.released_at = Some(premiere_date.naive_utc());
     } else if let Some(year) = payload.production_year {
@@ -3322,7 +3351,20 @@ pub async fn update_item(
     merge_option(&mut media.rating_audience, &payload.community_rating, true);
     merge_option(&mut media.rating_critic, &payload.critic_rating, true);
     if let Some(locked_fields) = payload.locked_fields {
-        media.locked_fields = locked_fields;
+        media.locked_fields = if editor_language.is_some() {
+            media
+                .locked_fields
+                .into_iter()
+                .filter(db::is_translated_field)
+                .chain(
+                    locked_fields
+                        .into_iter()
+                        .filter(|f| !db::is_translated_field(f)),
+                )
+                .collect()
+        } else {
+            locked_fields
+        };
     }
     if let Some(lock_data) = payload.lock_data {
         media.is_locked = lock_data;
@@ -3349,6 +3391,22 @@ pub async fn update_item(
     }
 
     if let Some(genres) = &payload.genres {
+        // The form posts back the genre names it showed, which for a
+        // translated admin are translations of existing genres.
+        let genres = match &editor_language {
+            Some(language) => db::MediaTranslation::server_genre_names(
+                &state
+                    .ctx
+                    .db,
+                id,
+                genres,
+                language,
+            )
+            .await
+            .context_bad_request("Failed to resolve genres")?,
+            None => genres.clone(),
+        };
+        let genres = &genres;
         db::MediaRelation::delete_by_right_kinds(
             &state
                 .ctx
@@ -4351,6 +4409,132 @@ mod tests {
         let server_tag = primary_tag(&server, &auth, &user_id, movie.id, "").await;
         assert_eq!(server_tag, server_image_id.to_string());
         assert_eq!(image(&server, movie.id, &server_tag).await, "server poster");
+    }
+
+    #[tokio::test]
+    async fn translated_admin_edits_their_language_only() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let auth = HeaderValue::from_str(&auth).unwrap();
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(
+            &server,
+            auth.to_str()
+                .unwrap(),
+        )
+        .await;
+
+        let movie =
+            insert_media(db, "Spirited Away", db::MediaKind::Movie, "tt0245429").await;
+        sqlx::query("UPDATE media SET locked_fields = '[\"Name\"]' WHERE id = ?")
+            .bind(movie.id)
+            .execute(db)
+            .await
+            .unwrap();
+        add_genre(db, movie.id, "Animation").await;
+        let es: remux_sdks::remux::MetadataLanguage = "es"
+            .parse()
+            .unwrap();
+        let genre_id =
+            crate::common::stable_media_uuid(&db::MediaKind::Genre, "animation");
+        db::MediaTranslation::upsert_provider(
+            db,
+            &[(
+                genre_id,
+                db::TranslatedText {
+                    language: es.clone(),
+                    title: Some("Animación".into()),
+                    description: None,
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        server
+            .post(&format!("/users/{user_id}/configuration"))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({ "remux": { "metadata_language": "es" } }))
+            .await;
+
+        let detail: serde_json::Value = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(
+            detail["LockedFields"],
+            serde_json::json!([]),
+            "the server-language Name lock isn't this admin's"
+        );
+
+        server
+            .post(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({
+                "Name": "El viaje de Chihiro",
+                "Overview": detail["Overview"],
+                "Genres": ["Animación"],
+                "LockedFields": ["Name", "Genres"],
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        let stored = db::Media::get_by_id(db, &movie.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "Spirited Away");
+        assert_eq!(
+            stored.locked_fields,
+            vec![db::MetadataField::Name, db::MetadataField::Genres]
+        );
+        let genre_rels: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT r.right_media_id FROM media_relations r \
+             JOIN media g ON g.id = r.right_media_id \
+             WHERE r.left_media_id = ? AND g.kind = 'genre'",
+        )
+        .bind(movie.id)
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(genre_rels, vec![genre_id], "no genre named Animación");
+
+        let detail: serde_json::Value = server
+            .get(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(detail["Name"], "El viaje de Chihiro");
+        assert_eq!(detail["Genres"], serde_json::json!(["Animación"]));
+        assert_eq!(
+            detail["LockedFields"],
+            serde_json::json!(["Genres", "Name"])
+        );
+        let es_row = &db::MediaTranslation::get_for_media_ids(db, &[movie.id], &es)
+            .await
+            .unwrap()[&movie.id];
+        assert_eq!(es_row.source, db::TranslationSource::Manual);
+
+        // A server-language admin still edits the flat columns.
+        server
+            .post(&format!("/users/{user_id}/configuration"))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&serde_json::json!({ "remux": { "metadata_language": "" } }))
+            .await;
+        server
+            .post(&format!("/items/{}", movie.id))
+            .add_header(http::header::AUTHORIZATION, auth)
+            .json(&serde_json::json!({ "Name": "Spirited Away (2001)" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        let stored = db::Media::get_by_id(db, &movie.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "Spirited Away (2001)");
     }
 
     #[tokio::test]

@@ -37,6 +37,11 @@ pub struct TranslatedText {
     pub primary_image: Option<String>,
 }
 
+/// Fields stored per language. Every other `MetadataField` is global.
+pub fn is_translated_field(field: &MetadataField) -> bool {
+    matches!(field, MetadataField::Name | MetadataField::Overview)
+}
+
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim)
         .filter(|s| !s.is_empty())
@@ -186,6 +191,203 @@ impl MediaTranslation {
         tx.commit()
             .await
     }
+
+    /// Write an admin's text for one language. `locked_fields` are the
+    /// fields provider refreshes must leave alone in this language.
+    pub async fn set_manual(
+        db: &SqlitePool,
+        media_id: Uuid,
+        language: &MetadataLanguage,
+        title: Option<&str>,
+        description: Option<&str>,
+        locked_fields: &[MetadataField],
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO media_translations \
+               (media_id, language, kind, title, description, source, locked_fields, updated_at) \
+             SELECT id, ?2, kind, ?3, ?4, 'manual', ?5, CURRENT_TIMESTAMP \
+             FROM media WHERE id = ?1 \
+             ON CONFLICT (media_id, language) DO UPDATE SET \
+               title = excluded.title, \
+               description = excluded.description, \
+               source = 'manual', \
+               locked_fields = excluded.locked_fields, \
+               updated_at = excluded.updated_at",
+        )
+        .bind(media_id)
+        .bind(language.as_str())
+        .bind(non_empty(title))
+        .bind(non_empty(description))
+        .bind(sqlx::types::Json(locked_fields))
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
+    /// Apply an item edit by an admin who reads `language`. A posted value
+    /// equal to what the admin was shown is not an edit. Only the
+    /// Name/Overview entries of `locked_fields` apply. A row left with no
+    /// text and no locks is deleted, so provider text returns on the next
+    /// refresh.
+    pub async fn save_edit(
+        db: &SqlitePool,
+        media: &Media,
+        language: &MetadataLanguage,
+        name: Option<&str>,
+        overview: Option<&str>,
+        locked_fields: Option<&[MetadataField]>,
+    ) -> Result<(), sqlx::Error> {
+        let rows = Self::rows_for_media_ids(db, &[media.id], language)
+            .await?
+            .remove(&media.id)
+            .unwrap_or_default();
+        let exact = rows
+            .first()
+            .filter(|t| t.language == language.as_str())
+            .cloned();
+        let exact = exact.as_ref();
+        let shown = (!rows.is_empty()).then(|| Self::merge_fallbacks(rows));
+        let shown_title = shown
+            .as_ref()
+            .and_then(|t| {
+                non_empty(
+                    t.title
+                        .as_deref(),
+                )
+            })
+            .or(non_empty(Some(
+                media
+                    .title
+                    .as_str(),
+            )));
+        let shown_description = shown
+            .as_ref()
+            .and_then(|t| {
+                non_empty(
+                    t.description
+                        .as_deref(),
+                )
+            })
+            .or(non_empty(
+                media
+                    .description
+                    .as_deref(),
+            ));
+        let stored_title = exact.and_then(|t| {
+            non_empty(
+                t.title
+                    .as_deref(),
+            )
+        });
+        let stored_description = exact.and_then(|t| {
+            non_empty(
+                t.description
+                    .as_deref(),
+            )
+        });
+        let stored_locks: Vec<MetadataField> = exact
+            .and_then(|t| {
+                t.locked_fields
+                    .clone()
+            })
+            .unwrap_or_default();
+
+        let edited =
+            |posted: Option<&str>, shown: Option<&str>, stored: Option<&str>| {
+                match posted {
+                    Some(p) if non_empty(Some(p)) != shown => non_empty(Some(p)),
+                    _ => stored,
+                }
+                .map(str::to_string)
+            };
+        let title = edited(name, shown_title, stored_title);
+        let description = edited(overview, shown_description, stored_description);
+        let locks: Vec<MetadataField> = match locked_fields {
+            Some(fields) => fields
+                .iter()
+                .filter(|f| is_translated_field(f))
+                .cloned()
+                .collect(),
+            None => stored_locks.clone(),
+        };
+
+        if title.as_deref() == stored_title
+            && description.as_deref() == stored_description
+            && locks == stored_locks
+        {
+            return Ok(());
+        }
+        if title.is_none() && description.is_none() && locks.is_empty() {
+            sqlx::query(
+                "DELETE FROM media_translations WHERE media_id = ? AND language = ?",
+            )
+            .bind(media.id)
+            .bind(language.as_str())
+            .execute(db)
+            .await?;
+            return Ok(());
+        }
+        Self::set_manual(
+            db,
+            media.id,
+            language,
+            title.as_deref(),
+            description.as_deref(),
+            &locks,
+        )
+        .await
+    }
+
+    /// Server-language names for genre names shown to a reader of
+    /// `language` editing `media_id`. A name matches the item's own genres
+    /// first, then other genres' translations in the full tag before its
+    /// primary subtag. Names that match neither come back unchanged.
+    pub async fn server_genre_names(
+        db: &SqlitePool,
+        media_id: Uuid,
+        names: &[String],
+        language: &MetadataLanguage,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let mut qb = sqlx::QueryBuilder::new(format!(
+            "SELECT shown, server FROM ( \
+               SELECT {} AS shown, m.title AS server, 0 AS priority \
+               FROM media_relations r JOIN media m ON m.id = r.right_media_id \
+               WHERE m.kind = 'genre' AND r.left_media_id = ",
+            display_title_sql("m", language)
+        ));
+        qb.push_bind(media_id);
+        qb.push(
+            " UNION ALL \
+               SELECT mt.title, m.title, CASE WHEN mt.language = ",
+        );
+        qb.push_bind(language.as_str());
+        qb.push(format!(
+            " THEN 1 ELSE 2 END \
+               FROM media_translations mt JOIN media m ON m.id = mt.media_id \
+               WHERE m.kind = 'genre' AND mt.title <> '' AND mt.language IN ({}) \
+             ) ORDER BY priority, server",
+            language_list_sql(language)
+        ));
+        let rows: Vec<(String, String)> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
+        let mut by_shown: HashMap<String, String> = HashMap::new();
+        for (shown, server) in rows {
+            by_shown
+                .entry(shown.to_lowercase())
+                .or_insert(server);
+        }
+        Ok(names
+            .iter()
+            .map(|n| {
+                by_shown
+                    .get(&n.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| n.clone())
+            })
+            .collect())
+    }
 }
 
 /// SQL expression for the title a reader of `language` sees for the media
@@ -278,8 +480,10 @@ impl Media {
     }
 
     /// Overlay `language` onto each row plus its loaded parent, grandparent
-    /// and relation rows (genres, studios, …), with one query per call.
-    /// Lookup failures leave the rows unchanged; they never fail the request.
+    /// and relation rows (genres, studios, …), with one query per call. Each
+    /// row's Name/Overview locks become its locks in `language`, which an
+    /// edit form posts back. Lookup failures leave the rows unchanged; they
+    /// never fail the request.
     pub async fn resolve_translations(
         db: &SqlitePool,
         media: &mut [Media],
@@ -304,6 +508,22 @@ impl Media {
         };
         for m in media.iter_mut() {
             apply_translations_deep(m, &by_id);
+            let own = by_id
+                .get(&m.id)
+                .filter(|t| t.language == language.as_str());
+            m.locked_fields
+                .retain(|f| !is_translated_field(f));
+            if let Some(locks) = own.and_then(|t| {
+                t.locked_fields
+                    .as_ref()
+            }) {
+                m.locked_fields
+                    .extend(
+                        locks
+                            .iter()
+                            .cloned(),
+                    );
+            }
         }
     }
 
@@ -665,6 +885,398 @@ mod tests {
         assert_eq!(found[&m.id].language, "pt-br");
     }
 
+    #[tokio::test]
+    async fn provider_upsert_respects_manual_locks_and_item_lock() {
+        let db = test_db().await;
+        let m = insert_movie(&db, "The Matrix").await;
+        let es = lang("es");
+        MediaTranslation::set_manual(
+            &db,
+            m.id,
+            &es,
+            Some("Matrix (editado)"),
+            None,
+            &[MetadataField::Name],
+        )
+        .await
+        .unwrap();
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                m.id,
+                TranslatedText {
+                    language: es.clone(),
+                    title: Some("Matrix".into()),
+                    description: Some("Neo…".into()),
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        let t = &MediaTranslation::get_for_media_ids(&db, &[m.id], &es)
+            .await
+            .unwrap()[&m.id];
+        assert_eq!(
+            t.title
+                .as_deref(),
+            Some("Matrix (editado)")
+        );
+        assert_eq!(
+            t.description
+                .as_deref(),
+            Some("Neo…"),
+            "unlocked field still refreshes"
+        );
+        assert_eq!(t.source, TranslationSource::Manual);
+
+        let locked = insert_movie(&db, "Locked").await;
+        sqlx::query("UPDATE media SET is_locked = 1 WHERE id = ?")
+            .bind(locked.id)
+            .execute(&db)
+            .await
+            .unwrap();
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                locked.id,
+                TranslatedText {
+                    language: es.clone(),
+                    title: Some("Bloqueado".into()),
+                    description: None,
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        assert!(
+            MediaTranslation::get_for_media_ids(&db, &[locked.id], &es)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    async fn stored(
+        db: &SqlitePool,
+        media_id: Uuid,
+        tag: &str,
+    ) -> Option<MediaTranslation> {
+        sqlx::query_as(
+            "SELECT media_id, language, title, description, primary_image, source, locked_fields \
+             FROM media_translations WHERE media_id = ? AND language = ?",
+        )
+        .bind(media_id)
+        .bind(tag)
+        .fetch_optional(db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_edit_ignores_unchanged_fallback_text() {
+        let db = test_db().await;
+        let mut m = insert_movie(&db, "The Matrix").await;
+        m.description = None;
+        MediaTranslation::save_edit(
+            &db,
+            &m,
+            &lang("es"),
+            Some("The Matrix"),
+            Some(""),
+            Some(&[MetadataField::Genres]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            stored(&db, m.id, "es")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn save_edit_stores_only_the_edited_field() {
+        let db = test_db().await;
+        let mut m = insert_movie(&db, "The Matrix").await;
+        m.description = Some("A hacker…".into());
+        MediaTranslation::save_edit(
+            &db,
+            &m,
+            &lang("es"),
+            Some("Matrix (edición)"),
+            Some("A hacker…"),
+            Some(&[]),
+        )
+        .await
+        .unwrap();
+        let t = stored(&db, m.id, "es")
+            .await
+            .unwrap();
+        assert_eq!(
+            t.title
+                .as_deref(),
+            Some("Matrix (edición)")
+        );
+        assert_eq!(t.description, None, "unchanged fallback text isn't copied");
+        assert_eq!(t.source, TranslationSource::Manual);
+    }
+
+    #[tokio::test]
+    async fn save_edit_locks_provider_text_in_place() {
+        let db = test_db().await;
+        let m = insert_movie(&db, "The Matrix").await;
+        let es = lang("es");
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                m.id,
+                TranslatedText {
+                    language: es.clone(),
+                    title: Some("Matrix".into()),
+                    description: Some("Neo…".into()),
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        MediaTranslation::save_edit(
+            &db,
+            &m,
+            &es,
+            Some("Matrix"),
+            Some("Neo…"),
+            Some(&[MetadataField::Name, MetadataField::Cast]),
+        )
+        .await
+        .unwrap();
+        let t = stored(&db, m.id, "es")
+            .await
+            .unwrap();
+        assert_eq!(t.locked_fields, Some(vec![MetadataField::Name]));
+        assert_eq!(
+            t.title
+                .as_deref(),
+            Some("Matrix")
+        );
+
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                m.id,
+                TranslatedText {
+                    language: es.clone(),
+                    title: Some("Matrix (nuevo)".into()),
+                    description: Some("Neo (nuevo)…".into()),
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        let t = stored(&db, m.id, "es")
+            .await
+            .unwrap();
+        assert_eq!(
+            t.title
+                .as_deref(),
+            Some("Matrix"),
+            "locked"
+        );
+        assert_eq!(
+            t.description
+                .as_deref(),
+            Some("Neo (nuevo)…"),
+            "unlocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_edit_clearing_everything_deletes_the_row() {
+        let db = test_db().await;
+        let m = insert_movie(&db, "The Matrix").await;
+        let es = lang("es");
+        MediaTranslation::set_manual(&db, m.id, &es, Some("Matrix"), None, &[])
+            .await
+            .unwrap();
+        MediaTranslation::save_edit(&db, &m, &es, Some(""), None, Some(&[]))
+            .await
+            .unwrap();
+        assert!(
+            stored(&db, m.id, "es")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn save_edit_writes_the_exact_tag_not_its_fallback() {
+        let db = test_db().await;
+        let m = insert_movie(&db, "The Matrix").await;
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                m.id,
+                TranslatedText {
+                    language: lang("pt"),
+                    title: Some("Matrix PT".into()),
+                    description: None,
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        let pt_br = lang("pt-br");
+        MediaTranslation::save_edit(&db, &m, &pt_br, Some("Matrix PT"), None, None)
+            .await
+            .unwrap();
+        assert!(
+            stored(&db, m.id, "pt-br")
+                .await
+                .is_none(),
+            "the shown pt text is not an edit"
+        );
+        MediaTranslation::save_edit(&db, &m, &pt_br, Some("Matrix BR"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(&db, m.id, "pt-br")
+                .await
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Matrix BR")
+        );
+        assert_eq!(
+            stored(&db, m.id, "pt")
+                .await
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Matrix PT")
+        );
+    }
+
+    #[tokio::test]
+    async fn translation_locks_replace_global_name_and_overview_locks() {
+        let db = test_db().await;
+        let mut m = insert_movie(&db, "The Matrix").await;
+        let es = lang("es");
+        m.locked_fields = vec![MetadataField::Name, MetadataField::Genres];
+        m.resolve_translation(&db, Some(&es))
+            .await;
+        assert_eq!(m.locked_fields, vec![MetadataField::Genres]);
+
+        MediaTranslation::set_manual(
+            &db,
+            m.id,
+            &es,
+            None,
+            Some("Neo…"),
+            &[MetadataField::Overview],
+        )
+        .await
+        .unwrap();
+        m.resolve_translation(&db, Some(&es))
+            .await;
+        assert_eq!(
+            m.locked_fields,
+            vec![MetadataField::Genres, MetadataField::Overview]
+        );
+    }
+
+    #[tokio::test]
+    async fn server_genre_names_maps_shown_translations_back() {
+        let db = test_db().await;
+        let genre_id = crate::common::stable_media_uuid(&MediaKind::Genre, "animation");
+        sqlx::query(
+            "INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+             VALUES (?, 'Animation', 'genre', '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(genre_id)
+        .execute(&db)
+        .await
+        .unwrap();
+        MediaTranslation::upsert_provider(
+            &db,
+            &[(
+                genre_id,
+                TranslatedText {
+                    language: lang("es"),
+                    title: Some("Animación".into()),
+                    description: None,
+                    primary_image: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+        let item = insert_movie(&db, "Spirited Away").await;
+        let names = MediaTranslation::server_genre_names(
+            &db,
+            item.id,
+            &["ANIMACIÓN".into(), "Cine negro".into()],
+            &lang("es-mx"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(names, vec!["Animation", "Cine negro"]);
+    }
+
+    #[tokio::test]
+    async fn server_genre_names_prefers_the_items_own_genre() {
+        let db = test_db().await;
+        let item = insert_movie(&db, "Spirited Away").await;
+        let mut genres = Vec::new();
+        for title in ["Fantasy", "Kids"] {
+            let id = crate::common::stable_media_uuid(&MediaKind::Genre, title);
+            sqlx::query(
+                "INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+                 VALUES (?, ?, 'genre', '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            )
+            .bind(id)
+            .bind(title)
+            .execute(&db)
+            .await
+            .unwrap();
+            MediaTranslation::upsert_provider(
+                &db,
+                &[(
+                    id,
+                    TranslatedText {
+                        language: lang("es"),
+                        title: Some("Fantasía".into()),
+                        description: None,
+                        primary_image: None,
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+            genres.push(id);
+        }
+        sqlx::query(
+            "INSERT INTO media_relations (relation_id, left_media_id, right_media_id) VALUES (?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(item.id)
+        .bind(genres[1])
+        .execute(&db)
+        .await
+        .unwrap();
+        let names = MediaTranslation::server_genre_names(
+            &db,
+            item.id,
+            &["Fantasía".into()],
+            &lang("es"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(names, vec!["Kids"]);
+    }
     async fn seed_translated_movies(db: &SqlitePool) -> Vec<Media> {
         // server-language title -> Spanish title
         let pairs = [
