@@ -46,13 +46,14 @@ pub struct PlaybackSession {
 
 impl PlaybackSession {
     /// What a stream endpoint served for this session, if one has recorded it.
-    pub fn served(&self) -> Option<ServedPlayback> {
+    pub fn served(&self) -> Option<&ServedPlayback> {
         self.served
+            .as_ref()
     }
 
     /// Whether the client receives the source video without re-encoding.
     pub fn video_is_copied(&self) -> bool {
-        match self.served {
+        match &self.served {
             // A stream endpoint recorded what it sent: that is the answer.
             Some(served) => served.video_copied(),
             // Nothing recorded: believe the client, unless it says it is
@@ -67,14 +68,14 @@ impl PlaybackSession {
 }
 
 /// What a stream endpoint actually served for a playback session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServedPlayback {
     /// The source bytes, unchanged.
     Direct,
-    /// FFmpeg output, and which of its streams are copied from the source.
+    /// FFmpeg output: how each of its tracks was produced.
     Ffmpeg {
-        video_copied: bool,
-        audio_copied: bool,
+        video: FfmpegTrack,
+        audio: FfmpegTrack,
     },
 }
 
@@ -89,7 +90,7 @@ impl ServedPlayback {
     /// false, and remux never offers the static route then. A client that
     /// reports `DirectStream` anyway is overridden; clients display the two
     /// the same.
-    pub fn play_method(self) -> PlayMethod {
+    pub fn play_method(&self) -> PlayMethod {
         match self {
             Self::Direct => PlayMethod::DirectPlay,
             Self::Ffmpeg { .. } => PlayMethod::Transcode,
@@ -97,10 +98,38 @@ impl ServedPlayback {
     }
 
     /// Whether the client decodes the source video itself.
-    pub fn video_copied(self) -> bool {
+    pub fn video_copied(&self) -> bool {
         match self {
             Self::Direct => true,
-            Self::Ffmpeg { video_copied, .. } => video_copied,
+            Self::Ffmpeg { video, .. } => video.copied,
+        }
+    }
+}
+
+/// One track (video or audio) of FFmpeg output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfmpegTrack {
+    /// Codec the client receives: the source's when copied, the encoder
+    /// target otherwise. `None` when the source has no such track —
+    /// clients read a missing video codec as audio-only output.
+    pub codec: Option<String>,
+    /// Stream-copied from the source rather than re-encoded.
+    pub copied: bool,
+}
+
+impl FfmpegTrack {
+    /// `output` is FFmpeg's codec argument: `copy` or an encoder target.
+    pub fn new(output: &str, source_codec: Option<&str>) -> Self {
+        if output.eq_ignore_ascii_case("copy") {
+            Self {
+                codec: source_codec.map(str::to_string),
+                copied: true,
+            }
+        } else {
+            Self {
+                codec: Some(output.to_string()),
+                copied: false,
+            }
         }
     }
 }
@@ -854,7 +883,7 @@ impl PlaybackSessionManager {
                         .play_method()
                         .to_string(),
                 );
-                session.served = Some(served);
+                session.served = Some(served.clone());
                 !(session
                     .user_id
                     .is_nil()
@@ -1189,10 +1218,38 @@ async fn constrain_client_play_method(
 mod tests {
     use super::*;
 
-    const TRANSCODED: ServedPlayback = ServedPlayback::Ffmpeg {
-        video_copied: false,
-        audio_copied: false,
-    };
+    #[test]
+    fn ffmpeg_track_names_the_codec_the_client_receives() {
+        assert_eq!(
+            FfmpegTrack::new("copy", Some("hevc")),
+            FfmpegTrack {
+                codec: Some("hevc".to_string()),
+                copied: true,
+            }
+        );
+        assert_eq!(
+            FfmpegTrack::new("h264", Some("hevc")),
+            FfmpegTrack {
+                codec: Some("h264".to_string()),
+                copied: false,
+            }
+        );
+        // No source video: nothing to name, so clients see audio-only output.
+        assert_eq!(
+            FfmpegTrack::new("copy", None),
+            FfmpegTrack {
+                codec: None,
+                copied: true,
+            }
+        );
+    }
+
+    fn transcoded() -> ServedPlayback {
+        ServedPlayback::Ffmpeg {
+            video: FfmpegTrack::new("h264", Some("hevc")),
+            audio: FfmpegTrack::new("aac", Some("dts")),
+        }
+    }
 
     #[tokio::test]
     async fn served_remux_records_transcode_and_keeps_copy_flags() {
@@ -1200,11 +1257,11 @@ mod tests {
         let sessions = PlaybackSessionManager::new(temp.path());
         let id = "remux";
         let remux = ServedPlayback::Ffmpeg {
-            video_copied: true,
-            audio_copied: true,
+            video: FfmpegTrack::new("copy", Some("hevc")),
+            audio: FfmpegTrack::new("copy", Some("eac3")),
         };
 
-        sessions.record_server_play_method(id, remux);
+        sessions.record_server_play_method(id, remux.clone());
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
@@ -1213,7 +1270,7 @@ mod tests {
             .get(id)
             .unwrap();
         assert_eq!(session.play_method, Some(PlayMethod::Transcode.to_string()));
-        assert_eq!(session.served(), Some(remux));
+        assert_eq!(session.served(), Some(&remux));
         assert!(remux.video_copied());
     }
 
@@ -1252,7 +1309,7 @@ mod tests {
         let sessions = PlaybackSessionManager::new(temp.path());
         let id = "server-first";
 
-        sessions.record_server_play_method(id, TRANSCODED);
+        sessions.record_server_play_method(id, transcoded());
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
@@ -1266,7 +1323,7 @@ mod tests {
         assert!(
             sessions
                 .get(id)
-                .is_some_and(|session| session.served == Some(TRANSCODED))
+                .is_some_and(|session| session.served == Some(transcoded()))
         );
         assert!(
             !sessions
@@ -1295,7 +1352,7 @@ mod tests {
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
         sessions.record_server_play_method(id, ServedPlayback::Direct);
-        sessions.record_server_play_method(id, TRANSCODED);
+        sessions.record_server_play_method(id, transcoded());
 
         assert_eq!(
             sessions
@@ -1306,7 +1363,7 @@ mod tests {
         assert!(
             sessions
                 .get(id)
-                .is_some_and(|session| session.served == Some(TRANSCODED))
+                .is_some_and(|session| session.served == Some(transcoded()))
         );
         assert!(
             !sessions
@@ -1327,7 +1384,7 @@ mod tests {
         sessions
             .insert(stub)
             .await;
-        sessions.record_server_play_method(id, TRANSCODED);
+        sessions.record_server_play_method(id, transcoded());
         assert!(
             sessions
                 .pending_play_methods

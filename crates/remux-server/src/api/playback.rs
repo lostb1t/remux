@@ -28,7 +28,7 @@ use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 
-use crate::playback_session::ServedPlayback;
+use crate::playback_session::{FfmpegTrack, ServedPlayback};
 use crate::{
     AppState, api,
     api::MediaSourceInfoExt,
@@ -1451,8 +1451,8 @@ async fn videos_stream_inner(
     }
 
     record_served(ServedPlayback::Ffmpeg {
-        video_copied: video_codec == "copy",
-        audio_copied: audio_codec == "copy",
+        video: FfmpegTrack::new(&video_codec, source_video_codec.as_deref()),
+        audio: FfmpegTrack::new(&audio_codec, source_audio_codec.as_deref()),
     });
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
@@ -2611,6 +2611,85 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    /// A progressive FFmpeg stream has no HLS job, so `/Sessions` builds its
+    /// `TranscodingInfo` from what the endpoint recorded. jellyfin-web labels
+    /// the session from it, reading a missing `VideoCodec` as audio-only: a
+    /// re-encoded video with copied audio must name its codec, or it shows as
+    /// "Remuxing".
+    #[tokio::test]
+    async fn test_sessions_progressive_video_transcode_is_not_labelled_remux() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let play_session_id = "progressive-video-transcode";
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": play_session_id,
+                "PlayMethod": "Transcode"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        // What the progressive endpoint records for VideoCodec=h264&AudioCodec=copy.
+        guard
+            .0
+            .sessions
+            .record_server_play_method(
+                play_session_id,
+                crate::playback_session::ServedPlayback::Ffmpeg {
+                    video: crate::playback_session::FfmpegTrack::new(
+                        "h264",
+                        Some("hevc"),
+                    ),
+                    audio: crate::playback_session::FfmpegTrack::new(
+                        "copy",
+                        Some("aac"),
+                    ),
+                },
+            );
+
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let sessions: Vec<crate::api::SessionInfoDto> = resp.json();
+        let session = &sessions[0];
+        assert_eq!(
+            session
+                .play_state
+                .as_ref()
+                .and_then(|ps| ps
+                    .play_method
+                    .clone()),
+            Some("Transcode".to_string())
+        );
+        let info = session
+            .transcoding_info
+            .as_ref()
+            .expect("a progressive FFmpeg stream must carry TranscodingInfo");
+        assert!(!info.is_video_direct);
+        assert!(info.is_audio_direct);
+        assert_eq!(
+            info.video_codec
+                .as_deref(),
+            Some("h264")
+        );
+        assert_eq!(
+            info.audio_codec
+                .as_deref(),
+            Some("aac")
+        );
     }
 
     /// DirectPlay clients (e.g. Plezy) omit PlaySessionId from progress/stopped

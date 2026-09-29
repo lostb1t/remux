@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use remux_sdks::remux::{AudioCodec, HardwareAccelerationType};
 
-use crate::playback_session::ServedPlayback;
+use crate::playback_session::{FfmpegTrack, ServedPlayback};
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
@@ -653,8 +653,18 @@ async fn create_hls_session(
             .read()
             .await;
         ServedPlayback::Ffmpeg {
-            video_copied: session.video_codec == "copy",
-            audio_copied: session.audio_codec == "copy",
+            video: FfmpegTrack::new(
+                &session.video_codec,
+                session
+                    .source_video_codec
+                    .as_deref(),
+            ),
+            audio: FfmpegTrack::new(
+                &session.audio_codec,
+                session
+                    .source_audio_codec
+                    .as_deref(),
+            ),
         }
     };
     state

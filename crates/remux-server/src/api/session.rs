@@ -763,17 +763,24 @@ pub(crate) async fn build_session_list(
                     ..Default::default()
                 }
             })
-            // Progressive FFmpeg streams have no HLS job; the direct flags are
-            // what clients need to label them Remux / Direct Stream.
+            // Progressive FFmpeg streams have no HLS job. Clients label them
+            // Remux / Direct Stream from the direct flags, and read a missing
+            // VideoCodec as audio-only output — so a re-encoded video must be
+            // named, or it would show as a remux.
             .or_else(|| match ps.and_then(|ps| ps.served()) {
-                Some(ServedPlayback::Ffmpeg {
-                    video_copied,
-                    audio_copied,
-                }) => Some(api::TranscodingInfo {
-                    is_video_direct: video_copied,
-                    is_audio_direct: audio_copied,
-                    ..Default::default()
-                }),
+                Some(ServedPlayback::Ffmpeg { video, audio }) => {
+                    Some(api::TranscodingInfo {
+                        video_codec: video
+                            .codec
+                            .clone(),
+                        audio_codec: audio
+                            .codec
+                            .clone(),
+                        is_video_direct: video.copied,
+                        is_audio_direct: audio.copied,
+                        ..Default::default()
+                    })
+                }
                 _ => None,
             });
 
