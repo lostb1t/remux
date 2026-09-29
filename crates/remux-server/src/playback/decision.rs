@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn all_processing_disabled_resolves_client_transcode_to_direct_play() {
+    fn all_processing_disabled_resolves_requested_codecs_to_copy() {
         let mut policy = remux_sdks::remux::UserPolicy::default();
         policy.enable_playback_remuxing = false;
         policy.enable_video_playback_transcoding = false;

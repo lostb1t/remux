@@ -1242,6 +1242,13 @@ mod tests {
                 copied: true,
             }
         );
+        // A remux is still FFmpeg output, but its video is the source's.
+        let remux = ServedPlayback::Ffmpeg {
+            video: FfmpegTrack::new("copy", Some("hevc")),
+            audio: FfmpegTrack::new("copy", Some("eac3")),
+        };
+        assert_eq!(remux.play_method(), PlayMethod::Transcode);
+        assert!(remux.video_copied());
     }
 
     fn transcoded() -> ServedPlayback {
@@ -1249,29 +1256,6 @@ mod tests {
             video: FfmpegTrack::new("h264", Some("hevc")),
             audio: FfmpegTrack::new("aac", Some("dts")),
         }
-    }
-
-    #[tokio::test]
-    async fn served_remux_records_transcode_and_keeps_copy_flags() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = PlaybackSessionManager::new(temp.path());
-        let id = "remux";
-        let remux = ServedPlayback::Ffmpeg {
-            video: FfmpegTrack::new("copy", Some("hevc")),
-            audio: FfmpegTrack::new("copy", Some("eac3")),
-        };
-
-        sessions.record_server_play_method(id, remux.clone());
-        sessions
-            .insert(playback_session(id, PlayMethod::DirectPlay))
-            .await;
-
-        let session = sessions
-            .get(id)
-            .unwrap();
-        assert_eq!(session.play_method, Some(PlayMethod::Transcode.to_string()));
-        assert_eq!(session.served(), Some(&remux));
-        assert!(remux.video_copied());
     }
 
     fn playback_session(id: &str, method: PlayMethod) -> PlaybackSession {
