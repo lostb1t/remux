@@ -95,9 +95,10 @@ impl PlaybackPermissions {
     /// The stream endpoint records the exact effective method when it runs;
     /// this is the fallback for clients that report playback before requesting
     /// the media URL.
+    /// `DirectStream` is Jellyfin's static stream through the server — no
+    /// FFmpeg — so it needs no permission and passes through unchanged.
     pub(crate) fn constrain_reported_method(self, method: PlayMethod) -> PlayMethod {
         match method {
-            PlayMethod::DirectStream if !self.remuxing => PlayMethod::DirectPlay,
             PlayMethod::Transcode if !self.processing_available() => {
                 PlayMethod::DirectPlay
             }
@@ -112,18 +113,6 @@ pub(crate) struct ResolvedPlaybackCodecs {
     pub audio: String,
     pub direct_play_only: bool,
     pub burn_subtitle: bool,
-}
-
-/// The play method a stream endpoint actually serves for the given codecs.
-pub(crate) fn play_method_for_codecs(
-    video_codec: &str,
-    audio_codec: &str,
-) -> PlayMethod {
-    if codec_is_copy(video_codec) && codec_is_copy(audio_codec) {
-        PlayMethod::DirectStream
-    } else {
-        PlayMethod::Transcode
-    }
 }
 
 fn codec_is_copy(codec: &str) -> bool {
@@ -864,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn client_direct_stream_report_is_constrained_when_remuxing_is_disabled() {
+    fn client_direct_stream_report_needs_no_remux_permission() {
         let permissions = PlaybackPermissions {
             remuxing: false,
             video_transcoding: true,
@@ -873,11 +862,25 @@ mod tests {
 
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::DirectStream),
-            PlayMethod::DirectPlay
+            PlayMethod::DirectStream
         );
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::Transcode),
             PlayMethod::Transcode
+        );
+    }
+
+    #[test]
+    fn client_transcode_report_is_constrained_when_no_processing_is_allowed() {
+        let permissions = PlaybackPermissions {
+            remuxing: false,
+            video_transcoding: false,
+            audio_transcoding: false,
+        };
+
+        assert_eq!(
+            permissions.constrain_reported_method(PlayMethod::Transcode),
+            PlayMethod::DirectPlay
         );
     }
 

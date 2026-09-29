@@ -15,13 +15,14 @@ use uuid::Uuid;
 
 use remux_sdks::remux::{AudioCodec, HardwareAccelerationType};
 
+use crate::playback_session::ServedPlayback;
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::{
-        decision::{PlaybackPermissions, play_method_for_codecs},
+        decision::PlaybackPermissions,
         hw_accel,
         session::{SegmentContainer, TranscodeSession, TranscodeState},
     },
@@ -647,16 +648,19 @@ async fn create_hls_session(
         session
     };
 
-    let effective_method = {
+    let served = {
         let session = session
             .read()
             .await;
-        play_method_for_codecs(&session.video_codec, &session.audio_codec)
+        ServedPlayback::Ffmpeg {
+            video_copied: session.video_codec == "copy",
+            audio_copied: session.audio_codec == "copy",
+        }
     };
     state
         .ctx
         .sessions
-        .record_server_play_method(&play_session_id, effective_method);
+        .record_server_play_method(&play_session_id, served);
 
     Ok(HlsSessionResult::Transcode(session, play_session_id))
 }

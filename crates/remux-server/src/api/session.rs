@@ -15,6 +15,7 @@ use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::playback_session::ServedPlayback;
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
@@ -229,14 +230,7 @@ pub async fn report_playback_progress(
                         )
                     },
                     reported_at: std::time::Instant::now(),
-                    video_is_copied: current_playback
-                        .transcode
-                        .as_ref()
-                        .is_none_or(|transcode| {
-                            transcode
-                                .try_read()
-                                .is_ok_and(|session| session.video_codec == "copy")
-                        }),
+                    video_is_copied: current_playback.video_is_copied(),
                 }));
         }
         if data.is_paused && !was_paused {
@@ -768,6 +762,19 @@ pub(crate) async fn build_session_list(
                         .clone(),
                     ..Default::default()
                 }
+            })
+            // Progressive FFmpeg streams have no HLS job; the direct flags are
+            // what clients need to label them Remux / Direct Stream.
+            .or_else(|| match ps.and_then(|ps| ps.served()) {
+                Some(ServedPlayback::Ffmpeg {
+                    video_copied,
+                    audio_copied,
+                }) => Some(api::TranscodingInfo {
+                    is_video_direct: video_copied,
+                    is_audio_direct: audio_copied,
+                    ..Default::default()
+                }),
+                _ => None,
             });
 
         // Build PlayState from active playback session, always non-null.

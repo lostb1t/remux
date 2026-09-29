@@ -26,9 +26,9 @@ pub struct PlaybackSession {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub play_method: Option<String>,
-    /// `play_method` was recorded by a stream endpoint from what it actually
-    /// serves; client reports must not overwrite it.
-    play_method_from_server: bool,
+    /// What a stream endpoint actually served, which also set `play_method`;
+    /// client reports must not overwrite it.
+    served: Option<ServedPlayback>,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
     pub started_at: DateTime<Utc>,
@@ -44,6 +44,67 @@ pub struct PlaybackSession {
     torrents: Vec<Arc<crate::torrent::TorrentLease>>,
 }
 
+impl PlaybackSession {
+    /// What a stream endpoint served for this session, if one has recorded it.
+    pub fn served(&self) -> Option<ServedPlayback> {
+        self.served
+    }
+
+    /// Whether the client receives the source video without re-encoding.
+    pub fn video_is_copied(&self) -> bool {
+        match self.served {
+            // A stream endpoint recorded what it sent: that is the answer.
+            Some(served) => served.video_copied(),
+            // Nothing recorded: believe the client, unless it says it is
+            // being transcoded.
+            None => {
+                self.play_method
+                    .as_deref()
+                    != Some("Transcode")
+            }
+        }
+    }
+}
+
+/// What a stream endpoint actually served for a playback session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedPlayback {
+    /// The source bytes, unchanged.
+    Direct,
+    /// FFmpeg output, and which of its streams are copied from the source.
+    Ffmpeg {
+        video_copied: bool,
+        audio_copied: bool,
+    },
+}
+
+impl ServedPlayback {
+    /// Any FFmpeg output — remux included — is `Transcode` in Jellyfin's
+    /// vocabulary; clients tell Remux / Direct Stream apart via
+    /// `TranscodingInfo.IsVideoDirect` / `IsAudioDirect`.
+    ///
+    /// Unchanged source bytes are always `DirectPlay`. Jellyfin stores
+    /// whichever of `DirectPlay` / `DirectStream` the client reports, but
+    /// jellyfin-web only reports `DirectStream` when `SupportsDirectPlay` is
+    /// false, and remux never offers the static route then. A client that
+    /// reports `DirectStream` anyway is overridden; clients display the two
+    /// the same.
+    pub fn play_method(self) -> PlayMethod {
+        match self {
+            Self::Direct => PlayMethod::DirectPlay,
+            Self::Ffmpeg { .. } => PlayMethod::Transcode,
+        }
+    }
+
+    /// Whether the client decodes the source video itself.
+    pub fn video_copied(self) -> bool {
+        match self {
+            Self::Direct => true,
+            Self::Ffmpeg { video_copied, .. } => video_copied,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PlaybackSessionManager {
     sessions: Arc<DashMap<String, PlaybackSession>>,
@@ -52,7 +113,7 @@ pub struct PlaybackSessionManager {
     // move them into the PlaybackSession on start.
     pending_torrents:
         Arc<DashMap<String, (DateTime<Utc>, Vec<Arc<crate::torrent::TorrentLease>>)>>,
-    pending_play_methods: Arc<DashMap<String, (DateTime<Utc>, PlayMethod)>>,
+    pending_play_methods: Arc<DashMap<String, (DateTime<Utc>, ServedPlayback)>>,
     // Makes that handoff atomic: a request cannot be stranded in pending
     // while playback-start inserts its session.
     handoff: Arc<std::sync::Mutex<()>>,
@@ -95,7 +156,7 @@ impl PlaybackSessionManager {
 
         // A method already recorded by a stream endpoint overrides this in
         // `insert`; until then, don't trust a method the server can't use.
-        let reported_play_method = constrain_client_play_method(
+        let client_play_method = constrain_client_play_method(
             db,
             &auth_session.user,
             data.play_method
@@ -211,10 +272,10 @@ impl PlaybackSessionManager {
             volume_level: data.volume_level,
             audio_stream_index: data.audio_stream_index,
             subtitle_stream_index: data.subtitle_stream_index,
-            play_method: reported_play_method
+            play_method: client_play_method
                 .as_ref()
                 .map(|m| m.to_string()),
-            play_method_from_server: false,
+            served: None,
             now_playing_queue: data
                 .now_playing_queue
                 .clone(),
@@ -350,7 +411,10 @@ impl PlaybackSessionManager {
         };
         // A method recorded by a stream endpoint reflects what is actually
         // served; clients (jellyfin-web) re-send theirs on every report.
-        let reported_play_method = if ps.play_method_from_server {
+        let client_play_method = if ps
+            .served
+            .is_some()
+        {
             None
         } else {
             constrain_client_play_method(
@@ -372,8 +436,8 @@ impl PlaybackSessionManager {
             .subtitle_stream_index
             .is_some()
             && data.subtitle_stream_index != ps.subtitle_stream_index;
-        let method_changed = reported_play_method.is_some()
-            && reported_play_method
+        let method_changed = client_play_method.is_some()
+            && client_play_method
                 .as_ref()
                 .map(|m| m.to_string())
                 != ps.play_method;
@@ -393,7 +457,7 @@ impl PlaybackSessionManager {
                     format!("{:?}", ps.subtitle_stream_index)
                 },
                 play_method = if method_changed {
-                    format!("{:?} → {:?}", ps.play_method, reported_play_method)
+                    format!("{:?} → {:?}", ps.play_method, client_play_method)
                 } else {
                     format!("{:?}", ps.play_method)
                 },
@@ -429,8 +493,11 @@ impl PlaybackSessionManager {
                 .or(ps.subtitle_stream_index);
             // Re-check under the update: a stream endpoint may have recorded
             // a method since the snapshot.
-            if let Some(ref method) = reported_play_method {
-                if !ps.play_method_from_server {
+            if let Some(ref method) = client_play_method {
+                if ps
+                    .served
+                    .is_none()
+                {
                     ps.play_method = Some(method.to_string());
                 }
             }
@@ -670,12 +737,16 @@ impl PlaybackSessionManager {
                     .clone(),
             );
         }
-        if let Some((_, (_, method))) = self
+        if let Some((_, (_, served))) = self
             .pending_play_methods
             .remove(&session.play_session_id)
         {
-            session.play_method = Some(method.to_string());
-            session.play_method_from_server = true;
+            session.play_method = Some(
+                served
+                    .play_method()
+                    .to_string(),
+            );
+            session.served = Some(served);
         }
         self.sessions
             .insert(
@@ -767,7 +838,7 @@ impl PlaybackSessionManager {
     /// Record the playback method selected by a server stream endpoint.
     /// Update a claimed client session immediately; if no session exists or
     /// only an unclaimed HLS stub exists, keep the method pending for `start`.
-    pub fn record_server_play_method(&self, id: &str, method: PlayMethod) {
+    pub fn record_server_play_method(&self, id: &str, served: ServedPlayback) {
         let _handoff = self
             .handoff
             .lock()
@@ -778,8 +849,12 @@ impl PlaybackSessionManager {
             .sessions
             .get_mut(id)
             .is_some_and(|mut session| {
-                session.play_method = Some(method.to_string());
-                session.play_method_from_server = true;
+                session.play_method = Some(
+                    served
+                        .play_method()
+                        .to_string(),
+                );
+                session.served = Some(served);
                 !(session
                     .user_id
                     .is_nil()
@@ -792,7 +867,7 @@ impl PlaybackSessionManager {
                 .remove(id);
         } else {
             self.pending_play_methods
-                .insert(id.to_string(), (Utc::now(), method));
+                .insert(id.to_string(), (Utc::now(), served));
         }
     }
 
@@ -869,7 +944,7 @@ impl PlaybackSessionManager {
                         audio_stream_index: None,
                         subtitle_stream_index: None,
                         play_method: None,
-                        play_method_from_server: false,
+                        served: None,
                         now_playing_queue: None,
                         playlist_item_id: None,
                         started_at: Utc::now(),
@@ -1114,6 +1189,34 @@ async fn constrain_client_play_method(
 mod tests {
     use super::*;
 
+    const TRANSCODED: ServedPlayback = ServedPlayback::Ffmpeg {
+        video_copied: false,
+        audio_copied: false,
+    };
+
+    #[tokio::test]
+    async fn served_remux_records_transcode_and_keeps_copy_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = PlaybackSessionManager::new(temp.path());
+        let id = "remux";
+        let remux = ServedPlayback::Ffmpeg {
+            video_copied: true,
+            audio_copied: true,
+        };
+
+        sessions.record_server_play_method(id, remux);
+        sessions
+            .insert(playback_session(id, PlayMethod::DirectPlay))
+            .await;
+
+        let session = sessions
+            .get(id)
+            .unwrap();
+        assert_eq!(session.play_method, Some(PlayMethod::Transcode.to_string()));
+        assert_eq!(session.served(), Some(remux));
+        assert!(remux.video_copied());
+    }
+
     fn playback_session(id: &str, method: PlayMethod) -> PlaybackSession {
         PlaybackSession {
             play_session_id: id.to_string(),
@@ -1131,7 +1234,7 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             play_method: Some(method.to_string()),
-            play_method_from_server: false,
+            served: None,
             now_playing_queue: None,
             playlist_item_id: None,
             started_at: Utc::now(),
@@ -1149,7 +1252,7 @@ mod tests {
         let sessions = PlaybackSessionManager::new(temp.path());
         let id = "server-first";
 
-        sessions.record_server_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, TRANSCODED);
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
@@ -1163,7 +1266,7 @@ mod tests {
         assert!(
             sessions
                 .get(id)
-                .is_some_and(|session| session.play_method_from_server)
+                .is_some_and(|session| session.served == Some(TRANSCODED))
         );
         assert!(
             !sessions
@@ -1191,8 +1294,8 @@ mod tests {
         sessions
             .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
-        sessions.record_server_play_method(id, PlayMethod::DirectStream);
-        sessions.record_server_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, ServedPlayback::Direct);
+        sessions.record_server_play_method(id, TRANSCODED);
 
         assert_eq!(
             sessions
@@ -1203,7 +1306,7 @@ mod tests {
         assert!(
             sessions
                 .get(id)
-                .is_some_and(|session| session.play_method_from_server)
+                .is_some_and(|session| session.served == Some(TRANSCODED))
         );
         assert!(
             !sessions
@@ -1224,7 +1327,7 @@ mod tests {
         sessions
             .insert(stub)
             .await;
-        sessions.record_server_play_method(id, PlayMethod::Transcode);
+        sessions.record_server_play_method(id, TRANSCODED);
         assert!(
             sessions
                 .pending_play_methods

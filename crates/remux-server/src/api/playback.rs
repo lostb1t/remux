@@ -28,6 +28,7 @@ use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 
+use crate::playback_session::ServedPlayback;
 use crate::{
     AppState, api,
     api::MediaSourceInfoExt,
@@ -47,7 +48,7 @@ use crate::{
     playback::{
         decision::{
             PlaybackConfig, PlaybackPermissions, TranscodeDecision,
-            apply_subtitle_delivery, build_transcode_decision, play_method_for_codecs,
+            apply_subtitle_delivery, build_transcode_decision,
         },
         engine::ProgressiveFormat,
         session::{TranscodeSession, TranscodeState},
@@ -1248,9 +1249,9 @@ async fn videos_stream_inner(
         .ctx
         .sessions
         .clone();
-    let record_play_method = |method: PlayMethod| {
+    let record_served = |served: ServedPlayback| {
         if let Some(playback_id) = playback_id.as_deref() {
-            sessions.record_server_play_method(playback_id, method);
+            sessions.record_server_play_method(playback_id, served);
         }
     };
 
@@ -1261,7 +1262,7 @@ async fn videos_stream_inner(
         .unwrap_or(false)
         || resolved_codecs.direct_play_only
     {
-        record_play_method(PlayMethod::DirectPlay);
+        record_served(ServedPlayback::Direct);
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux —
         // unless the URL's host is only reachable from remux's own network, in
@@ -1423,7 +1424,7 @@ async fn videos_stream_inner(
             .unwrap_or(0)
             == 0
     {
-        record_play_method(PlayMethod::DirectPlay);
+        record_served(ServedPlayback::Direct);
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
                 .ctx
@@ -1446,7 +1447,10 @@ async fn videos_stream_inner(
         return Ok(resp.into_response());
     }
 
-    record_play_method(play_method_for_codecs(&video_codec, &audio_codec));
+    record_served(ServedPlayback::Ffmpeg {
+        video_copied: video_codec == "copy",
+        audio_copied: audio_codec == "copy",
+    });
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
