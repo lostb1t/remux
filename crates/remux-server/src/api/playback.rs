@@ -591,7 +591,10 @@ async fn items_playbackinfo_inner(
                 source.supports_transcoding =
                     playback_permissions.processing_available();
                 source.supports_direct_play = true;
-                source.supports_direct_stream = playback_permissions.remuxing;
+                // Jellyfin's direct stream is the unchanged file through the
+                // server (`Static=true`), not a remux, so no processing
+                // permission applies; Jellyfin keeps it equal to direct play.
+                source.supports_direct_stream = true;
                 source.transcoding_url = None;
                 source.transcoding_container = None;
             }
@@ -1864,7 +1867,8 @@ mod tests {
         playback_info.assert_json_contains(&json!({
             "MediaSources": [{
                 "SupportsDirectPlay": true,
-                "SupportsDirectStream": false,
+                // The unchanged file through the server needs no processing.
+                "SupportsDirectStream": true,
                 "SupportsTranscoding": false
             }]
         }));
