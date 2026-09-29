@@ -169,9 +169,15 @@ async fn persist_metrics(
                 .monthly
                 .filter(|value| value.is_finite()),
         ));
-        media.push(item);
+        // Only items that got ratings have anything to write to `media`.
+        if item
+            .external_ratings
+            .is_some()
+        {
+            media.push(item);
+        }
     }
-    db::Media::upsert(pool, &media).await?;
+    db::Media::update_ratings(pool, &media).await?;
     for chunk in rows.chunks(100) {
         let mut query = sqlx::QueryBuilder::new(
             "INSERT INTO media_metrics (\
@@ -242,7 +248,7 @@ mod tests {
             .await
             .unwrap();
         let ctx = &guard.0;
-        let media = db::Media {
+        let mut media = db::Media {
             title: "The Godfather".to_string(),
             kind: db::MediaKind::Movie,
             external_ids: db::ExternalIds {
@@ -252,6 +258,10 @@ mod tests {
             ..Default::default()
         };
         let media_id = media.id;
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
         let metrics = metrics_with_sources(vec![
             ("imdb", 9.2),
             ("tomatoes", 97.0),
@@ -277,7 +287,7 @@ mod tests {
             .await
             .unwrap();
         let ctx = &guard.0;
-        let media = db::Media {
+        let mut media = db::Media {
             title: "Obscure Movie".to_string(),
             kind: db::MediaKind::Movie,
             external_ids: db::ExternalIds {
@@ -287,6 +297,10 @@ mod tests {
             ..Default::default()
         };
         let media_id = media.id;
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
         let metrics = metrics_with_sources(vec![("imdb", 5.0)]);
 
         persist_metrics(&ctx.db, vec![(media, metrics)])
@@ -298,5 +312,54 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.rating_critic, None);
+    }
+
+    /// The sync loads a minimal projection and upserts it back, so it must not
+    /// null out columns it never loaded.
+    #[tokio::test]
+    async fn sync_keeps_certification_and_certification_age() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let mut media = db::Media {
+            title: "Rated Movie".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0111161".to_string()).ok(),
+                ..Default::default()
+            },
+            certification: Some("PG-13".to_string()),
+            certification_age: Some(13),
+            ..Default::default()
+        };
+        let media_id = media.id;
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let page = db::Media::list_for_popularity_sync(&ctx.db, 10, 0)
+            .await
+            .unwrap();
+        let synced = page
+            .into_iter()
+            .map(|m| (m, metrics_with_sources(vec![("tomatoes", 90.0)])))
+            .collect();
+        persist_metrics(&ctx.db, synced)
+            .await
+            .unwrap();
+
+        let stored = db::Media::get_by_id(&ctx.db, &media_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored
+                .certification
+                .as_deref(),
+            Some("PG-13")
+        );
+        assert_eq!(stored.certification_age, Some(13));
     }
 }

@@ -491,6 +491,18 @@ impl MediaRelation {
             .begin()
             .await?;
 
+        Self::upsert_in(&mut tx, items).await?;
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
+    /// Upsert `items` on an existing connection/transaction; the caller
+    /// holds the write permit.
+    async fn upsert_in(
+        conn: &mut sqlx::SqliteConnection,
+        items: &[Self],
+    ) -> Result<()> {
         for chunk in items.chunks(CHUNK_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
                 "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
@@ -508,12 +520,9 @@ impl MediaRelation {
             qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
 
             qb.build()
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
         }
-
-        tx.commit()
-            .await?;
         Ok(())
     }
 
@@ -683,8 +692,43 @@ impl MediaRelation {
         Ok(())
     }
 
+    /// Replace every relation from `left_id` to media of `right_kinds` with
+    /// `items`, in ONE transaction: a reader never sees the item without
+    /// them, and a caller dropped mid-way (client disconnect) rolls back to
+    /// the old set instead of leaving none.
+    pub async fn replace_by_right_kinds(
+        db: &SqlitePool,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+        items: &[Self],
+    ) -> Result<()> {
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        let mut tx = db
+            .begin()
+            .await?;
+        Self::delete_by_right_kinds_in(&mut tx, left_id, right_kinds).await?;
+        Self::upsert_in(&mut tx, items).await?;
+        tx.commit()
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_by_right_kinds(
         db: &SqlitePool,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+    ) -> Result<()> {
+        let mut conn = db
+            .acquire()
+            .await?;
+        Self::delete_by_right_kinds_in(&mut conn, left_id, right_kinds).await
+    }
+
+    async fn delete_by_right_kinds_in(
+        conn: &mut sqlx::SqliteConnection,
         left_id: Uuid,
         right_kinds: &[MediaKind],
     ) -> Result<()> {
@@ -702,7 +746,7 @@ impl MediaRelation {
         }
         qb.push("))");
         qb.build()
-            .execute(db)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
@@ -5021,6 +5065,15 @@ impl Media {
                                     .to_string()
                             }
                         }
+                        api::ItemSortBy::Default => {
+                            // Manual collections keep their curated order in
+                            // media_relations.weight (`mr` is joined for them).
+                            if is_manual_collection {
+                                format!("mr.weight {}", dir)
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
                     };
@@ -5910,13 +5963,16 @@ impl Media {
         // catches up shortly after import), or keep trying indefinitely while
         // the title itself is recent enough (released_at < 1 year) that a
         // digital release is still plausible — otherwise stop selecting it.
+        // Movies only: TMDB never sets a digital date on a series row, so
+        // series rely on the status branch above instead.
         const WHERE: &str = r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
             OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
             OR (
-              digital_released_at IS NULL
+              kind = 'movie'
+              AND digital_released_at IS NULL
               AND datetime(created_at) < datetime('now', '-1 hour')
               AND (
                 datetime(created_at) >= datetime('now', '-7 days')
@@ -6015,6 +6071,42 @@ impl Media {
                 ..Default::default()
             })
             .collect())
+    }
+
+    /// Writes only the rating columns the RemuxDB metrics sync owns, in one
+    /// transaction. The sync holds a minimal projection of each item, so a full
+    /// `upsert` would overwrite every other column with its default.
+    /// `rating_*` keep their stored value when the new one is `None`, like
+    /// `upsert`'s `COALESCE`.
+    pub async fn update_ratings(db: &SqlitePool, items: &[Self]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
+        let mut tx = db
+            .begin()
+            .await?;
+        for item in items {
+            sqlx::query(
+                "UPDATE media SET \
+                 rating_audience = COALESCE(?, rating_audience), \
+                 rating_critic = COALESCE(?, rating_critic), \
+                 external_ratings = COALESCE(?, external_ratings) \
+                 WHERE id = ?",
+            )
+            .bind(item.rating_audience)
+            .bind(item.rating_critic)
+            .bind(sqlx::types::Json(&item.external_ratings))
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit()
+            .await?;
+        Ok(())
     }
 
     pub async fn get_by_jellyfin_filter(
@@ -9905,6 +9997,117 @@ mod tests {
         );
     }
 
+    /// Series never get a digital date from TMDB, so the missing-digital-date
+    /// retry must not pick up ended series; they rely on the status branch.
+    #[tokio::test]
+    async fn get_refreshable_missing_digital_date_branch_is_movie_only() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let make_id = |kind: MediaKind, imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: kind.clone(),
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        // Ended series, created 2 days ago, already refreshed once, and (like
+        // almost every series in practice) never got a `digital_released_at`.
+        // It has already had its refreshed_at set and its status is 'ended',
+        // so neither retry branch should select it.
+        let (id_ended, ext_ended) = make_id(MediaKind::Series, "tt9990401");
+        let mut ended_series = Media {
+            id: id_ended,
+            title: "Ended, No Digital Date".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_ended,
+            status: Some(MediaStatus::Ended),
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        ended_series
+            .save(db)
+            .await
+            .unwrap();
+
+        // Movie with no digital date, created 2 days ago, already refreshed
+        // once — still within its week-long grace period, so it must remain
+        // refreshable exactly as before this fix.
+        let (id_movie, ext_movie) = make_id(MediaKind::Movie, "tt9990402");
+        let mut movie = Media {
+            id: id_movie,
+            title: "Movie, No Digital Date".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_movie,
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        // Ongoing series, created 2 days ago, already refreshed once, no
+        // digital date — must still be refreshable via the status-based
+        // series branch (unaffected by this fix).
+        let (id_ongoing, ext_ongoing) = make_id(MediaKind::Series, "tt9990403");
+        let mut ongoing_series = Media {
+            id: id_ongoing,
+            title: "Ongoing, No Digital Date".to_string(),
+            kind: MediaKind::Series,
+            external_ids: ext_ongoing,
+            status: Some(MediaStatus::Continuing),
+            released_at: Some(now - chrono::Duration::days(30)),
+            digital_released_at: None,
+            created_at: now - chrono::Duration::days(2),
+            refreshed_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        ongoing_series
+            .save(db)
+            .await
+            .unwrap();
+
+        let (batch, _) = Media::get_refreshable(db, 100, None, false)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = batch
+            .iter()
+            .map(|m| m.id)
+            .collect();
+
+        assert!(
+            !ids.contains(&id_ended),
+            "ended series with no digital date and a recent refresh must not be refreshable"
+        );
+        assert!(
+            ids.contains(&id_movie),
+            "movie with no digital date must still get its week-long grace period"
+        );
+        assert!(
+            ids.contains(&id_ongoing),
+            "ongoing series must still be refreshable via the status-based branch"
+        );
+    }
+
     /// `list_for_popularity_sync` must carry `title`/`kind`/`external_ratings`
     /// through its minimal projection, not just `id`/`external_ids` — those
     /// fields aren't optional extras: `Media::upsert` overwrites `title`/
@@ -10725,6 +10928,74 @@ mod tests {
         )
         .await;
         assert_eq!(titles, vec!["New Series", "Old Series"]);
+    }
+
+    /// `ItemSortBy::Default` on a manual collection follows the curated order
+    /// (media_relations.weight) instead of falling back to title order.
+    #[tokio::test]
+    async fn sort_by_default_follows_manual_collection_weight() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut collection = Media {
+            id: uuid::Uuid::new_v4(),
+            title: "Curated".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Manual),
+            ..Default::default()
+        };
+        collection
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut zebra = media_row(MediaKind::Movie, "Zebra", "tt7001");
+        zebra
+            .save(db)
+            .await
+            .unwrap();
+        let mut apple = media_row(MediaKind::Movie, "Apple", "tt7002");
+        apple
+            .save(db)
+            .await
+            .unwrap();
+        let mut mango = media_row(MediaKind::Movie, "Mango", "tt7003");
+        mango
+            .save(db)
+            .await
+            .unwrap();
+
+        // Curated order is deliberately not alphabetical: Zebra, Apple, Mango.
+        MediaRelation::add_collection_items(
+            db,
+            &collection.id,
+            &[zebra.id, apple.id, mango.id],
+        )
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                parent_id: Some(collection.id),
+                parent: Some(collection.clone()),
+                sort_by: vec![api::ItemSortBy::Default],
+                sort_order: vec![api::SortOrder::Ascending],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let titles: Vec<String> = result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect();
+        assert_eq!(titles, vec!["Zebra", "Apple", "Mango"]);
     }
 
     /// The Albums view excludes Deezer singles/EPs but keeps albums (including
