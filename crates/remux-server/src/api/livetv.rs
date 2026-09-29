@@ -2,6 +2,7 @@ use crate::{OptionExt, ResultExt};
 use axum::{
     Json,
     extract::{Path, State},
+    http::HeaderMap,
     response::IntoResponse,
 };
 use axum_anyhow::ApiResult as Result;
@@ -13,8 +14,18 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AppState, api, db,
-    db::auth::{AdminSession, AuthSession},
+    AppState,
+    addons::dispatcharr_dvr::DispatcharrRecordingStatus,
+    api, db,
+    db::auth::{AdminSession, AuthSession, LiveTvManagementSession},
+    services::{
+        DvrService,
+        dvr_service::{
+            CreateSeriesTimerRequest, CreateTimerRequest, RecordingStatus,
+            RecordingsFilter, TimerUpdate, TimersFilter, UpdateSeriesTimerRequest,
+        },
+    },
+    stream::{HttpSource, StreamSource},
 };
 
 // --------------------------------------------------------------------------
@@ -114,7 +125,7 @@ pub async fn livetv_channels(
     _session: AuthSession,
     Query(q): Query<GetChannelsQuery>,
 ) -> Result<impl IntoResponse> {
-    let result = db::Media::get_by_filter(
+    let mut result = db::Media::get_by_filter(
         &state
             .ctx
             .db,
@@ -126,6 +137,14 @@ pub async fn livetv_channels(
             total_count: true,
             ..Default::default()
         },
+    )
+    .await?;
+
+    db::Media::attach_streams(
+        &state
+            .ctx
+            .db,
+        &mut result.records,
     )
     .await?;
 
@@ -153,7 +172,7 @@ pub async fn livetv_channel(
     _session: AuthSession,
     Path(channel_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -161,6 +180,15 @@ pub async fn livetv_channel(
     )
     .await?
     .context_not_found("channel not found")?;
+    media.sources = Some(
+        media
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?,
+    );
     Ok(Json(api::db_media_to_item(media, false)))
 }
 
@@ -230,10 +258,11 @@ pub async fn livetv_programs_recommended(
     )
     .await?;
 
+    let timers = DvrService::program_timers(&state.ctx, &result.records).await;
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| timers.to_item(m))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: dtos.len() as i64,
@@ -390,10 +419,11 @@ pub async fn livetv_programs(
     )
     .await?;
 
+    let timers = DvrService::program_timers(&state.ctx, &result.records).await;
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| timers.to_item(m))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
@@ -503,10 +533,11 @@ pub async fn livetv_programs_post(
     )
     .await?;
 
+    let timers = DvrService::program_timers(&state.ctx, &result.records).await;
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| timers.to_item(m))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
@@ -522,25 +553,205 @@ pub async fn livetv_programs_post(
 // --------------------------------------------------------------------------
 
 #[get("/livetv/seriestimers")]
-pub async fn livetv_series_timers(_session: AuthSession) -> Result<impl IntoResponse> {
-    Ok(Json(api::QueryResult::<api::BaseItemDto> {
-        total_record_count: 0,
+pub async fn livetv_series_timers(
+    State(state): State<AppState>,
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    let items = DvrService::list_series_timers(&state.ctx).await?;
+    Ok(Json(api::QueryResult {
+        total_record_count: items.len() as i64,
         start_index: 0,
-        items: vec![],
+        items,
     }))
+}
+
+// --------------------------------------------------------------------------
+// POST /livetv/seriestimers
+// --------------------------------------------------------------------------
+
+#[post("/livetv/seriestimers")]
+pub async fn livetv_create_series_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Json(body): Json<CreateSeriesTimerRequest>,
+) -> Result<impl IntoResponse> {
+    let created = DvrService::create_series_timer(&state.ctx, body).await;
+    DvrService::invalidate_program_timers();
+    created?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/seriestimers/{timerId}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/seriestimers/{timer_id}")]
+pub async fn livetv_get_series_timer(
+    State(state): State<AppState>,
+    _session: AuthSession,
+    Path(timer_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let found = DvrService::get_series_timer(&state.ctx, &timer_id)
+        .await?
+        .context_not_found("series timer not found")?;
+    Ok(Json(found))
+}
+
+// --------------------------------------------------------------------------
+// POST /livetv/seriestimers/{timerId}
+// --------------------------------------------------------------------------
+
+#[post("/livetv/seriestimers/{timer_id}")]
+pub async fn livetv_update_series_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Path(timer_id): Path<String>,
+    Json(body): Json<UpdateSeriesTimerRequest>,
+) -> Result<impl IntoResponse> {
+    let updated = DvrService::update_series_timer(&state.ctx, &timer_id, body).await;
+    DvrService::invalidate_program_timers();
+    if updated? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
+}
+
+// --------------------------------------------------------------------------
+// DELETE /livetv/seriestimers/{timerId}
+// --------------------------------------------------------------------------
+
+#[delete("/livetv/seriestimers/{timer_id}")]
+pub async fn livetv_delete_series_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Path(timer_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let deleted = DvrService::delete_series_timer(&state.ctx, &timer_id).await;
+    DvrService::invalidate_program_timers();
+    if deleted? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
 }
 
 // --------------------------------------------------------------------------
 // GET /livetv/timers
 // --------------------------------------------------------------------------
 
+#[query]
+#[derive(Debug, Default)]
+pub struct GetTimersQuery {
+    pub channel_id: Option<Uuid>,
+    pub series_timer_id: Option<String>,
+    pub is_active: Option<bool>,
+    pub is_scheduled: Option<bool>,
+}
+
 #[get("/livetv/timers")]
-pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
-    Ok(Json(api::QueryResult::<api::BaseItemDto> {
-        total_record_count: 0,
+pub async fn livetv_timers(
+    State(state): State<AppState>,
+    _session: AuthSession,
+    Query(q): Query<GetTimersQuery>,
+) -> Result<impl IntoResponse> {
+    let items = DvrService::list_timers(
+        &state.ctx,
+        &TimersFilter {
+            channel_id: q.channel_id,
+            series_timer_id: q.series_timer_id,
+            is_active: q.is_active,
+            is_scheduled: q.is_scheduled,
+        },
+    )
+    .await?;
+    Ok(Json(api::QueryResult {
+        total_record_count: items.len() as i64,
         start_index: 0,
-        items: vec![],
+        items,
     }))
+}
+
+// --------------------------------------------------------------------------
+// POST /livetv/timers
+// --------------------------------------------------------------------------
+
+#[post("/livetv/timers")]
+pub async fn livetv_create_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Json(body): Json<CreateTimerRequest>,
+) -> Result<impl IntoResponse> {
+    let created = DvrService::create_timer(&state.ctx, body).await;
+    DvrService::invalidate_program_timers();
+    created?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/timers/{timerId}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/timers/{timer_id}")]
+pub async fn livetv_get_timer(
+    State(state): State<AppState>,
+    _session: AuthSession,
+    Path(timer_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let timer_id = DvrService::resolve_timer_id(&state.ctx, &timer_id)
+        .await
+        .context_not_found("timer not found")?;
+    let timer = DvrService::get_timer(&state.ctx, timer_id)
+        .await?
+        .context_not_found("timer not found")?;
+    Ok(Json(timer))
+}
+
+// --------------------------------------------------------------------------
+// POST /livetv/timers/{timerId}
+// --------------------------------------------------------------------------
+
+#[post("/livetv/timers/{timer_id}")]
+pub async fn livetv_update_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Path(timer_id): Path<String>,
+    Json(body): Json<CreateTimerRequest>,
+) -> Result<impl IntoResponse> {
+    let Some(timer_id) = DvrService::resolve_timer_id(&state.ctx, &timer_id).await
+    else {
+        return Ok(StatusCode::NOT_FOUND);
+    };
+    let updated = DvrService::update_timer(&state.ctx, timer_id, body).await;
+    DvrService::invalidate_program_timers();
+    Ok(match updated? {
+        TimerUpdate::Updated => StatusCode::NO_CONTENT,
+        TimerUpdate::NotFound => StatusCode::NOT_FOUND,
+        TimerUpdate::AlreadyStarted => StatusCode::CONFLICT,
+    })
+}
+
+// --------------------------------------------------------------------------
+// DELETE /livetv/timers/{timerId}
+// --------------------------------------------------------------------------
+
+#[delete("/livetv/timers/{timer_id}")]
+pub async fn livetv_delete_timer(
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Path(timer_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    let Some(timer_id) = DvrService::resolve_timer_id(&state.ctx, &timer_id).await
+    else {
+        return Ok(StatusCode::NOT_FOUND);
+    };
+    let deleted = DvrService::delete_timer(&state.ctx, timer_id).await;
+    DvrService::invalidate_program_timers();
+    if deleted? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -602,12 +813,60 @@ pub async fn livetv_recording_folders(
 // GET /livetv/recordings
 // --------------------------------------------------------------------------
 
+#[query]
+#[derive(Debug, Default)]
+pub struct GetRecordingsQuery {
+    pub channel_id: Option<Uuid>,
+    pub status: Option<RecordingStatus>,
+    pub is_in_progress: Option<bool>,
+    pub is_movie: Option<bool>,
+    pub is_series: Option<bool>,
+    pub is_kids: Option<bool>,
+    pub is_sports: Option<bool>,
+    pub is_news: Option<bool>,
+    pub start_index: Option<usize>,
+    pub limit: Option<usize>,
+}
+
 #[get("/livetv/recordings")]
-pub async fn livetv_recordings(_session: AuthSession) -> Result<impl IntoResponse> {
-    Ok(Json(api::QueryResult::<api::BaseItemDto> {
-        total_record_count: 0,
-        start_index: 0,
-        items: vec![],
+pub async fn livetv_recordings(
+    State(state): State<AppState>,
+    _session: AuthSession,
+    Query(q): Query<GetRecordingsQuery>,
+) -> Result<impl IntoResponse> {
+    let start_index = q
+        .start_index
+        .unwrap_or(0);
+    // Recordings carry no genre flags, so no recording is a movie, series,
+    // kids, sports or news item.
+    let wants_category = [q.is_movie, q.is_series, q.is_kids, q.is_sports, q.is_news]
+        .contains(&Some(true));
+    let items = if wants_category {
+        vec![]
+    } else {
+        DvrService::list_recordings(
+            &state.ctx,
+            &RecordingsFilter {
+                channel_id: q.channel_id,
+                status: q.status,
+                is_in_progress: q.is_in_progress,
+            },
+        )
+        .await?
+    };
+    let total_record_count = items.len() as i64;
+    let items = items
+        .into_iter()
+        .skip(start_index)
+        .take(
+            q.limit
+                .unwrap_or(usize::MAX),
+        )
+        .collect();
+    Ok(Json(api::QueryResult {
+        total_record_count,
+        start_index: start_index as i32,
+        items,
     }))
 }
 
@@ -659,18 +918,29 @@ pub async fn livetv_recordings_series(
 
 #[get("/livetv/recordings/{recording_id}")]
 pub async fn livetv_recording(
+    State(state): State<AppState>,
     _session: AuthSession,
-    Path(_recording_id): Path<Uuid>,
+    Path(recording_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(StatusCode::NOT_FOUND)
+    let item = DvrService::get_recording(&state.ctx, recording_id)
+        .await?
+        .context_not_found("recording not found")?;
+    Ok(Json(item))
 }
 
 #[delete("/livetv/recordings/{recording_id}")]
 pub async fn livetv_delete_recording(
-    _session: AuthSession,
-    Path(_recording_id): Path<Uuid>,
+    State(state): State<AppState>,
+    _session: LiveTvManagementSession,
+    Path(recording_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(StatusCode::NOT_FOUND)
+    let deleted = DvrService::delete_recording(&state.ctx, recording_id).await;
+    DvrService::invalidate_program_timers();
+    if deleted? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -679,10 +949,356 @@ pub async fn livetv_delete_recording(
 
 #[get("/livetv/liverecordings/{recording_id}/stream")]
 pub async fn livetv_live_recording_stream(
-    _session: AuthSession,
-    Path(_recording_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Path(recording_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    Ok(StatusCode::NOT_FOUND)
+    let Some((cfg, rec)) =
+        DvrService::recording_playback_target(&state.ctx, recording_id).await?
+    else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let Some(file_url) = rec.file_url() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let Some(url) = recording_url(&cfg.base_url, file_url) else {
+        tracing::warn!(%recording_id, "recording file URL is outside its Dispatcharr instance");
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+
+    if file_url.contains("/hls/") || file_url.ends_with(".m3u8") {
+        let resp = crate::addons::dispatcharr::CLIENT
+            .get(&url)
+            .header("X-API-Key", &cfg.api_key)
+            .send()
+            .await
+            .context_bad_request("upstream HLS request failed")?
+            .error_for_status()
+            .context_bad_request("upstream HLS request failed")?
+            .text()
+            .await
+            .context_bad_request("failed reading upstream playlist")?;
+        // Only a recording still being written can grow.
+        let growth = (rec.status() == DispatcharrRecordingStatus::Recording
+            && rec.end_time > Utc::now())
+        .then(|| Growth {
+            scheduled_secs: (rec.end_time - rec.start_time).num_milliseconds() as f64
+                / 1000.0,
+            elapsed_secs: ((Utc::now() - rec.start_time).num_milliseconds() as f64
+                / 1000.0)
+                .max(0.0),
+        });
+        return Ok((
+            [(http::header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            recording_vod_playlist(&resp, recording_id, growth),
+        )
+            .into_response());
+    }
+
+    let source = HttpSource {
+        url,
+        request_headers: std::collections::HashMap::from([(
+            "X-API-Key".to_string(),
+            cfg.api_key,
+        )]),
+        response_headers: Default::default(),
+    };
+    Ok(source
+        .serve(&state, &headers)
+        .await?
+        .into_response())
+}
+
+/// The URL a recording's `file_url` names on the instance at `base_url`, or
+/// `None` if it points anywhere else. Dispatcharr supplies `file_url`, and the
+/// request to it carries the instance's API key.
+fn recording_url(base_url: &str, file_url: &str) -> Option<String> {
+    let candidate = if file_url.starts_with('/') && !file_url.starts_with("//") {
+        format!("{base_url}{file_url}")
+    } else {
+        file_url.to_string()
+    };
+    let base = url::Url::parse(base_url).ok()?;
+    let resolved = url::Url::parse(&candidate).ok()?;
+    (resolved.origin() == base.origin()
+        && resolved
+            .path()
+            .starts_with(
+                base.path()
+                    .trim_end_matches('/'),
+            ))
+    .then(|| resolved.to_string())
+}
+
+/// How far a recording that is still being written is expected to grow.
+struct Growth {
+    /// Length between the recording's scheduled start and end.
+    scheduled_secs: f64,
+    /// Time since the scheduled start.
+    elapsed_secs: f64,
+}
+
+/// Rewrites Dispatcharr's live playlist into a finite VOD one, with segment
+/// URIs pointed at the segment proxy.
+///
+/// Given `growth`, it is padded to the recording's expected length with
+/// not-yet-written segments, continuing Dispatcharr's `seg_NNNNN.ts` numbering
+/// at the mean duration of the real ones.
+fn recording_vod_playlist(
+    upstream: &str,
+    recording_id: Uuid,
+    growth: Option<Growth>,
+) -> String {
+    let route = |seg: &str| format!("/livetv/liverecordings/{recording_id}/hls/{seg}");
+    let mut out: Vec<String> = Vec::new();
+    let mut durations: Vec<f64> = Vec::new();
+    let mut last_segment: Option<String> = None;
+    let mut target_duration = 4.0_f64;
+    // Where the segment entry being read began in `out`, and whether it added
+    // a duration.
+    let mut entry: Option<(usize, bool)> = None;
+
+    for line in upstream
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
+        if line.starts_with("#EXT-X-PLAYLIST-TYPE")
+            || line.starts_with("#EXT-X-ENDLIST")
+        {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            let duration = rest
+                .split(',')
+                .next()
+                .and_then(|d| {
+                    d.trim()
+                        .parse::<f64>()
+                        .ok()
+                });
+            entry = Some((out.len(), duration.is_some()));
+            durations.extend(duration);
+        } else if let Some(rest) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
+            target_duration = rest
+                .trim()
+                .parse()
+                .unwrap_or(target_duration);
+        }
+        if line.starts_with('#') {
+            out.push(line.to_string());
+        } else {
+            // Only the file name is kept from Dispatcharr's absolute URI and
+            // any `?token=` on it.
+            let seg = line
+                .rsplit('/')
+                .next()
+                .unwrap_or(line)
+                .split(['?', '#'])
+                .next()
+                .unwrap_or_default();
+            // A name the segment proxy would refuse is left out, along with
+            // the `#EXTINF` and any tags that described it.
+            let entry = entry.take();
+            let Ok(seg) = seg.parse::<SegmentName>() else {
+                if let Some((start, has_duration)) = entry {
+                    out.truncate(start);
+                    if has_duration {
+                        durations.pop();
+                    }
+                }
+                tracing::warn!(%recording_id, "skipping a recording segment with an unusable name");
+                continue;
+            };
+            let seg = seg.to_string();
+            out.push(route(&seg));
+            last_segment = Some(seg);
+        }
+    }
+    out.insert(
+        usize::from(
+            out.first()
+                .is_some_and(|l| l == "#EXTM3U"),
+        ),
+        "#EXT-X-PLAYLIST-TYPE:VOD".to_string(),
+    );
+
+    if let Some(growth) = growth {
+        // `seg_00017.ts` -> ("seg_", 17, width 5, ".ts"). A name that doesn't
+        // follow that shape can't be continued, so the playlist stays a snapshot.
+        let (prefix, next, width, ext) = match &last_segment {
+            None => ("seg_".to_string(), 0, 5, ".ts".to_string()),
+            Some(seg) => {
+                let Some((stem, ext)) = seg.rsplit_once('.') else {
+                    return finish_playlist(out);
+                };
+                let digits = stem
+                    .chars()
+                    .rev()
+                    .take_while(char::is_ascii_digit)
+                    .count();
+                let (prefix, number) = stem.split_at(stem.len() - digits);
+                let Ok(n) = number.parse::<u64>() else {
+                    return finish_playlist(out);
+                };
+                (prefix.to_string(), n + 1, digits, format!(".{ext}"))
+            }
+        };
+        let mean = if durations.is_empty() {
+            target_duration
+        } else {
+            durations
+                .iter()
+                .sum::<f64>()
+                / durations.len() as f64
+        };
+        // Dispatcharr records a roughly constant lead ahead of the wall
+        // clock, so it overruns its scheduled length by that much; carry the
+        // lead measured so far or the tail is cut off.
+        let recorded = durations
+            .iter()
+            .sum::<f64>();
+        let lead = (recorded - growth.elapsed_secs).max(0.0);
+        let remaining = growth.scheduled_secs + lead - recorded;
+        if mean > 0.0 && remaining > 0.5 {
+            let count = ((remaining / mean).ceil() as u64).min(MAX_PADDED_SEGMENTS);
+            for k in 0..count {
+                // The last one takes whatever is left, so the total matches.
+                let d = if k + 1 == count {
+                    (remaining - (count - 1) as f64 * mean).max(0.001)
+                } else {
+                    mean
+                };
+                out.push(format!("#EXTINF:{d:.6},"));
+                out.push(route(&format!("{prefix}{:0width$}{ext}", next + k)));
+            }
+        }
+    }
+    finish_playlist(out)
+}
+
+fn finish_playlist(mut lines: Vec<String>) -> String {
+    lines.push("#EXT-X-ENDLIST".to_string());
+    let mut playlist = lines.join("\n");
+    playlist.push('\n');
+    playlist
+}
+
+/// Upper bound on how many not-yet-written segments a playlist is padded
+/// with (~22 hours at 4 s), so a bogus schedule can't build a huge playlist.
+const MAX_PADDED_SEGMENTS: u64 = 20_000;
+
+/// How long a request for an unwritten segment is held, and its poll
+/// interval. A client with a shorter HTTP timeout errors first.
+const SEGMENT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const SEGMENT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// One `seg_00001.ts`-shaped filename under a recording's HLS directory.
+///
+/// It goes into an upstream URL that carries `X-API-Key`, and `Path` hands it
+/// over percent-decoded, so anything that could leave the HLS directory
+/// (`..`, `/`) is refused.
+struct SegmentName(String);
+
+impl std::str::FromStr for SegmentName {
+    type Err = ();
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let shaped = !raw.is_empty()
+            && raw.len() <= 128
+            && !raw.starts_with('.')
+            && raw
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        shaped
+            .then(|| Self(raw.to_owned()))
+            .ok_or(())
+    }
+}
+
+impl std::fmt::Display for SegmentName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0
+            .fmt(f)
+    }
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/liverecordings/{recordingId}/hls/{segPath}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/liverecordings/{recording_id}/hls/{seg_path}")]
+pub async fn livetv_recording_hls_segment(
+    State(state): State<AppState>,
+    Path((recording_id, seg_path)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let Ok(seg_path) = seg_path.parse::<SegmentName>() else {
+        return Ok(StatusCode::BAD_REQUEST.into_response());
+    };
+    let Some((cfg, rec)) =
+        DvrService::recording_playback_target(&state.ctx, recording_id).await?
+    else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let url = format!(
+        "{}/api/channels/recordings/{}/hls/{seg_path}",
+        cfg.base_url, rec.id
+    );
+    if rec.status() == DispatcharrRecordingStatus::Recording {
+        wait_for_segment(&url, &cfg.api_key, SEGMENT_WAIT, SEGMENT_POLL, || async {
+            matches!(
+                DvrService::recording_playback_target(&state.ctx, recording_id).await,
+                Ok(Some((_, rec))) if rec.status() == DispatcharrRecordingStatus::Recording
+            )
+        })
+        .await;
+    }
+    let source = HttpSource {
+        url,
+        request_headers: std::collections::HashMap::from([(
+            "X-API-Key".to_string(),
+            cfg.api_key,
+        )]),
+        response_headers: Default::default(),
+    };
+    Ok(source
+        .serve(&state, &headers)
+        .await?
+        .into_response())
+}
+
+/// Holds the request while Dispatcharr 404s a segment the padded playlist
+/// lists but has not written yet. Returns once the segment exists,
+/// `still_running` reports the recording has stopped, or `wait` elapses.
+async fn wait_for_segment<F, Fut>(
+    url: &str,
+    api_key: &str,
+    wait: std::time::Duration,
+    poll: std::time::Duration,
+    still_running: F,
+) where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut polls = 0u32;
+    loop {
+        let missing = crate::addons::dispatcharr::CLIENT
+            .head(url)
+            .header("X-API-Key", api_key)
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == StatusCode::NOT_FOUND);
+        if !missing || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(poll).await;
+        polls += 1;
+        if polls % 10 == 0 && !still_running().await {
+            return;
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -711,7 +1327,8 @@ pub async fn livetv_program(
         &mut records,
     )
     .await;
-    Ok(Json(api::db_media_to_item(records.remove(0), false)))
+    let timers = DvrService::program_timers(&state.ctx, &records).await;
+    Ok(Json(timers.to_item(records.remove(0))))
 }
 
 // --------------------------------------------------------------------------
@@ -1146,5 +1763,349 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         country: m
             .country
             .clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: Uuid = Uuid::from_u128(7);
+
+    /// Dispatcharr's playlist for a recording with `n` segments so far.
+    fn upstream(n: usize) -> String {
+        let mut p = String::from(
+            "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n\
+             #EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-DISCONTINUITY\n",
+        );
+        for i in 0..n {
+            p.push_str(&format!(
+                "#EXTINF:4.000000,\nhttp://d:9191/api/channels/recordings/12/hls/seg_{i:05}.ts\n"
+            ));
+        }
+        p
+    }
+
+    /// A recording that has been running far longer than what it has produced,
+    /// so there is no lead to add.
+    fn grow(scheduled_secs: f64) -> Option<Growth> {
+        Some(Growth {
+            scheduled_secs,
+            elapsed_secs: 1e9,
+        })
+    }
+
+    fn segment_uris(playlist: &str) -> Vec<&str> {
+        playlist
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect()
+    }
+
+    fn total_secs(playlist: &str) -> f64 {
+        playlist
+            .lines()
+            .filter_map(|l| l.strip_prefix("#EXTINF:"))
+            .filter_map(|l| {
+                l.trim_end_matches(',')
+                    .parse::<f64>()
+                    .ok()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn segment_names_are_confined_to_the_recordings_hls_directory() {
+        for raw in [
+            // `Path` has already decoded these, so this is what a handler sees.
+            "../../../api/core/settings/",
+            "..%2Fsettings",
+            "a/b.ts",
+            "seg_00001.ts?x=1",
+            ".env",
+            "",
+            &"a".repeat(129),
+        ] {
+            assert!(
+                raw.parse::<SegmentName>()
+                    .is_err(),
+                "{raw:?} must not parse as a segment name"
+            );
+        }
+        // What the handler builds from a name that does parse must stay under
+        // the recording's own HLS directory once `Url` resolves it.
+        let seg: SegmentName = "seg_00001.ts"
+            .parse()
+            .unwrap();
+        let url = format!("http://d:9191/api/channels/recordings/12/hls/{seg}");
+        assert_eq!(
+            url::Url::parse(&url)
+                .unwrap()
+                .path(),
+            "/api/channels/recordings/12/hls/seg_00001.ts"
+        );
+    }
+
+    #[test]
+    fn rejected_segments_are_dropped_with_everything_that_described_them() {
+        let dir = "http://d:9191/api/channels/recordings/12/hls";
+        let upstream = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\
+             #EXTINF:4.000000,\n{dir}/seg_00000.ts\n\
+             #EXTINF:4.000000,\n{dir}/..\n\
+             #EXTINF:4.000000,\n#EXT-X-BYTERANGE:1000@0\n{dir}/.env\n\
+             #EXTINF:junk,\n{dir}/.hidden\n\
+             #EXTINF:4.000000,\n{dir}/seg_00001.ts?token=abc\n"
+        );
+        // 8 s of real segments against 16 s scheduled leaves two to pad; a
+        // rejected entry leaking a duration would change that.
+        let p = recording_vod_playlist(&upstream, ID, grow(16.0));
+        assert_eq!(
+            segment_uris(&p),
+            (0..4)
+                .map(|i| format!("/livetv/liverecordings/{ID}/hls/seg_{i:05}.ts"))
+                .collect::<Vec<_>>(),
+            "two kept, query string dropped, two padded"
+        );
+        assert_eq!(
+            p.lines()
+                .filter(|l| l.starts_with("#EXTINF"))
+                .count(),
+            4
+        );
+        for gone in ["BYTERANGE", "junk", "token"] {
+            assert!(!p.contains(gone), "{gone} must not survive:\n{p}");
+        }
+    }
+
+    #[test]
+    fn a_recording_url_stays_on_its_dispatcharr_instance() {
+        let base = "http://d:9191";
+        for (file_url, expected) in [
+            (
+                "/api/channels/recordings/12/hls/index.m3u8",
+                Some("http://d:9191/api/channels/recordings/12/hls/index.m3u8"),
+            ),
+            ("http://d:9191/x.mp4", Some("http://d:9191/x.mp4")),
+            ("http://evil/x.mp4", None),
+            ("//evil/x.mp4", None),
+            ("@evil/x.mp4", None),
+            ("http://d:9192/x.mp4", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                recording_url(base, file_url).as_deref(),
+                expected,
+                "{file_url:?}"
+            );
+        }
+        // An instance served under a path prefix keeps to it.
+        assert_eq!(
+            recording_url("http://d/dispatcharr", "/api/x").as_deref(),
+            Some("http://d/dispatcharr/api/x")
+        );
+        assert_eq!(recording_url("http://d/dispatcharr", "/../other"), None);
+    }
+
+    #[test]
+    fn snapshot_is_a_finite_vod_routed_through_remux() {
+        let live = format!(
+            "{}#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-ENDLIST\n",
+            upstream(3)
+        );
+        let p = recording_vod_playlist(&live, ID, None);
+        assert!(p.starts_with("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n"));
+        assert!(
+            p.trim_end()
+                .ends_with("#EXT-X-ENDLIST")
+        );
+        assert_eq!(
+            p.matches("#EXT-X-PLAYLIST-TYPE")
+                .count(),
+            1
+        );
+        assert_eq!(
+            p.matches("#EXT-X-ENDLIST")
+                .count(),
+            1
+        );
+        assert_eq!(
+            segment_uris(&p),
+            (0..3)
+                .map(|i| format!("/livetv/liverecordings/{ID}/hls/seg_{i:05}.ts"))
+                .collect::<Vec<_>>()
+        );
+        // Dispatcharr's own tags survive.
+        assert!(p.contains("#EXT-X-DISCONTINUITY"));
+        assert!(!p.contains("dispatcharr") && !p.contains("9191"));
+    }
+
+    #[test]
+    fn pads_to_the_scheduled_length_continuing_the_numbering() {
+        let p = recording_vod_playlist(&upstream(3), ID, grow(30.0));
+        let uris = segment_uris(&p);
+        assert_eq!(
+            uris.last()
+                .copied(),
+            Some(format!("/livetv/liverecordings/{ID}/hls/seg_00007.ts").as_str())
+        );
+        assert_eq!(uris.len(), 8, "3 real + ceil(18 / 4) padded");
+        assert!((total_secs(&p) - 30.0).abs() < 1e-3, "{}", total_secs(&p));
+        // Every entry stays within the target duration the header promises.
+        assert!(
+            p.lines()
+                .filter_map(|l| l.strip_prefix("#EXTINF:"))
+                .all(|l| l
+                    .trim_end_matches(',')
+                    .parse::<f64>()
+                    .unwrap()
+                    <= 5.0)
+        );
+    }
+
+    #[test]
+    fn padded_length_follows_the_schedule_and_the_recordings_lead() {
+        // (segments so far, scheduled secs, elapsed secs, expected total secs)
+        for (segments, scheduled, elapsed, total) in [
+            // 20 s of content only 2 s in: 18 s ahead, so it ends 18 s late.
+            (5, 30.0, 2.0, 48.0),
+            // Behind the clock: no lead to add.
+            (5, 30.0, 100.0, 30.0),
+            // Already long enough, or within the 0.5 s slack.
+            (3, 12.2, 1e9, 12.0),
+            (3, 5.0, 1e9, 12.0),
+            // Nothing written yet: TARGETDURATION (5 s) per segment.
+            (0, 12.0, 1e9, 12.0),
+        ] {
+            let growth = Growth {
+                scheduled_secs: scheduled,
+                elapsed_secs: elapsed,
+            };
+            let p = recording_vod_playlist(&upstream(segments), ID, Some(growth));
+            assert!(
+                (total_secs(&p) - total).abs() < 1e-3,
+                "{segments} segments, {scheduled}s scheduled, {elapsed}s elapsed: {}",
+                total_secs(&p)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bogus_schedule_cannot_build_an_unbounded_playlist() {
+        let p = recording_vod_playlist(&upstream(1), ID, grow(1e12));
+        assert_eq!(segment_uris(&p).len() as u64, 1 + MAX_PADDED_SEGMENTS);
+    }
+
+    #[test]
+    fn an_unrecognised_segment_name_is_left_as_a_snapshot() {
+        let odd =
+            "#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:4.0,\nhttp://d/hls/chunk.ts\n";
+        let p = recording_vod_playlist(odd, ID, grow(60.0));
+        assert_eq!(segment_uris(&p).len(), 1);
+        assert!(
+            p.trim_end()
+                .ends_with("#EXT-X-ENDLIST")
+        );
+    }
+
+    // -- waiting for a segment ----------------------------------------
+
+    use std::time::{Duration as StdDuration, Instant};
+
+    const POLL: StdDuration = StdDuration::from_millis(20);
+
+    #[tokio::test]
+    async fn returns_at_once_when_the_segment_exists() {
+        let server = httpmock::MockServer::start();
+        let head = server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00001.ts")
+                .header("X-API-Key", "k");
+            then.status(200);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00001.ts"),
+            "k",
+            StdDuration::from_secs(10),
+            POLL,
+            || async { true },
+        )
+        .await;
+        assert!(started.elapsed() < StdDuration::from_secs(2));
+        head.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn keeps_polling_until_the_segment_appears() {
+        let server = httpmock::MockServer::start();
+        let mut missing = server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00009.ts");
+            then.status(404);
+        });
+        let url = server.url("/seg_00009.ts");
+        let waiter = tokio::spawn(async move {
+            let started = Instant::now();
+            wait_for_segment(&url, "k", StdDuration::from_secs(10), POLL, || async {
+                true
+            })
+            .await;
+            started.elapsed()
+        });
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        missing.delete();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00009.ts");
+            then.status(200);
+        });
+        let waited = waiter
+            .await
+            .unwrap();
+        assert!(waited >= StdDuration::from_millis(250), "{waited:?}");
+        assert!(waited < StdDuration::from_secs(5), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_wait_limit() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00042.ts");
+            then.status(404);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00042.ts"),
+            "k",
+            StdDuration::from_millis(300),
+            POLL,
+            || async { true },
+        )
+        .await;
+        let waited = started.elapsed();
+        assert!(waited >= StdDuration::from_millis(300), "{waited:?}");
+        assert!(waited < StdDuration::from_secs(3), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn stops_waiting_once_the_recording_is_no_longer_running() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path("/seg_00042.ts");
+            then.status(404);
+        });
+        let started = Instant::now();
+        wait_for_segment(
+            &server.url("/seg_00042.ts"),
+            "k",
+            StdDuration::from_secs(30),
+            POLL,
+            || async { false },
+        )
+        .await;
+        assert!(started.elapsed() < StdDuration::from_secs(3));
     }
 }

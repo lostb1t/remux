@@ -30,6 +30,7 @@ mod purge_music;
 mod purge_shared;
 mod purge_shows;
 mod refresh_all_meta;
+mod refresh_dispatcharr_livetv;
 mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
@@ -46,6 +47,7 @@ use purge_movies::PurgeMoviesTask;
 use purge_music::PurgeMusicTask;
 use purge_shows::PurgeShowsTask;
 use refresh_all_meta::RefreshAllMetaTask;
+use refresh_dispatcharr_livetv::RefreshDispatcharrLiveTvTask;
 use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use refresh_popularity::RefreshPopularityTask;
@@ -327,6 +329,9 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(RefreshIptvTask))
+            .await?;
+        service
+            .register_task(Arc::new(RefreshDispatcharrLiveTvTask))
             .await?;
         service
             .register_task(Arc::new(RefreshPopularityTask))

@@ -1,3 +1,4 @@
+pub mod dvr_service;
 pub(crate) mod four_k_capability;
 pub mod image;
 pub mod media_tracker;
@@ -6,6 +7,7 @@ pub mod stream_provider;
 pub(crate) mod stream_service;
 pub mod stremio;
 
+pub use dvr_service::DvrService;
 pub use resolve::MediaResolveService;
 pub(crate) use resolve::ResolvedItem;
 pub(crate) use stream_service::{
