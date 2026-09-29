@@ -1,3 +1,31 @@
+# [0.35.0](https://github.com/lostb1t/remux/compare/v0.34.0...v0.35.0) (2026-09-29)
+
+
+### Bug Fixes
+
+* accept case-insensitive boolean query values (fixes [#564](https://github.com/lostb1t/remux/issues/564)) ([f50c400](https://github.com/lostb1t/remux/commit/f50c4008f0ba1b1faecd4ef68faa1c944cf1a747))
+* don't lose an item's People when POST /Items/{id} fails or is dropped ([#555](https://github.com/lostb1t/remux/issues/555)) ([0ee9795](https://github.com/lostb1t/remux/commit/0ee9795425fba860a587d4907aca471550cf3505))
+* give VAAPI real GPU decode so HDR tone mapping doesn't lose color depth ([#562](https://github.com/lostb1t/remux/issues/562)) ([9903c26](https://github.com/lostb1t/remux/commit/9903c2611e3da229ba5973d2c814d81928993b63))
+* honor manual collection order for Default sort ([#538](https://github.com/lostb1t/remux/issues/538)) ([37feb3e](https://github.com/lostb1t/remux/commit/37feb3e1cd55c36b742325d79f1f2c344eaacb25))
+* honor PlaybackInfo bitrate and other fields sent as query params, not just body ([fa88d2e](https://github.com/lostb1t/remux/commit/fa88d2ed4d3a76d6e1a76ed29817b5d0d2a72312))
+* index the DateCreated sort so /items/latest stops scanning media ([#553](https://github.com/lostb1t/remux/issues/553)) ([7621923](https://github.com/lostb1t/remux/commit/762192373a9c4a3fa5bacb04d639348127369a9b))
+* only retry missing digital dates for movies in get_refreshable ([#572](https://github.com/lostb1t/remux/issues/572)) ([7973206](https://github.com/lostb1t/remux/commit/79732068a7d8b779cf82b31de66a1581414dfa31))
+* populate item counts on genres and music genres ([#567](https://github.com/lostb1t/remux/issues/567)) ([05a17c7](https://github.com/lostb1t/remux/commit/05a17c75ca4d07d439916fba9201f769abe364ac))
+* preserve Cast-locked Person relations on metadata refresh ([#547](https://github.com/lostb1t/remux/issues/547)) ([45a2ca2](https://github.com/lostb1t/remux/commit/45a2ca2cf2727ce04750c83019c346c980dfed1f))
+* resolve playback fallbacks and select subtitles consistently ([#549](https://github.com/lostb1t/remux/issues/549)) ([d81e177](https://github.com/lostb1t/remux/commit/d81e177434461229110a82f506ebae18ce46501f))
+* speed up filtering items by genre ([#568](https://github.com/lostb1t/remux/issues/568)) ([1d6908b](https://github.com/lostb1t/remux/commit/1d6908b513d4e0e6098e206f7433b8bad5d4f3f8))
+* stop exposing provider stream URLs and credentials to non-admin clients (fixes [#557](https://github.com/lostb1t/remux/issues/557)) ([a430ea8](https://github.com/lostb1t/remux/commit/a430ea8d8bffc36a459c14c89e3ce7918cfa72ed))
+* stop importcatalog from overwriting existing items with catalog stubs ([#554](https://github.com/lostb1t/remux/issues/554)) ([ebd0669](https://github.com/lostb1t/remux/commit/ebd06692296f6ae1c1689c42f989d2c4d4aad71f))
+* stop the RemuxDB metrics sync from wiping certification ([c3bf033](https://github.com/lostb1t/remux/commit/c3bf0337acc80dcbee8a10a6dea172bcac4c8a89))
+* throttle HEVC-copy sessions the same as H.264 ones ([#569](https://github.com/lostb1t/remux/issues/569)) ([9d9765c](https://github.com/lostb1t/remux/commit/9d9765cc97301951ff226ad08b30371adbe0cdde))
+* **yt-dlp:** keep every audio format and offer the best first ([#546](https://github.com/lostb1t/remux/issues/546)) ([816aacb](https://github.com/lostb1t/remux/commit/816aacb935af72e4f5d920a245030e3dbac3f794))
+
+
+### Features
+
+* learn 4K playback capability per device ([#571](https://github.com/lostb1t/remux/issues/571)) ([bd749cb](https://github.com/lostb1t/remux/commit/bd749cb264808595285fe3a9f44dd1f481a78ef2))
+* upgrade jellyfin-web to v12.1 with ElegantFin support ([#534](https://github.com/lostb1t/remux/issues/534)) ([e72bddd](https://github.com/lostb1t/remux/commit/e72bddddf83cf3c1807a341cdb88476ba6840b08))
+
 # [0.34.0](https://github.com/lostb1t/remux/compare/v0.33.0...v0.34.0) (2026-09-24)
 
 
