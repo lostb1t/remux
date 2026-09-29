@@ -3124,17 +3124,14 @@ impl AddonService {
             else {
                 return None;
             };
+            // RemuxDB stores episodes under the series id, so an episode's own
+            // id would look up the wrong thing: no series id, no lookup.
             let external_id = if media.kind == db::MediaKind::Episode {
                 media
                     .grandparent
                     .as_deref()
                     .and_then(|gp| {
                         gp.external_ids
-                            .stremio_lookup_id()
-                    })
-                    .or_else(|| {
-                        media
-                            .external_ids
                             .stremio_lookup_id()
                     })
             } else {
@@ -3153,14 +3150,12 @@ impl AddonService {
                 return None;
             }
             let (season, episode) = if media.kind == db::MediaKind::Episode {
-                (
-                    media
-                        .parent_idx
-                        .map(|v| v as i32),
-                    media
-                        .idx
-                        .map(|v| v as i32),
-                )
+                let (Some(season), Some(episode)) = (media.parent_idx, media.idx)
+                else {
+                    // Without both, the lookup would be series-wide.
+                    return None;
+                };
+                (Some(season as i32), Some(episode as i32))
             } else {
                 (None, None)
             };
