@@ -94,14 +94,16 @@ impl PlaybackPermissions {
     /// Constrain a client-reported method to one the server is allowed to use.
     /// The stream endpoint records the exact effective method when it runs;
     /// this is the fallback for clients that report playback before requesting
-    /// the media URL.
-    /// `DirectStream` is Jellyfin's static stream through the server — no
-    /// FFmpeg — so it needs no permission and passes through unchanged.
+    /// the media URL, or whose stream URL carries no PlaySessionId.
+    /// `DirectStream` is Jellyfin's static stream through the server — the same
+    /// unchanged file as direct play — so it is
+    /// recorded as `DirectPlay`.
     pub(crate) fn constrain_reported_method(self, method: PlayMethod) -> PlayMethod {
         match method {
             PlayMethod::Transcode if !self.processing_available() => {
                 PlayMethod::DirectPlay
             }
+            PlayMethod::DirectStream => PlayMethod::DirectPlay,
             method => method,
         }
     }
@@ -853,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn client_direct_stream_report_needs_no_remux_permission() {
+    fn client_direct_stream_report_is_recorded_as_direct_play() {
         let permissions = PlaybackPermissions {
             remuxing: false,
             video_transcoding: true,
@@ -862,7 +864,7 @@ mod tests {
 
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::DirectStream),
-            PlayMethod::DirectStream
+            PlayMethod::DirectPlay
         );
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::Transcode),

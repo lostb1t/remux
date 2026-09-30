@@ -1316,13 +1316,13 @@ mod tests {
         );
 
         sessions
-            .insert(playback_session(id, PlayMethod::DirectStream))
+            .insert(playback_session(id, PlayMethod::DirectPlay))
             .await;
         assert_eq!(
             sessions
                 .get(id)
                 .and_then(|session| session.play_method),
-            Some(PlayMethod::DirectStream.to_string())
+            Some(PlayMethod::DirectPlay.to_string())
         );
     }
 
@@ -1361,7 +1361,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let sessions = PlaybackSessionManager::new(temp.path());
         let id = "transcode-stub-first";
-        let mut stub = playback_session(id, PlayMethod::DirectStream);
+        let mut stub = playback_session(id, PlayMethod::DirectPlay);
         stub.user_id = Uuid::nil();
         stub.item_id = Uuid::nil();
 
