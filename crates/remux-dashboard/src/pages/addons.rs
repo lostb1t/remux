@@ -648,11 +648,11 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     div { class: "form-group",
                                         ToggleRow {
                                             label: "Bypass Remux proxy",
-                                            description: "Only for Direct Play: send compatible HTTP sources directly to the client instead of proxying through Remux. Direct Stream and Transcode always run through Remux.",
+                                            description: "Send compatible HTTP sources directly to the client instead of proxying them through Remux, when the source is played unchanged.",
                                             checked: *edit_http_redirect_stream.read(),
                                             on_change: move |v| edit_http_redirect_stream.set(v),
                                         }
-                                        span { class: "field-hint", "Direct Play plays the source unchanged. Direct Stream repackages it without re-encoding. Transcode re-encodes audio or video for compatibility." }
+                                        span { class: "field-hint", "Direct Play and Direct Stream both send the source unchanged. Transcode runs it through FFmpeg, either repackaging it (remux) or re-encoding audio or video for compatibility." }
                                     }
                                     div { class: "form-group",
                                         label { class: "form-label", "Bypass proxy service filter" }
