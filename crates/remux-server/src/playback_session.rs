@@ -26,8 +26,8 @@ pub struct PlaybackSession {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub play_method: Option<String>,
-    /// What a stream endpoint actually served. `play_method` must stay
-    /// consistent with it; client reports that contradict it are ignored.
+    /// What a stream endpoint actually served, which also set `play_method`;
+    /// client reports must not overwrite it.
     served: Option<ServedPlayback>,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
@@ -84,35 +84,17 @@ impl ServedPlayback {
     /// vocabulary; clients tell Remux / Direct Stream apart via
     /// `TranscodingInfo.IsVideoDirect` / `IsAudioDirect`.
     ///
-    /// This is the default, used when the client's report is missing or
-    /// contradicts what was served (see [`Self::resolve`]).
+    /// Unchanged source bytes are always `DirectPlay`. Jellyfin stores
+    /// whichever of `DirectPlay` / `DirectStream` the client reports, but
+    /// jellyfin-web only reports `DirectStream` when `SupportsDirectPlay` is
+    /// false, and remux never offers the static route then. A client that
+    /// reports `DirectStream` anyway is overridden; clients display the two
+    /// the same.
     pub fn play_method(&self) -> PlayMethod {
         match self {
             Self::Direct => PlayMethod::DirectPlay,
             Self::Ffmpeg { .. } => PlayMethod::Transcode,
         }
-    }
-
-    /// Whether a client-reported method is consistent with what was served.
-    ///
-    /// Unchanged source bytes are the same `Static=true` request whether the
-    /// client chose `DirectPlay` or `DirectStream`, so only the client knows
-    /// which one it was. Jellyfin stores whichever it reports; so do we.
-    pub fn accepts(&self, method: &PlayMethod) -> bool {
-        match self {
-            Self::Direct => {
-                matches!(method, PlayMethod::DirectPlay | PlayMethod::DirectStream)
-            }
-            Self::Ffmpeg { .. } => matches!(method, PlayMethod::Transcode),
-        }
-    }
-
-    /// The method to record: the client's report if it is consistent with
-    /// what was served, otherwise [`Self::play_method`].
-    pub fn resolve(&self, reported: Option<PlayMethod>) -> PlayMethod {
-        reported
-            .filter(|method| self.accepts(method))
-            .unwrap_or_else(|| self.play_method())
     }
 
     /// Whether the client decodes the source video itself.
@@ -202,8 +184,7 @@ impl PlaybackSessionManager {
             });
 
         // A method already recorded by a stream endpoint overrides this in
-        // `insert` if it contradicts what was served; until then, don't trust
-        // a method the server can't use.
+        // `insert`; until then, don't trust a method the server can't use.
         let client_play_method = constrain_client_play_method(
             db,
             &auth_session.user,
@@ -458,22 +439,21 @@ impl PlaybackSessionManager {
             ps.item_id
         };
         // A method recorded by a stream endpoint reflects what is actually
-        // served; clients (jellyfin-web) re-send theirs on every report. Only
-        // take a report that is consistent with it (e.g. DirectPlay vs
-        // DirectStream for unchanged bytes); ignore contradicting ones. Check
-        // the raw report: clamping could turn a contradiction into a match.
-        let client_play_method = constrain_client_play_method(
-            db,
-            user,
-            data.play_method
-                .clone()
-                .filter(|method| {
-                    ps.served
-                        .as_ref()
-                        .is_none_or(|served| served.accepts(method))
-                }),
-        )
-        .await;
+        // served; clients (jellyfin-web) re-send theirs on every report.
+        let client_play_method = if ps
+            .served
+            .is_some()
+        {
+            None
+        } else {
+            constrain_client_play_method(
+                db,
+                user,
+                data.play_method
+                    .clone(),
+            )
+            .await
+        };
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -545,8 +525,7 @@ impl PlaybackSessionManager {
             if let Some(ref method) = client_play_method {
                 if ps
                     .served
-                    .as_ref()
-                    .is_none_or(|served| served.accepts(method))
+                    .is_none()
                 {
                     ps.play_method = Some(method.to_string());
                 }
@@ -793,7 +772,7 @@ impl PlaybackSessionManager {
         {
             session.play_method = Some(
                 served
-                    .resolve(parse_play_method(&session.play_method))
+                    .play_method()
                     .to_string(),
             );
             session.served = Some(served);
@@ -901,7 +880,7 @@ impl PlaybackSessionManager {
             .is_some_and(|mut session| {
                 session.play_method = Some(
                     served
-                        .resolve(parse_play_method(&session.play_method))
+                        .play_method()
                         .to_string(),
                 );
                 session.served = Some(served.clone());
@@ -1218,15 +1197,6 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
     let _ = std::fs::remove_dir_all(&output_dir);
 }
 
-fn parse_play_method(method: &Option<String>) -> Option<PlayMethod> {
-    method
-        .as_deref()
-        .and_then(|m| {
-            m.parse()
-                .ok()
-        })
-}
-
 /// Clamp a client-reported play method to what this user's permissions allow,
 /// so a session never records processing the server would refuse to do.
 async fn constrain_client_play_method(
@@ -1383,60 +1353,6 @@ mod tests {
             !sessions
                 .pending_play_methods
                 .contains_key(id)
-        );
-    }
-
-    #[test]
-    fn served_playback_keeps_consistent_client_reports() {
-        let direct = ServedPlayback::Direct;
-        assert_eq!(
-            direct.resolve(Some(PlayMethod::DirectStream)),
-            PlayMethod::DirectStream
-        );
-        assert_eq!(
-            direct.resolve(Some(PlayMethod::DirectPlay)),
-            PlayMethod::DirectPlay
-        );
-        assert_eq!(
-            direct.resolve(Some(PlayMethod::Transcode)),
-            PlayMethod::DirectPlay
-        );
-        assert_eq!(direct.resolve(None), PlayMethod::DirectPlay);
-        assert_eq!(
-            transcoded().resolve(Some(PlayMethod::DirectStream)),
-            PlayMethod::Transcode
-        );
-    }
-
-    #[tokio::test]
-    async fn direct_stream_report_survives_a_direct_recording() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = PlaybackSessionManager::new(temp.path());
-
-        // Client reports first.
-        let id = "direct-stream-client-first";
-        sessions
-            .insert(playback_session(id, PlayMethod::DirectStream))
-            .await;
-        sessions.record_server_play_method(id, ServedPlayback::Direct);
-        assert_eq!(
-            sessions
-                .get(id)
-                .and_then(|session| session.play_method),
-            Some(PlayMethod::DirectStream.to_string())
-        );
-
-        // Server records first.
-        let id = "direct-stream-server-first";
-        sessions.record_server_play_method(id, ServedPlayback::Direct);
-        sessions
-            .insert(playback_session(id, PlayMethod::DirectStream))
-            .await;
-        assert_eq!(
-            sessions
-                .get(id)
-                .and_then(|session| session.play_method),
-            Some(PlayMethod::DirectStream.to_string())
         );
     }
 

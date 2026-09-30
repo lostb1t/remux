@@ -1908,10 +1908,9 @@ mod tests {
             .await;
         forced_hls.assert_status(StatusCode::FORBIDDEN);
 
-        // The progressive endpoint ultimately served the original file. The
-        // client's DirectStream report is consistent with that (same static
-        // bytes), so it is kept as Jellyfin would; a later Transcode report
-        // contradicts what the server recorded and must not overwrite it.
+        // The progressive endpoint ultimately served the original file, so it
+        // must correct the client's initial direct-stream decision, and later
+        // client reports must not overwrite what the server recorded.
         server
             .post("/sessions/playing")
             .add_header(
@@ -1932,7 +1931,7 @@ mod tests {
                 .sessions
                 .get(forced_play_session_id)
                 .and_then(|session| session.play_method),
-            Some("DirectStream".to_string())
+            Some("DirectPlay".to_string())
         );
 
         server
@@ -1955,7 +1954,7 @@ mod tests {
                 .sessions
                 .get(forced_play_session_id)
                 .and_then(|session| session.play_method),
-            Some("DirectStream".to_string())
+            Some("DirectPlay".to_string())
         );
 
         // Without a server-recorded method, client reports are still clamped
