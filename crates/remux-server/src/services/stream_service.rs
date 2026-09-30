@@ -942,21 +942,27 @@ fn media_info_from_probe(
             _ => "movie",
         }
         .to_string();
-        let imdb_id = item
+        let own_imdb = item
             .external_ids
             .imdb
             .as_ref()
-            .map(|v| v.to_string())
-            .or_else(|| {
-                item.grandparent
-                    .as_deref()
-                    .and_then(|gp| {
-                        gp.external_ids
-                            .imdb
-                            .as_ref()
-                    })
-                    .map(|v| v.to_string())
-            });
+            .map(|v| v.to_string());
+        let series_imdb = item
+            .grandparent
+            .as_deref()
+            .and_then(|gp| {
+                gp.external_ids
+                    .imdb
+                    .as_ref()
+            })
+            .map(|v| v.to_string());
+        // RemuxDB stores episodes under the series id: an episode's own
+        // tconst would 404.
+        let imdb_id = if item.kind == db::MediaKind::Episode {
+            series_imdb.or(own_imdb)
+        } else {
+            own_imdb.or(series_imdb)
+        };
         let ids = (imdb_id.is_some()
             || item
                 .external_ids

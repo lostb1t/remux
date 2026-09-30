@@ -356,16 +356,14 @@ impl Endpoint for MediaInfoEndpoint {
     type Output = Vec<MediaInfo>;
 
     fn path(&self) -> String {
-        let mut path = format!("/api/media/{}/versions", self.external_id);
-        let mut sep = '?';
-        if let Some(s) = self.season {
-            path.push_str(&format!("{sep}season={s}"));
-            sep = '&';
+        // The server reads season/episode from the id itself (`tt0903747:1:1`);
+        // a bare id is a series-level lookup.
+        match (self.season, self.episode) {
+            (Some(s), Some(e)) => {
+                format!("/api/media/{}:{s}:{e}/versions", self.external_id)
+            }
+            _ => format!("/api/media/{}/versions", self.external_id),
         }
-        if let Some(e) = self.episode {
-            path.push_str(&format!("{sep}episode={e}"));
-        }
-        path
     }
 
     fn headers(&self) -> HeaderMap {
@@ -388,6 +386,7 @@ impl Endpoint for MediaInfoEndpoint {
 /// `external_id` is the item's imdb id (e.g. `tt0113277`) or, absent that, a
 /// `tmdb:{id}`-prefixed id — imdb takes priority when both are known, per
 /// `db::ExternalIds::stremio_lookup_id`, which callers should use to build it.
+/// For an episode pass the *series* id plus `season` and `episode`.
 /// Returns `None` on 404 or any error (failures are logged at debug level).
 pub async fn fetch_probe(
     base_url: &str,
@@ -835,7 +834,8 @@ mod tests {
     }
 
     #[test]
-    fn media_info_endpoint_path_carries_tmdb_prefixed_ids_and_season_episode() {
+    fn media_info_endpoint_path_carries_tmdb_prefixed_ids_with_season_episode_in_the_id()
+     {
         let ep = MediaInfoEndpoint {
             external_id: "tmdb:603".into(),
             season: Some(1),
@@ -843,7 +843,7 @@ mod tests {
             token: None,
             client_id: None,
         };
-        assert_eq!(ep.path(), "/api/media/tmdb:603/versions?season=1&episode=2");
+        assert_eq!(ep.path(), "/api/media/tmdb:603:1:2/versions");
     }
 
     #[test]
@@ -871,5 +871,38 @@ mod tests {
         };
         let stream = MediaStream::from(&track);
         assert_eq!(stream.title, None);
+    }
+
+    fn versions_endpoint(
+        season: Option<i32>,
+        episode: Option<i32>,
+    ) -> MediaInfoEndpoint {
+        MediaInfoEndpoint {
+            external_id: "tt0903747".to_string(),
+            season,
+            episode,
+            token: None,
+            client_id: None,
+        }
+    }
+
+    #[test]
+    fn versions_path_puts_season_and_episode_in_the_id() {
+        assert_eq!(
+            versions_endpoint(Some(1), Some(2)).path(),
+            "/api/media/tt0903747:1:2/versions"
+        );
+    }
+
+    #[test]
+    fn versions_path_is_a_bare_id_without_a_full_season_and_episode() {
+        assert_eq!(
+            versions_endpoint(None, None).path(),
+            "/api/media/tt0903747/versions"
+        );
+        assert_eq!(
+            versions_endpoint(Some(1), None).path(),
+            "/api/media/tt0903747/versions"
+        );
     }
 }
