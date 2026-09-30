@@ -652,7 +652,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             checked: *edit_http_redirect_stream.read(),
                                             on_change: move |v| edit_http_redirect_stream.set(v),
                                         }
-                                        span { class: "field-hint", "Direct Play and Direct Stream both send the source unchanged. Transcode runs it through FFmpeg, either repackaging it (remux) or re-encoding audio or video for compatibility." }
+                                        span { class: "field-hint", "Streams that FFmpeg processes, whether remuxed into a new container or re-encoded, always run through Remux." }
                                     }
                                     div { class: "form-group",
                                         label { class: "form-label", "Bypass proxy service filter" }
