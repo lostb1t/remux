@@ -1,3 +1,10 @@
+## [0.35.1](https://github.com/lostb1t/remux/compare/v0.35.0...v0.35.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* look up and submit RemuxDB episode probes by series id ([df73566](https://github.com/lostb1t/remux/commit/df735664540f0a157c5949e543aa563cbed7fe6e))
+
 # [0.35.0](https://github.com/lostb1t/remux/compare/v0.34.0...v0.35.0) (2026-09-29)
 
 
