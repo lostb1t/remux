@@ -55,6 +55,7 @@ pub async fn music_search(
                     .user
                     .id,
             ),
+            None,
         )
         .await?;
 

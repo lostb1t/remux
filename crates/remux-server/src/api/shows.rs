@@ -279,6 +279,21 @@ pub async fn shows_nextup(
         &mut enriched,
     )
     .await;
+    db::Media::resolve_translations(
+        &state
+            .ctx
+            .db,
+        &mut enriched,
+        session
+            .metadata_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .as_ref(),
+    )
+    .await;
     let mut ep = enriched.remove(0);
     ep.images = db::MediaImage::get_for_media(
         &state
@@ -674,6 +689,13 @@ pub async fn shows_upcoming(
                         .as_ref()
                 })
                 .cloned(),
+            metadata_language: session
+                .metadata_language(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await,
             ..Default::default()
         },
     )
@@ -732,6 +754,14 @@ pub async fn shows_recommendations(
             .unwrap_or(5) as usize,
         q.item_limit
             .unwrap_or(8),
+        session
+            .metadata_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .as_ref(),
     )
     .await?;
     Ok(Json(categories))

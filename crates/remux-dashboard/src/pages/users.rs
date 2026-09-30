@@ -1,10 +1,11 @@
 use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
-    UserConfiguration, UserDto,
+    AddonDto, AdminSetPassword, CollectionFilter, CreateUser, CultureDto, DeleteUser,
+    FilterGroup, FilterMatchMode, GetCultures, GetUserAddons, GetUsers, ListAddons,
+    SetUserAddons, StreamFilter, StreamRule, SubtitleMode, UpdateUser,
+    UpdateUserConfiguration, UpdateUserPolicy, UserConfiguration,
+    UserConfigurationRemux, UserDto,
 };
 use uuid::Uuid;
 
@@ -330,6 +331,36 @@ pub fn UserForm(
             })
             .unwrap_or_default()
     });
+    let mut metadata_language = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| {
+                u.configuration
+                    .as_ref()
+            })
+            .and_then(|c| {
+                c.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.metadata_language
+                    .clone()
+            })
+            .unwrap_or_default()
+    });
+    let mut cultures: Signal<Vec<CultureDto>> = use_signal(Vec::new);
+    let cultures_client = app_state.clone();
+    use_effect(move || {
+        let c = cultures_client.clone();
+        spawn(async move {
+            if let Ok(list) = c
+                .execute(GetCultures)
+                .await
+            {
+                cultures.set(list);
+            }
+        });
+    });
 
     // Addon override state — edit only.
     // Each entry is (addon_id, enabled). Order is the user-defined priority.
@@ -445,6 +476,9 @@ pub fn UserForm(
         let subtitle_language_snapshot = subtitle_language
             .peek()
             .clone();
+        let metadata_language_snapshot = metadata_language
+            .peek()
+            .clone();
 
         saving.set(true);
         err.set(None);
@@ -543,6 +577,11 @@ pub fn UserForm(
                         } else {
                             Some(subtitle_language_snapshot)
                         };
+                    // Sent even when empty: an empty value clears the stored
+                    // language, while an absent `remux` object keeps it.
+                    cfg.remux = Some(UserConfigurationRemux {
+                        metadata_language: Some(metadata_language_snapshot),
+                    });
                     client
                         .execute(UpdateUserConfiguration {
                             user_id: user.id,
@@ -597,9 +636,17 @@ pub fn UserForm(
                         } else {
                             Some(subtitle_language_snapshot)
                         };
+                    if !metadata_language_snapshot.is_empty() {
+                        cfg.remux = Some(UserConfigurationRemux {
+                            metadata_language: Some(metadata_language_snapshot),
+                        });
+                    }
                     if cfg.subtitle_mode != SubtitleMode::Default
                         || cfg
                             .subtitle_language_preference
+                            .is_some()
+                        || cfg
+                            .remux
                             .is_some()
                     {
                         client
@@ -894,6 +941,37 @@ pub fn UserForm(
                     oninput: move |e| subtitle_language.set(e.value()),
                 }
                 span { class: "field-hint", "ISO 639-2 language code. Leave blank to use server default." }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "u-metadata-lang", "Metadata Language" }
+                select {
+                    id: "u-metadata-lang",
+                    class: "field-input",
+                    value: "{metadata_language}",
+                    onchange: move |e| metadata_language.set(e.value()),
+                    option { value: "", selected: metadata_language.read().is_empty(), "Server default" }
+                    // A value set through the API that the list doesn't offer
+                    // (e.g. "pt-br") stays selectable so saving keeps it.
+                    if !metadata_language.read().is_empty()
+                        && !cultures
+                            .read()
+                            .iter()
+                            .any(|c| c.two_letter_iso_language_name == *metadata_language.read())
+                    {
+                        option { value: "{metadata_language}", selected: true, "{metadata_language}" }
+                    }
+                    for culture in cultures.read().iter() {
+                        option {
+                            value: "{culture.two_letter_iso_language_name}",
+                            selected: metadata_language.read().as_str() == culture.two_letter_iso_language_name,
+                            "{culture.display_name} ({culture.two_letter_iso_language_name})"
+                        }
+                    }
+                }
+                span { class: "field-hint",
+                    "Language of the titles, descriptions and genres this user sees and searches. Server default uses the server's metadata language."
+                }
             }
 
             FilterRuleEditor {

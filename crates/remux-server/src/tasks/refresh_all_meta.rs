@@ -4,7 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tracing::trace;
+use tracing::{info, trace};
 
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::{AppContext, db};
@@ -69,6 +69,11 @@ impl Task for RefreshAllMetaTask {
             })
         };
 
+        // A language selected mid-run only reaches the items after the
+        // cursor, so a run that ends with more languages than it started
+        // with goes round again.
+        let mut languages = active_metadata_languages(&ctx).await?;
+
         // Cursor-based pagination: WHERE id > last_id guarantees forward progress even
         // when refresh fails and refreshed_at is not updated for an item.
         let mut last_id: Option<uuid::Uuid> = None;
@@ -101,7 +106,18 @@ impl Task for RefreshAllMetaTask {
             };
 
             if batch.is_empty() {
-                break;
+                let now = active_metadata_languages(&ctx).await?;
+                let added: Vec<_> = now
+                    .difference(&languages)
+                    .collect();
+                if added.is_empty() {
+                    break;
+                }
+                info!(languages = ?added, "metadata language selected during the refresh, refreshing again");
+                languages = now;
+                last_id = None;
+                processed.store(0, Ordering::Relaxed);
+                continue;
             }
             batches += 1;
             let batch_len = batch.len();
@@ -139,6 +155,26 @@ impl Task for RefreshAllMetaTask {
             elapsed = ?task_started.elapsed(),
             "full metadata refresh complete"
         );
+
+        // Drop provider translations in languages no user reads.
+        let keep = active_metadata_languages(&ctx).await?;
+        let pruned = db::MediaTranslation::prune_provider_rows(&ctx.db, &keep).await?;
+        if pruned > 0 {
+            info!(pruned, "removed translations in languages no user reads");
+        }
         Ok(())
     }
+}
+
+async fn active_metadata_languages(
+    ctx: &AppContext,
+) -> Result<std::collections::BTreeSet<remux_sdks::remux::MetadataLanguage>> {
+    let server_config = db::Settings::get_config_or_default(&ctx.db).await;
+    Ok(db::active_metadata_languages(
+        &ctx.db,
+        server_config
+            .preferred_metadata_language
+            .as_deref(),
+    )
+    .await?)
 }

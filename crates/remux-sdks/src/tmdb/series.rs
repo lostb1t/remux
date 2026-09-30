@@ -64,6 +64,7 @@ pub struct Series {
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
     pub content_ratings: Option<SeriesContentRatings>,
+    pub translations: Option<super::Translations>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,6 +93,13 @@ pub struct SeriesEndpoint {
 }
 
 impl SeriesEndpoint {
+    /// Also return title/overview in every language TMDB has.
+    pub fn with_translations(mut self) -> Self {
+        self.append_to_response
+            .push("translations".to_string());
+        self
+    }
+
     pub fn new(id: i64, language: Option<String>) -> Self {
         Self {
             id,
@@ -148,11 +156,30 @@ pub struct SeasonEndpoint {
 
 impl SeasonEndpoint {}
 
+#[skip_serializing_none]
+#[derive(Serialize)]
+struct SeasonQuery<'a> {
+    language: Option<&'a str>,
+    append_to_response: Option<String>,
+}
+
 impl Endpoint for SeasonEndpoint {
     type Output = Season;
 
     fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        SeasonQuery {
+            language: self
+                .language
+                .as_deref(),
+            append_to_response: self
+                .append_to_response
+                .as_ref()
+                .map(|v| v.join(",")),
+        }
     }
 }
 
@@ -244,6 +271,9 @@ impl Endpoint for EpisodeEndpoint {
 pub struct SeriesSearchResult {
     pub id: i64,
     pub name: String,
+    pub original_name: Option<String>,
+    #[serde(default)]
+    pub original_language: Option<String>,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub first_air_date: Option<NaiveDate>,
     pub poster_path: Option<String>,
@@ -258,6 +288,7 @@ pub struct SeriesSearchResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchTvEndpoint {
     pub query: String,
+    pub language: Option<String>,
 }
 
 impl Endpoint for SearchTvEndpoint {
@@ -351,6 +382,25 @@ mod tests {
         assert!(
             ids.imdb_id
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn season_query_sends_language_only_when_set() {
+        let season = |language: Option<&str>| SeasonEndpoint {
+            series_id: 1399,
+            season_number: 1,
+            language: language.map(str::to_string),
+            append_to_response: None,
+        };
+        assert_eq!(
+            season(Some("es")).query(),
+            vec![("language".to_string(), "es".to_string())]
+        );
+        assert!(
+            season(None)
+                .query()
+                .is_empty()
         );
     }
 }

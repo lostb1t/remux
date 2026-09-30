@@ -158,46 +158,79 @@ async fn items_images_inner(
                         image_type,
                         api::ImageType::Primary | api::ImageType::Thumb
                     );
-                let served_from_row = match img_row {
-                    Some(img) => {
-                        let source_key = img
-                            .id
-                            .to_string();
-                        if img
-                            .path
-                            .starts_with('/')
-                        {
-                            let path = std::path::PathBuf::from(&img.path);
-                            match ImageService::serve_local(&path).await {
-                                Ok((b, ct)) => {
-                                    Some((b, ct.to_string(), source_key, false))
+                // A translated reader's Primary tag names their language's poster.
+                let translated = match q
+                    .tag
+                    .as_deref()
+                    .and_then(|t| {
+                        t.parse::<Uuid>()
+                            .ok()
+                    }) {
+                    Some(tag)
+                        if kind == ImageKind::Primary
+                            && img_row.is_none_or(|i| i.id != tag) =>
+                    {
+                        db::MediaTranslation::primary_image_for_tag(
+                            &state
+                                .ctx
+                                .db,
+                            id,
+                            tag,
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|url| (url, tag))
+                    }
+                    _ => None,
+                };
+                let served_from_row = if let Some((url, tag)) = translated {
+                    let (b, ct) = fetch_upstream(&url)
+                        .await
+                        .context_not_found("image fetch failed")?;
+                    Some((b, ct, tag.to_string(), true))
+                } else {
+                    match img_row {
+                        Some(img) => {
+                            let source_key = img
+                                .id
+                                .to_string();
+                            if img
+                                .path
+                                .starts_with('/')
+                            {
+                                let path = std::path::PathBuf::from(&img.path);
+                                match ImageService::serve_local(&path).await {
+                                    Ok((b, ct)) => {
+                                        Some((b, ct.to_string(), source_key, false))
+                                    }
+                                    Err(e) if can_regenerate => {
+                                        warn!(id = %id, error = %e, "stored collection image file missing, regenerating");
+                                        None
+                                    }
+                                    Err(e) => {
+                                        return Err(e)
+                                            .context_not_found("image file not found");
+                                    }
                                 }
-                                Err(e) if can_regenerate => {
-                                    warn!(id = %id, error = %e, "stored collection image file missing, regenerating");
-                                    None
-                                }
-                                Err(e) => {
-                                    return Err(e)
-                                        .context_not_found("image file not found");
-                                }
-                            }
-                        } else {
-                            // Always proxy external URLs rather than redirecting — some clients
-                            // (e.g. Infuse) do not follow redirects for image requests.
-                            match fetch_upstream(&img.path).await {
-                                Ok((b, ct)) => Some((b, ct, source_key, true)),
-                                Err(e) if can_regenerate => {
-                                    warn!(id = %id, error = %e, "stored collection image fetch failed, regenerating");
-                                    None
-                                }
-                                Err(e) => {
-                                    return Err(e)
-                                        .context_not_found("image fetch failed");
+                            } else {
+                                // Always proxy external URLs rather than redirecting — some clients
+                                // (e.g. Infuse) do not follow redirects for image requests.
+                                match fetch_upstream(&img.path).await {
+                                    Ok((b, ct)) => Some((b, ct, source_key, true)),
+                                    Err(e) if can_regenerate => {
+                                        warn!(id = %id, error = %e, "stored collection image fetch failed, regenerating");
+                                        None
+                                    }
+                                    Err(e) => {
+                                        return Err(e)
+                                            .context_not_found("image fetch failed");
+                                    }
                                 }
                             }
                         }
+                        None => None,
                     }
-                    None => None,
                 };
 
                 if let Some(t) = served_from_row {

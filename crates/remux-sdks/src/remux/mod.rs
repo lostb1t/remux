@@ -1,9 +1,11 @@
 pub mod codecs;
+pub mod metadata_language;
 pub mod provider_ids;
 pub use codecs::{
     AudioCodec, AudioContainer, CodecProfileType, DlnaProfileType, SubtitleCodec,
     TranscodingProtocol, VideoCodec, VideoContainer,
 };
+pub use metadata_language::{InvalidMetadataLanguage, MetadataLanguage};
 pub use provider_ids::{AnyProviderIds, ExternalIdProvider};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -3176,6 +3178,50 @@ pub struct UserConfiguration {
     #[default(true)]
     pub enable_next_episode_auto_play: bool,
     pub cast_receiver_id: Option<String>,
+    #[serde(rename = "remux")]
+    pub remux: Option<UserConfigurationRemux>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct UserConfigurationRemux {
+    /// Language for titles, descriptions and genre names. Unset or empty
+    /// means the server's `preferred_metadata_language`.
+    pub metadata_language: Option<String>,
+}
+
+impl UserConfiguration {
+    /// Carry over the stored `remux` extension when an incoming config
+    /// omits it, as Jellyfin clients' settings saves do.
+    pub fn keep_remux_extension_from(&mut self, stored: Option<&UserConfiguration>) {
+        if self
+            .remux
+            .is_none()
+        {
+            self.remux = stored.and_then(|s| {
+                s.remux
+                    .clone()
+            });
+        }
+    }
+
+    /// The metadata language this user reads in, when it differs from the
+    /// server default.
+    pub fn metadata_language_override(
+        &self,
+        server_metadata_language: Option<&str>,
+    ) -> Option<MetadataLanguage> {
+        let user = MetadataLanguage::parse_pref(
+            self.remux
+                .as_ref()
+                .and_then(|r| {
+                    r.metadata_language
+                        .as_deref()
+                }),
+        )?;
+        let server = MetadataLanguage::parse_pref(server_metadata_language);
+        (!server.is_some_and(|s| user.is_covered_by(&s))).then_some(user)
+    }
 }
 
 #[skip_serializing_none]
@@ -7664,6 +7710,80 @@ mod tests {
 
     fn user_cfg() -> UserConfiguration {
         UserConfiguration::default()
+    }
+
+    fn user_cfg_with_metadata_language(lang: &str) -> UserConfiguration {
+        UserConfiguration {
+            remux: Some(UserConfigurationRemux {
+                metadata_language: Some(lang.to_string()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn metadata_language_override_when_user_differs_from_server() {
+        let cfg = user_cfg_with_metadata_language("es");
+        assert_eq!(
+            cfg.metadata_language_override(Some("en")),
+            Some(
+                "es".parse()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn metadata_language_override_none_when_user_matches_server() {
+        let cfg = user_cfg_with_metadata_language("EN");
+        assert_eq!(cfg.metadata_language_override(Some("en")), None);
+    }
+
+    #[test]
+    fn metadata_language_override_none_when_unset_or_empty() {
+        assert_eq!(user_cfg().metadata_language_override(Some("en")), None);
+        let cfg = user_cfg_with_metadata_language("");
+        assert_eq!(cfg.metadata_language_override(Some("en")), None);
+    }
+
+    #[test]
+    fn metadata_language_override_when_server_unset() {
+        let cfg = user_cfg_with_metadata_language("fr");
+        assert_eq!(
+            cfg.metadata_language_override(None),
+            Some(
+                "fr".parse()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn keep_remux_extension_fills_omitted_extension_only() {
+        let stored = user_cfg_with_metadata_language("es");
+        let mut incoming = user_cfg();
+        incoming.keep_remux_extension_from(Some(&stored));
+        assert_eq!(incoming.remux, stored.remux);
+
+        let mut explicit = user_cfg_with_metadata_language("");
+        explicit.keep_remux_extension_from(Some(&stored));
+        assert_eq!(
+            explicit
+                .remux
+                .unwrap()
+                .metadata_language
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn user_configuration_remux_round_trips_under_remux_key() {
+        let cfg = user_cfg_with_metadata_language("es");
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["remux"]["metadata_language"], "es");
+        let back: UserConfiguration = serde_json::from_value(json).unwrap();
+        assert_eq!(back, cfg);
     }
 
     /// No prefs, no server language, nothing flagged → no default stream
