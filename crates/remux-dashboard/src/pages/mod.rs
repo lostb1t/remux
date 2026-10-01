@@ -29,6 +29,9 @@ fn stream_sorting_description(mode: SortMediaSourcesMode) -> &'static str {
         SortMediaSourcesMode::Quality => {
             "Best quality (resolution, HDR, bit depth, audio) always wins, even if it means transcoding."
         }
+        SortMediaSourcesMode::TranscodeCost => {
+            "Prefer Direct Play, then Direct Stream, then streams not probed yet, then an audio-only transcode, then a video transcode, judged against the device's codecs, resolution and bitrate limit. Within each step streams keep the addon's order, so an addon that ranks its own streams decides."
+        }
     }
 }
 
