@@ -26,4 +26,4 @@ jobs:
           key: test
 
       - name: Run tests
-        run: cargo test -p remux-server
+        run: cargo test -p remux-server -p remux-sdks

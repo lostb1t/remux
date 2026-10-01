@@ -14,8 +14,9 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
     addons::{
         Addon, AddonCapabilities, AddonCatalogDto, AddonDto, AddonMetadata,
-        AddonPreset, CreateAddonRequest, UpdateAddonCatalogRequest, UpdateAddonRequest,
-        registered_presets, set_user_addon_override, user_addon_override,
+        AddonPreset, AddonService, CreateAddonRequest, UpdateAddonCatalogRequest,
+        UpdateAddonRequest, registered_presets, set_user_addon_override,
+        user_addon_override,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
@@ -73,7 +74,7 @@ async fn capability_snapshot(
     Ok((resources, types))
 }
 
-async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
+fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
         .find(|p| {
@@ -83,77 +84,67 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     .kind
         });
 
+    let mut manifest_unreachable = false;
     let (
         supported_resources,
         supported_types,
         supported_resources_user,
         supported_types_user,
     ) = if let Some(ref p) = preset {
-        let meta = p.metadata();
+        // Runtime metadata was resolved when the addon was loaded. Listing
+        // addons must not make another remote manifest request: one stalled
+        // provider would otherwise hold the entire dashboard response open.
+        let loaded = addons.list();
+        let runtime = loaded
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon.id
+            });
+        manifest_unreachable = runtime.is_some_and(|r| {
+            r.caps
+                .manifest_unreachable
+        });
+        let meta = runtime
+            .map(|r| {
+                r.caps
+                    .metadata
+                    .clone()
+            })
+            .unwrap_or_else(|| p.metadata());
         let resources_user = meta
             .supported_resources_user
             .clone();
         let types_user = meta
             .supported_types_user
             .clone();
-        match p.from_cfg(
-            addon.id,
-            addon
-                .preset
-                .config
-                .expose(),
-            config,
-        ) {
-            Ok(caps) => {
-                let kind = caps
-                    .kind
-                    .as_ref()
-                    .map(|k| k.as_ref());
-                let info = if let Some(k) = kind {
-                    k.available_info()
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    None
-                };
-                match info {
-                    Some((resource_refs, raw_types)) => {
-                        let resources = resource_refs
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect();
-                        let types = raw_types
-                            .into_iter()
-                            .filter_map(|t| {
-                                DbMediaKind::try_from(t)
-                                    .ok()
-                                    .map(Into::into)
-                            })
-                            .collect();
-                        (resources, types, resources_user, types_user)
-                    }
-                    None => (
-                        meta.supported_resources
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect(),
-                        meta.supported_types,
-                        resources_user,
-                        types_user,
-                    ),
+        let mut resources: Vec<_> = meta
+            .supported_resources
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        let mut types = meta.supported_types;
+        // Disabled addons have no loaded runtime, so keep whatever was already
+        // enabled for them selectable instead of showing only the preset defaults.
+        if runtime.is_none() {
+            for r in &addon.resources {
+                if !resources.contains(r) {
+                    resources.push(r.clone());
                 }
             }
-            Err(_) => (
-                meta.supported_resources
-                    .into_iter()
-                    .map(|r| r.name)
-                    .collect(),
-                meta.supported_types,
-                resources_user,
-                types_user,
-            ),
+            for t in addon
+                .types
+                .iter()
+                .cloned()
+                .map(Into::into)
+            {
+                if !types.contains(&t) {
+                    types.push(t);
+                }
+            }
         }
+        (resources, types, resources_user, types_user)
     } else {
         (vec![], vec![], vec![], vec![])
     };
@@ -189,6 +180,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
             p.metadata()
                 .description
         }),
+        manifest_unreachable,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }
@@ -221,19 +213,17 @@ pub async fn list_addons(
             .db,
     )
     .await?;
-    let dtos = futures::future::join_all(
-        addons
-            .into_iter()
-            .map(|a| {
-                addon_to_dto(
-                    a,
-                    &state
-                        .ctx
-                        .config,
-                )
-            }),
-    )
-    .await;
+    let dtos = addons
+        .into_iter()
+        .map(|addon| {
+            addon_to_dto(
+                addon,
+                &state
+                    .ctx
+                    .addons,
+            )
+        })
+        .collect();
     Ok(Json(dtos))
 }
 
@@ -252,15 +242,12 @@ pub async fn get_addon(
     )
     .await?
     .context_not_found("Addon not found")?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Create a new addon instance.
@@ -380,15 +367,12 @@ pub async fn create_addon(
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(
-            addon_to_dto(
-                addon,
-                &state
-                    .ctx
-                    .config,
-            )
-            .await,
-        ),
+        Json(addon_to_dto(
+            addon,
+            &state
+                .ctx
+                .addons,
+        )),
     ))
 }
 
@@ -550,15 +534,12 @@ pub async fn update_addon(
                 .config,
         )
         .await?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Delete an addon instance.
@@ -1159,6 +1140,78 @@ mod test {
             !addon
                 .types
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_addons_does_not_refetch_unreachable_manifest() {
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let manifest = httpmock::MockServer::start();
+        let hits = manifest.mock(|when, then| {
+            when.path("/manifest.json");
+            then.status(404);
+        });
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "Unreachable manifest".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: json!({ "manifest_url": manifest.url("/manifest.json") })
+                    .into(),
+            },
+            resources: vec![],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            service_filter: vec![],
+        };
+        addon
+            .insert(
+                &ctx.0
+                    .db,
+            )
+            .await
+            .unwrap();
+        ctx.0
+            .addons
+            .reload(
+                &ctx.0
+                    .db,
+                &ctx.0
+                    .config,
+            )
+            .await
+            .unwrap();
+        let hits_after_load = hits.hits();
+        assert!(hits_after_load >= 1, "load should have probed the manifest");
+
+        for _ in 0..2 {
+            let list: Vec<AddonDto> = server
+                .get("/addons")
+                .add_header(h.clone(), v.clone())
+                .await
+                .json();
+            let dto = list
+                .iter()
+                .find(|a| a.id == addon.id)
+                .expect("addon listed despite unreachable manifest");
+            assert!(dto.manifest_unreachable);
+            assert!(
+                !dto.supported_resources
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            hits.hits(),
+            hits_after_load,
+            "listing addons must not issue manifest requests"
         );
     }
 }

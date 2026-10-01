@@ -1,7 +1,7 @@
 use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
 pub const CHUNK_SIZE: usize = 250;
-const SQLITE_VAR_LIMIT: usize = 999;
+pub(crate) const SQLITE_VAR_LIMIT: usize = 999;
 
 /// ORDER BY expression for `ItemSortBy::DateCreated`. Served by the
 /// `idx_media_created_at_sort` expression index (migration
@@ -5173,18 +5173,23 @@ impl Media {
                 .iter()
                 .map(|m| m.id)
                 .collect();
-            let mut tags_qb = sqlx::QueryBuilder::new(
-                "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
-            );
-            let mut sep = tags_qb.separated(", ");
-            for id in &ids {
-                sep.push_bind(id);
+            let mut tag_rows = Vec::new();
+            for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+                let mut tags_qb = sqlx::QueryBuilder::new(
+                    "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
+                );
+                let mut sep = tags_qb.separated(", ");
+                for id in chunk {
+                    sep.push_bind(id);
+                }
+                tags_qb.push(") ORDER BY tag");
+                tag_rows.extend(
+                    tags_qb
+                        .build()
+                        .fetch_all(db)
+                        .await?,
+                );
             }
-            tags_qb.push(") ORDER BY tag");
-            let tag_rows = tags_qb
-                .build()
-                .fetch_all(db)
-                .await?;
             let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
             for row in tag_rows {
                 let media_id: Uuid = row.get(0);
@@ -5228,27 +5233,35 @@ impl Media {
             vec![]
         };
         if !rel_ids.is_empty() {
-            let mut g_qb = sqlx::QueryBuilder::new(
-                // Drive from media_relations using the left_media_id index.
-                // Filtering g.kind in SQL caused the planner to drive from the
-                // media table (scanning all persons/genres) instead — very slow.
-                // We filter by kind in Rust after the fetch.
-                "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
-                 mr.role, mr.character, g.id, g.title, g.kind \
-                 FROM media_relations mr \
-                 JOIN media g ON g.id = mr.right_media_id \
-                 WHERE mr.left_media_id IN (",
-            );
-            let mut sep = g_qb.separated(", ");
-            for id in &rel_ids {
-                sep.push_bind(id);
+            let rel_rows: std::result::Result<Vec<_>, sqlx::Error> = async {
+                let mut rows = Vec::new();
+                for chunk in rel_ids.chunks(SQLITE_VAR_LIMIT) {
+                    let mut g_qb = sqlx::QueryBuilder::new(
+                        // Drive from media_relations using the left_media_id index.
+                        // Filtering g.kind in SQL caused the planner to drive from the
+                        // media table (scanning all persons/genres) instead — very slow.
+                        // We filter by kind in Rust after the fetch.
+                        "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
+                         mr.role, mr.character, g.id, g.title, g.kind \
+                         FROM media_relations mr \
+                         JOIN media g ON g.id = mr.right_media_id \
+                         WHERE mr.left_media_id IN (",
+                    );
+                    let mut sep = g_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+                    rows.extend(
+                        g_qb.build()
+                            .fetch_all(db)
+                            .await?,
+                    );
+                }
+                Ok(rows)
             }
-            g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
-            match g_qb
-                .build()
-                .fetch_all(db)
-                .await
-            {
+            .await;
+            match rel_rows {
                 Ok(rows) => {
                     let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
@@ -5347,30 +5360,30 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !folder_ids.is_empty() {
-                let mut cc_qb = sqlx::QueryBuilder::new(
-                    "SELECT parent_id, COUNT(*) as cnt FROM media WHERE parent_id IN (",
-                );
-                let mut sep = cc_qb.separated(", ");
-                for id in &folder_ids {
-                    sep.push_bind(id);
-                }
-                cc_qb.push(")");
-                if let Some(pf) = child_policy_filter {
-                    apply_filter_rules(
-                        &mut cc_qb,
-                        pf,
-                        filter
-                            .user_id
-                            .as_ref(),
-                        false,
+                let cc_qb_rows = fetch_all_chunked(db, &folder_ids, |chunk| {
+                    let mut cc_qb = sqlx::QueryBuilder::new(
+                        "SELECT parent_id, COUNT(*) as cnt FROM media WHERE parent_id IN (",
                     );
-                }
-                cc_qb.push(" GROUP BY parent_id");
-                match cc_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                    let mut sep = cc_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    cc_qb.push(")");
+                    if let Some(pf) = child_policy_filter {
+                        apply_filter_rules(
+                            &mut cc_qb,
+                            pf,
+                            filter
+                                .user_id
+                                .as_ref(),
+                            false,
+                        );
+                    }
+                    cc_qb.push(" GROUP BY parent_id");
+                    cc_qb
+                })
+                .await;
+                match cc_qb_rows {
                     Ok(cc_rows) => {
                         let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
                         for row in cc_rows {
@@ -5397,35 +5410,35 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !playlist_ids.is_empty() {
-                let mut pl_qb = sqlx::QueryBuilder::new(
-                    "SELECT left_media_id, COUNT(*) FROM media_relations WHERE role = 'playlist' AND left_media_id IN (",
-                );
-                let mut sep = pl_qb.separated(", ");
-                for id in &playlist_ids {
-                    sep.push_bind(id);
-                }
-                if let Some(pf) = child_policy_filter {
-                    pl_qb.push(
-                        ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                let pl_qb_rows = fetch_all_chunked(db, &playlist_ids, |chunk| {
+                    let mut pl_qb = sqlx::QueryBuilder::new(
+                        "SELECT left_media_id, COUNT(*) FROM media_relations WHERE role = 'playlist' AND left_media_id IN (",
                     );
-                    apply_filter_rules(
-                        &mut pl_qb,
-                        pf,
-                        filter
-                            .user_id
-                            .as_ref(),
-                        false,
-                    );
-                    pl_qb.push(")");
-                } else {
-                    pl_qb.push(")");
-                }
-                pl_qb.push(" GROUP BY left_media_id");
-                match pl_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                    let mut sep = pl_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    if let Some(pf) = child_policy_filter {
+                        pl_qb.push(
+                            ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
+                        );
+                        apply_filter_rules(
+                            &mut pl_qb,
+                            pf,
+                            filter
+                                .user_id
+                                .as_ref(),
+                            false,
+                        );
+                        pl_qb.push(")");
+                    } else {
+                        pl_qb.push(")");
+                    }
+                    pl_qb.push(" GROUP BY left_media_id");
+                    pl_qb
+                })
+                .await;
+                match pl_qb_rows {
                     Ok(rows) => {
                         let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
                         for row in rows {
@@ -5565,19 +5578,19 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !series_ids.is_empty() {
-                let mut ep_qb = sqlx::QueryBuilder::new(
-                    "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'episode' AND grandparent_id IN (",
-                );
-                let mut sep = ep_qb.separated(", ");
-                for id in &series_ids {
-                    sep.push_bind(id);
-                }
-                ep_qb.push(") GROUP BY grandparent_id");
-                if let Ok(rows) = ep_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                let ep_qb_rows = fetch_all_chunked(db, &series_ids, |chunk| {
+                    let mut ep_qb = sqlx::QueryBuilder::new(
+                        "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'episode' AND grandparent_id IN (",
+                    );
+                    let mut sep = ep_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    ep_qb.push(") GROUP BY grandparent_id");
+                    ep_qb
+                })
+                .await;
+                if let Ok(rows) = ep_qb_rows {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
@@ -5600,22 +5613,22 @@ impl Media {
                 .collect();
             if !person_ids.is_empty() {
                 // movie_count
-                let mut movie_qb = sqlx::QueryBuilder::new(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                let movie_qb_rows = fetch_all_chunked(db, &person_ids, |chunk| {
+                    let mut movie_qb = sqlx::QueryBuilder::new(
+                        "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
                      FROM media_relations mr \
                      JOIN media m ON m.id = mr.left_media_id AND m.kind = 'movie' \
                      WHERE mr.right_media_id IN (",
-                );
-                let mut sep = movie_qb.separated(", ");
-                for id in &person_ids {
-                    sep.push_bind(id);
-                }
-                movie_qb.push(") GROUP BY mr.right_media_id");
-                if let Ok(rows) = movie_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                    );
+                    let mut sep = movie_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    movie_qb.push(") GROUP BY mr.right_media_id");
+                    movie_qb
+                })
+                .await;
+                if let Ok(rows) = movie_qb_rows {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
@@ -5630,22 +5643,22 @@ impl Media {
                 }
 
                 // series_count
-                let mut series_qb = sqlx::QueryBuilder::new(
-                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                let series_qb_rows = fetch_all_chunked(db, &person_ids, |chunk| {
+                    let mut series_qb = sqlx::QueryBuilder::new(
+                        "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
                      FROM media_relations mr \
                      JOIN media m ON m.id = mr.left_media_id AND m.kind = 'series' \
                      WHERE mr.right_media_id IN (",
-                );
-                let mut sep = series_qb.separated(", ");
-                for id in &person_ids {
-                    sep.push_bind(id);
-                }
-                series_qb.push(") GROUP BY mr.right_media_id");
-                if let Ok(rows) = series_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                    );
+                    let mut sep = series_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    series_qb.push(") GROUP BY mr.right_media_id");
+                    series_qb
+                })
+                .await;
+                if let Ok(rows) = series_qb_rows {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
@@ -5765,19 +5778,19 @@ impl Media {
                 .map(|m| m.id)
                 .collect();
             if !artist_ids.is_empty() {
-                let mut alb_qb = sqlx::QueryBuilder::new(
-                    "SELECT parent_id, COUNT(*) as cnt FROM media WHERE kind = 'album' AND parent_id IN (",
-                );
-                let mut sep = alb_qb.separated(", ");
-                for id in &artist_ids {
-                    sep.push_bind(id);
-                }
-                alb_qb.push(") GROUP BY parent_id");
-                if let Ok(rows) = alb_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                let alb_qb_rows = fetch_all_chunked(db, &artist_ids, |chunk| {
+                    let mut alb_qb = sqlx::QueryBuilder::new(
+                        "SELECT parent_id, COUNT(*) as cnt FROM media WHERE kind = 'album' AND parent_id IN (",
+                    );
+                    let mut sep = alb_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    alb_qb.push(") GROUP BY parent_id");
+                    alb_qb
+                })
+                .await;
+                if let Ok(rows) = alb_qb_rows {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
@@ -5791,19 +5804,19 @@ impl Media {
                     }
                 }
 
-                let mut song_qb = sqlx::QueryBuilder::new(
-                    "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'track' AND grandparent_id IN (",
-                );
-                let mut sep = song_qb.separated(", ");
-                for id in &artist_ids {
-                    sep.push_bind(id);
-                }
-                song_qb.push(") GROUP BY grandparent_id");
-                if let Ok(rows) = song_qb
-                    .build()
-                    .fetch_all(db)
-                    .await
-                {
+                let song_qb_rows = fetch_all_chunked(db, &artist_ids, |chunk| {
+                    let mut song_qb = sqlx::QueryBuilder::new(
+                        "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'track' AND grandparent_id IN (",
+                    );
+                    let mut sep = song_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    song_qb.push(") GROUP BY grandparent_id");
+                    song_qb
+                })
+                .await;
+                if let Ok(rows) = song_qb_rows {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
@@ -5836,16 +5849,21 @@ impl Media {
                     .map(|m| m.id)
                     .collect();
 
-                let states = super::UserMediaState::get_by_filter(
-                    db,
-                    &super::UserMediaStateFilter {
-                        user_id: Some(user_id),
-                        media_id: Some(media_ids),
-                        ..Default::default()
-                    },
-                )
-                .await?
-                .records;
+                let mut states = Vec::with_capacity(media_ids.len());
+                for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
+                    states.extend(
+                        super::UserMediaState::get_by_filter(
+                            db,
+                            &super::UserMediaStateFilter {
+                                user_id: Some(user_id),
+                                media_id: Some(chunk.to_vec()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                        .records,
+                    );
+                }
 
                 let states_map: HashMap<Uuid, super::UserMediaState> = states
                     .into_iter()
@@ -5867,32 +5885,33 @@ impl Media {
 
                 if !grandparent_ids.is_empty() {
                     // Count episodes per grandparent_id that have NOT been played by this user
-                    let mut qb = sqlx::QueryBuilder::new(
-                        "SELECT e.grandparent_id, COUNT(*) as cnt FROM media e \
+                    let unplayed_rows =
+                        fetch_all_chunked(db, &grandparent_ids, |chunk| {
+                            let mut qb = sqlx::QueryBuilder::new(
+                                "SELECT e.grandparent_id, COUNT(*) as cnt FROM media e \
                          WHERE e.kind = 'episode' AND e.grandparent_id IN (",
-                    );
-                    let mut sep = qb.separated(", ");
-                    for id in &grandparent_ids {
-                        sep.push_bind(id);
-                    }
-                    qb.push(
-                        ") AND NOT EXISTS (\
+                            );
+                            let mut sep = qb.separated(", ");
+                            for id in chunk {
+                                sep.push_bind(id);
+                            }
+                            qb.push(
+                                ") AND NOT EXISTS (\
                            SELECT 1 FROM user_media_state ums \
                            WHERE ums.media_id = e.id \
                            AND ums.user_id = ",
-                    );
-                    qb.push_bind(user_id);
-                    qb.push(" AND ums.play_count > 0)");
-                    if let Some(t) = filter.digital_released_before {
-                        push_release_date_filter(&mut qb, "e", t, true);
-                    }
-                    qb.push(" GROUP BY e.grandparent_id");
+                            );
+                            qb.push_bind(user_id);
+                            qb.push(" AND ums.play_count > 0)");
+                            if let Some(t) = filter.digital_released_before {
+                                push_release_date_filter(&mut qb, "e", t, true);
+                            }
+                            qb.push(" GROUP BY e.grandparent_id");
+                            qb
+                        })
+                        .await;
 
-                    match qb
-                        .build()
-                        .fetch_all(db)
-                        .await
-                    {
+                    match unplayed_rows {
                         Ok(rows) => {
                             let mut unplayed_map: HashMap<Uuid, i64> = HashMap::new();
                             for row in rows {
@@ -8172,6 +8191,31 @@ fn push_genre_count_scope<'a>(
     }
 }
 
+/// Runs the query `build` makes for each `SQLITE_VAR_LIMIT`-sized chunk of
+/// `ids` and concatenates the rows, so a per-record lookup over a large
+/// unpaged result doesn't go past SQLite's bound-variable limit. Only for
+/// queries where each id's rows are independent of the other ids (e.g.
+/// `GROUP BY` the id column).
+async fn fetch_all_chunked<'a, F>(
+    db: &SqlitePool,
+    ids: &'a [Uuid],
+    build: F,
+) -> std::result::Result<Vec<sqlx::sqlite::SqliteRow>, sqlx::Error>
+where
+    F: Fn(&'a [Uuid]) -> sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+{
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+        let mut qb = build(chunk);
+        rows.extend(
+            qb.build()
+                .fetch_all(db)
+                .await?,
+        );
+    }
+    Ok(rows)
+}
+
 /// Counts distinct `item_kind` content items related (via `media_relations`)
 /// to each id in `ids`, applying the same scope as `push_genre_count_scope`.
 /// Used to fill in `movie_count`/`series_count` (Genre) and
@@ -8186,29 +8230,29 @@ async fn count_related_items_by_kind(
     item_kind: &str,
     ids: &[Uuid],
 ) -> HashMap<Uuid, i64> {
-    let mut qb = sqlx::QueryBuilder::new("");
-    push_genre_count_recursive_prefix(&mut qb, filter, use_recursive);
-    qb.push(
-        "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+    let rows = fetch_all_chunked(db, ids, |chunk| {
+        let mut qb = sqlx::QueryBuilder::new("");
+        push_genre_count_recursive_prefix(&mut qb, filter, use_recursive);
+        qb.push(
+            "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
          FROM media_relations mr \
          JOIN media m ON m.id = mr.left_media_id AND m.kind = ",
-    );
-    qb.push_bind(item_kind);
-    qb.push(" WHERE mr.right_media_id IN (");
-    let mut sep = qb.separated(", ");
-    for id in ids {
-        sep.push_bind(id);
-    }
-    qb.push(")");
-    push_genre_count_scope(&mut qb, filter, is_manual_collection, use_recursive);
-    qb.push(" GROUP BY mr.right_media_id");
+        );
+        qb.push_bind(item_kind);
+        qb.push(" WHERE mr.right_media_id IN (");
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        push_genre_count_scope(&mut qb, filter, is_manual_collection, use_recursive);
+        qb.push(" GROUP BY mr.right_media_id");
+        qb
+    })
+    .await;
 
     let mut map = HashMap::new();
-    if let Ok(rows) = qb
-        .build()
-        .fetch_all(db)
-        .await
-    {
+    if let Ok(rows) = rows {
         for row in rows {
             map.insert(row.get(0), row.get(1));
         }
@@ -12129,6 +12173,141 @@ mod genre_ids_filter_tests {
         assert!(
             !names.contains("Track In Untagged Album"),
             "track in an unrelated album should not match: {names:?}"
+        );
+    }
+
+    /// A filter without a limit can match more rows than SQLite allows bound
+    /// variables in one statement (32766). The per-record follow-up lookups
+    /// (tags, images, relations, user state) must still work for such a result.
+    #[tokio::test]
+    async fn get_by_filter_handles_more_records_than_sqlite_variable_limit() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+
+        const N: i64 = 33_000;
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
+             INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+             SELECT randomblob(16), 'movie ' || i, 'movie', '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM n",
+        )
+        .bind(N)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            &db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                include_relations: true,
+                include_user_state: true,
+                user_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("get_by_filter must not fail on a large result");
+        assert_eq!(
+            result
+                .records
+                .len() as i64,
+            N
+        );
+    }
+
+    /// Same limit for the per-kind count lookups: those errors are only
+    /// logged, so a big unpaged Persons or Series listing used to come back
+    /// with every count missing instead of failing.
+    #[tokio::test]
+    async fn get_by_filter_counts_more_records_than_sqlite_variable_limit() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+
+        const N: i64 = 33_000;
+        let movie_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+             VALUES (?1, 'the movie', 'movie', '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(movie_id)
+        .execute(&db)
+        .await
+        .unwrap();
+        // N people all credited in the one movie, and N series with one episode each.
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
+             INSERT INTO media (id, title, kind, external_ids, locked_fields, created_at, updated_at) \
+             SELECT randomblob(16), k || ' ' || i, k, '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
+             FROM n, (SELECT 'person' AS k UNION ALL SELECT 'series')",
+        )
+        .bind(N)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role) \
+             SELECT lower(hex(randomblob(16))), ?1, id, 'actor' FROM media WHERE kind = 'person'",
+        )
+        .bind(movie_id)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO media (id, title, kind, grandparent_id, external_ids, locked_fields, created_at, updated_at) \
+             SELECT randomblob(16), 'episode', 'episode', id, '{}', '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
+             FROM media WHERE kind = 'series'",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let people = Media::get_by_filter(
+            &db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Person]),
+                include_child_count: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records;
+        assert_eq!(people.len() as i64, N);
+        assert!(
+            people
+                .iter()
+                .all(|p| p.movie_count == Some(1) && p.child_count == Some(1)),
+            "every person should have a movie count of 1"
+        );
+
+        let series = Media::get_by_filter(
+            &db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Series]),
+                include_child_count: true,
+                include_user_state: true,
+                user_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records;
+        assert_eq!(series.len() as i64, N);
+        assert!(
+            series
+                .iter()
+                .all(|s| s.recursive_item_count == Some(1)
+                    && s.unplayed_item_count == Some(1)),
+            "every series should have one (unplayed) episode"
         );
     }
 }
