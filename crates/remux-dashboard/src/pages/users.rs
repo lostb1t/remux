@@ -31,6 +31,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
     let mut form_mode: Signal<Option<UserFormMode>> = use_signal(|| None);
+    let mut confirm_delete: Signal<Option<(Uuid, String)>> = use_signal(|| None);
 
     // ID of the currently logged-in user (to disable self-delete)
     let self_id = app_state
@@ -85,7 +86,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
                                     let is_admin  = user.policy.is_administrator;
                                     let user_edit = user.clone();
                                     let user_id   = user.id;
-                                    let client_del = app_state.clone();
+                                    let user_name = user.name.clone();
                                     rsx! {
                                         div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{user.id}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
@@ -110,14 +111,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
                                                     class: "btn btn-ghost",
                                                     style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
                                                     disabled: is_self,
-                                                    onclick: move |_| {
-                                                        let c = client_del.clone();
-                                                        spawn(async move {
-                                                            let _ = c.execute(DeleteUser { user_id }).await;
-                                                            let v = *refresh.peek() + 1;
-                                                            refresh.set(v);
-                                                        });
-                                                    },
+                                                    onclick: move |_| confirm_delete.set(Some((user_id, user_name.clone()))),
                                                     "Delete"
                                                 }
                                             }
@@ -128,6 +122,28 @@ pub fn UsersPage(app_state: AppState) -> Element {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some((user_id, name)) = confirm_delete.read().clone() {
+            ConfirmDialog {
+                message: format!("Are you sure you want to delete user \"{name}\"? This cannot be undone."),
+                on_confirm: {
+                    let client = app_state.clone();
+                    move |_| {
+                        let client = client.clone();
+                        confirm_delete.set(None);
+                        spawn(async move {
+                            match client.execute(DeleteUser { user_id }).await {
+                                Ok(_) => {}
+                                Err(e) => error.set(Some(format!("Failed to delete user: {e}"))),
+                            }
+                            let v = *refresh.peek() + 1;
+                            refresh.set(v);
+                        });
+                    }
+                },
+                on_cancel: move |_| confirm_delete.set(None),
             }
         }
 
