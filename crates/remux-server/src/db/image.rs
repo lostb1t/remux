@@ -61,19 +61,23 @@ impl MediaImage {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut qb = sqlx::QueryBuilder::new(
-            "SELECT id, media_id, image_type, image_index, path, width, height \
-             FROM media_images WHERE media_id IN (",
-        );
-        let mut sep = qb.separated(", ");
-        for id in ids {
-            sep.push_bind(id);
+        let mut rows = Vec::new();
+        for chunk in ids.chunks(super::media::SQLITE_VAR_LIMIT) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, media_id, image_type, image_index, path, width, height \
+                 FROM media_images WHERE media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(") ORDER BY media_id, image_type, image_index");
+            rows.extend(
+                qb.build_query_as::<Self>()
+                    .fetch_all(db)
+                    .await?,
+            );
         }
-        qb.push(") ORDER BY media_id, image_type, image_index");
-        let rows = qb
-            .build_query_as::<Self>()
-            .fetch_all(db)
-            .await?;
         let mut flat: HashMap<Uuid, Vec<Self>> = HashMap::new();
         for row in rows {
             flat.entry(row.media_id)

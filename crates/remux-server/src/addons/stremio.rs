@@ -1117,14 +1117,25 @@ async fn stremio_meta_fetch(
             // Locate just this episode's video entry. Materialising the whole
             // season here and discarding all but one row made a season of N
             // episodes cost O(N^2) to refresh.
+            let Some(episode_idx) = media.idx else {
+                return Ok(None);
+            };
             let Some(meta_ep) = meta_arc
                 .videos
-                .as_ref()
+                .as_deref()
                 .and_then(|v| {
-                    v.iter()
-                        .find(|e| {
-                            e.episode == media.idx && e.season == media.parent_idx
-                        })
+                    match_episode_video(
+                        v,
+                        season_idx,
+                        episode_idx,
+                        &media.title,
+                        media
+                            .released_at
+                            .map(|d| d.date()),
+                        media
+                            .external_ids
+                            .tvdb,
+                    )
                 })
             else {
                 return Ok(None);
@@ -1136,6 +1147,11 @@ async fn stremio_meta_fetch(
                 season_idx,
                 &series_external_ids,
             )?;
+            // The matched video can sit at a different number when the addon
+            // splits or merges episodes differently from where this episode
+            // came from (e.g. TMDB vs IMDb double episodes). Keep our own
+            // numbering; only the video id and metadata come from the addon.
+            found.idx = media.idx;
             let relations = build_episode_relations(media, meta_ep);
             if !relations.is_empty() {
                 found.relations = Some(relations);
@@ -1144,6 +1160,178 @@ async fn stremio_meta_fetch(
         }
         _ => Ok(None),
     }
+}
+
+/// Finds the addon video for the episode we know as `season`x`episode`.
+///
+/// Our episode list may come from a different source than the addon's (TMDB
+/// vs Cinemeta/IMDb), and the two don't always agree on numbering: TMDB merges
+/// some double episodes that IMDb keeps as two parts, so everything after the
+/// merge sits one number lower than the addon's video for it. Matching on the
+/// number alone pins the wrong video id, and with it the wrong streams.
+///
+/// So the number is only trusted when nothing contradicts it. In order:
+/// 1. the video carrying our TVDB episode id, when we have one;
+/// 2. the video at the same number, if its title matches ours;
+/// 3. the first video in the season whose title matches ours, ignoring part
+///    suffixes like "(1)" (a merged episode maps to its first part);
+/// 4. the first video that aired on our air date, but only when the video at
+///    our number is clearly a different airing and the season's dates are
+///    actually distinct (some addons stamp a whole season with one date);
+/// 5. the video at the same number, as before.
+fn match_episode_video<'a>(
+    videos: &'a [sdks::stremio::Episode],
+    season: i64,
+    episode: i64,
+    title: &str,
+    aired: Option<chrono::NaiveDate>,
+    tvdb: Option<i64>,
+) -> Option<&'a sdks::stremio::Episode> {
+    let in_season: Vec<&sdks::stremio::Episode> = videos
+        .iter()
+        .filter(|v| v.season == Some(season))
+        .collect();
+    if let Some(v) = tvdb.and_then(|id| {
+        in_season
+            .iter()
+            .copied()
+            .find(|v| v.tvdb_id == Some(id))
+    }) {
+        return Some(v);
+    }
+    let by_index = in_season
+        .iter()
+        .copied()
+        .find(|v| v.episode == Some(episode));
+    let video_date = |v: &sdks::stremio::Episode| {
+        v.released
+            .map(|d| d.date_naive())
+    };
+
+    // A date shared by more than two videos isn't an air date anyone can
+    // match on (two is a double episode aired the same night).
+    let mut per_date: std::collections::HashMap<chrono::NaiveDate, usize> =
+        std::collections::HashMap::new();
+    for d in in_season
+        .iter()
+        .filter_map(|v| video_date(v))
+    {
+        *per_date
+            .entry(d)
+            .or_default() += 1;
+    }
+    let dates_usable = per_date
+        .values()
+        .all(|&n| n <= 2);
+    let near = |v: &sdks::stremio::Episode| match (aired, video_date(v)) {
+        (Some(a), Some(d)) => {
+            (a - d)
+                .num_days()
+                .abs()
+                <= 1
+        }
+        _ => false,
+    };
+    let first = |matches: Vec<&'a sdks::stremio::Episode>| {
+        matches
+            .into_iter()
+            .min_by_key(|v| v.episode)
+    };
+
+    let key = episode_title_key(title);
+    if !key.is_empty() {
+        let title_of = |v: &sdks::stremio::Episode| {
+            v.get_name()
+                .map(|n| episode_title_key(&n))
+                .unwrap_or_default()
+        };
+        if let Some(v) = by_index.filter(|v| title_of(v) == key) {
+            return Some(v);
+        }
+        // A title match elsewhere still has to agree with the air date when
+        // there is one to check against, so repeated placeholder titles
+        // ("TBA") can't pull an episode onto a different airing.
+        let matches: Vec<_> = in_season
+            .iter()
+            .copied()
+            .filter(|v| title_of(v) == key)
+            .filter(|v| {
+                !dates_usable || aired.is_none() || video_date(v).is_none() || near(v)
+            })
+            .collect();
+        if let Some(v) = first(matches) {
+            return Some(v);
+        }
+    }
+
+    if dates_usable && !by_index.is_some_and(|v| near(v)) {
+        if let Some(a) = aired {
+            let matches: Vec<_> = in_season
+                .iter()
+                .copied()
+                .filter(|v| video_date(v) == Some(a))
+                .collect();
+            if let Some(v) = first(matches) {
+                return Some(v);
+            }
+        }
+    }
+
+    by_index
+}
+
+/// Normalises an episode title for matching across sources: case, punctuation
+/// and parenthesised parts ("(1)", "(a.k.a. ...)") are dropped, as are a
+/// trailing "Part N" and articles ("The Manager and the Salesman" vs "Manager
+/// and Salesman"), and a possessive "'s" is folded so "Ross's" and "Ross'"
+/// compare equal.
+fn episode_title_key(title: &str) -> String {
+    let mut stripped = String::with_capacity(title.len());
+    let mut depth = 0usize;
+    for c in title
+        .to_lowercase()
+        .chars()
+    {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => stripped.push(if c == '\u{2019}' { '\'' } else { c }),
+            _ => {}
+        }
+    }
+    let mut words: Vec<String> = stripped
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .map(|w| {
+            let w = w
+                .strip_suffix("'s")
+                .unwrap_or(w);
+            w.replace('\'', "")
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() > 2
+        && words[words.len() - 2] == "part"
+        && words
+            .last()
+            .is_some_and(|w| {
+                w.chars()
+                    .all(|c| c.is_ascii_digit())
+                    || matches!(
+                        w.as_str(),
+                        "one" | "two" | "three" | "i" | "ii" | "iii"
+                    )
+            })
+    {
+        words.truncate(words.len() - 2);
+    }
+    let is_article = |w: &String| matches!(w.as_str(), "the" | "a" | "an");
+    if words
+        .iter()
+        .any(|w| !is_article(w))
+    {
+        words.retain(|w| !is_article(w));
+    }
+    words.concat()
 }
 
 // ---------------------------------------------------------------------------
@@ -2111,6 +2299,353 @@ mod tests {
 
         assert_eq!(streams.len(), 1);
         reconstructed.assert();
+    }
+
+    fn season_videos(
+        season: i64,
+        rows: &[(i64, &str, &str)],
+    ) -> Vec<sdks::stremio::Episode> {
+        rows.iter()
+            .map(|(ep, name, released)| {
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("tt0000000:{season}:{ep}"),
+                    "name": name,
+                    "season": season,
+                    "episode": ep,
+                    "released": format!("{released}T00:00:00.000Z"),
+                }))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn date(s: &str) -> Option<chrono::NaiveDate> {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+    }
+
+    /// Cinemeta's (IMDb's) season 6 of Friends: 25 videos, with "The One That
+    /// Could Have Been" and "The One with the Proposal" in two parts each.
+    const FRIENDS_S6_VIDEOS: &[(i64, &str, &str)] = &[
+        (1, "The One After Vegas", "1999-09-23"),
+        (2, "The One Where Ross Hugs Rachel", "1999-09-30"),
+        (3, "The One With Ross' Denial", "1999-10-07"),
+        (4, "The One Where Joey Loses His Insurance", "1999-10-14"),
+        (5, "The One With Joey's Porsche", "1999-10-21"),
+        (6, "The One On The Last Night", "1999-11-04"),
+        (7, "The One Where Phoebe Runs", "1999-11-11"),
+        (8, "The One With Ross' Teeth", "1999-11-18"),
+        (9, "The One Where Ross Got High", "1999-11-25"),
+        (
+            10,
+            "The One With The Routine (a.k.a. The One With The Rockin' New Year)",
+            "1999-12-16",
+        ),
+        (11, "The One With The Apothecary Table", "2000-01-06"),
+        (12, "The One With The Joke", "2000-01-13"),
+        (13, "The One With Rachel's Sister (1)", "2000-02-03"),
+        (14, "The One Where Chandler Can't Cry (2)", "2000-02-10"),
+        (15, "The One That Could Have Been (1)", "2000-02-17"),
+        (16, "The One That Could Have Been (2)", "2000-02-17"),
+        (
+            17,
+            "The One With Unagi (a.k.a. The One With The Mix Tape)",
+            "2000-02-24",
+        ),
+        (18, "The One Where Ross Dates A Student", "2000-03-09"),
+        (19, "The One With Joey's Fridge", "2000-03-23"),
+        (20, "The One With Mac And C.H.E.E.S.E.", "2000-04-13"),
+        (21, "The One Where Ross Meets Elizabeth's Dad", "2000-04-27"),
+        (22, "The One Where Paul's The Man", "2000-05-04"),
+        (23, "The One With The Ring", "2000-05-11"),
+        (24, "The One With The Proposal (1)", "2000-05-18"),
+        (25, "The One With The Proposal (2)", "2000-05-18"),
+    ];
+
+    /// TMDB's season 6 of Friends: 23 episodes, both double episodes merged.
+    const FRIENDS_S6_TMDB: &[(i64, &str, &str)] = &[
+        (1, "The One After Vegas", "1999-09-23"),
+        (2, "The One Where Ross Hugs Rachel", "1999-09-30"),
+        (3, "The One with Ross's Denial", "1999-10-07"),
+        (4, "The One Where Joey Loses His Insurance", "1999-10-14"),
+        (5, "The One with Joey's Porsche", "1999-10-21"),
+        (6, "The One on the Last Night", "1999-11-04"),
+        (7, "The One Where Phoebe Runs", "1999-11-11"),
+        (8, "The One with Ross's Teeth", "1999-11-18"),
+        (9, "The One Where Ross Got High", "1999-11-25"),
+        (10, "The One with the Routine", "1999-12-16"),
+        (11, "The One with the Apothecary Table", "2000-01-06"),
+        (12, "The One with the Joke", "2000-01-13"),
+        (13, "The One with Rachel's Sister (1)", "2000-02-03"),
+        (14, "The One Where Chandler Can't Cry (2)", "2000-02-10"),
+        (15, "The One That Could Have Been", "2000-02-17"),
+        (16, "The One with Unagi", "2000-02-24"),
+        (17, "The One Where Ross Dates a Student", "2000-03-09"),
+        (18, "The One with Joey's Fridge", "2000-03-23"),
+        (19, "The One with Mac and C.H.E.E.S.E.", "2000-04-13"),
+        (20, "The One Where Ross Meets Elizabeth's Dad", "2000-04-27"),
+        (21, "The One Where Paul's the Man", "2000-05-04"),
+        (22, "The One with the Ring", "2000-05-11"),
+        (23, "The One with the Proposal", "2000-05-18"),
+    ];
+
+    /// Expected addon episode for each TMDB episode 1..=23.
+    const FRIENDS_S6_EXPECTED: [i64; 23] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23,
+        24,
+    ];
+
+    #[test]
+    fn match_episode_video_follows_merged_double_episodes() {
+        let videos = season_videos(6, FRIENDS_S6_VIDEOS);
+        for ((idx, title, aired), expected) in FRIENDS_S6_TMDB
+            .iter()
+            .zip(FRIENDS_S6_EXPECTED)
+        {
+            let v = match_episode_video(&videos, 6, *idx, title, date(aired), None)
+                .unwrap();
+            assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02} {title}");
+        }
+    }
+
+    #[test]
+    fn match_episode_video_falls_back_to_air_date_when_titles_differ() {
+        // e.g. titles in another language than the addon's
+        let videos = season_videos(6, FRIENDS_S6_VIDEOS);
+        for ((idx, _, aired), expected) in FRIENDS_S6_TMDB
+            .iter()
+            .zip(FRIENDS_S6_EXPECTED)
+        {
+            let v = match_episode_video(
+                &videos,
+                6,
+                *idx,
+                &format!("Episodio {idx}"),
+                date(aired),
+                None,
+            )
+            .unwrap();
+            assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02}");
+        }
+    }
+
+    /// Cinemeta's (IMDb's) season 6 of The Office: 26 videos, "Niagara" and
+    /// "The Delivery" in two parts, every one dated 2001-01-31.
+    const OFFICE_S6_VIDEOS: &[(i64, &str, i64)] = &[
+        (1, "Gossip", 796411),
+        (2, "The Meeting", 1087261),
+        (3, "The Promotion", 1112611),
+        (4, "Niagara (1)", 1112621),
+        (5, "Niagara (2)", 4077499),
+        (6, "Mafia", 1148281),
+        (7, "The Lover", 1160281),
+        (8, "Koi Pond", 1181921),
+        (9, "Double Date", 1190891),
+        (10, "Murder", 1271791),
+        (11, "Shareholder Meeting", 1271801),
+        (12, "Scott's Tots", 1319731),
+        (13, "Secret Santa", 1319741),
+        (14, "The Banker", 1511401),
+        (15, "Sabre", 1511421),
+        (16, "Manager and Salesman", 1602631),
+        (17, "The Delivery (1)", 1832421),
+        (18, "The Delivery (2)", 1511411),
+        (19, "St. Patrick's Day", 1775891),
+        (20, "New Leads", 1692591),
+        (21, "Happy Hour", 1836991),
+        (22, "Secretary's Day", 1985551),
+        (23, "Body Language", 2046171),
+        (24, "The Cover-Up", 2083471),
+        (25, "The Chump", 2121381),
+        (26, "Whistleblower", 2161041),
+    ];
+
+    /// TMDB's season 6 of The Office: 24 episodes.
+    const OFFICE_S6_TMDB: &[(i64, &str, &str)] = &[
+        (1, "Gossip", "2009-09-17"),
+        (2, "The Meeting", "2009-09-24"),
+        (3, "The Promotion", "2009-10-01"),
+        (4, "Niagara", "2009-10-08"),
+        (5, "Mafia", "2009-10-15"),
+        (6, "The Lover", "2009-10-22"),
+        (7, "Koi Pond", "2009-10-29"),
+        (8, "Double Date", "2009-11-05"),
+        (9, "Murder", "2009-11-12"),
+        (10, "Shareholder Meeting", "2009-11-19"),
+        (11, "Scott's Tots", "2009-12-03"),
+        (12, "Secret Santa", "2009-12-10"),
+        (13, "The Banker", "2010-01-21"),
+        (14, "Sabre", "2010-02-04"),
+        (15, "The Manager and the Salesman", "2010-02-11"),
+        (16, "The Delivery", "2010-03-04"),
+        (17, "St. Patrick's Day", "2010-03-11"),
+        (18, "New Leads", "2010-03-18"),
+        (19, "Happy Hour", "2010-03-25"),
+        (20, "Secretary's Day", "2010-04-22"),
+        (21, "Body Language", "2010-04-29"),
+        (22, "The Cover-Up", "2010-05-06"),
+        (23, "The Chump", "2010-05-13"),
+        (24, "Whistleblower", "2010-05-20"),
+    ];
+
+    const OFFICE_S6_EXPECTED: [i64; 24] = [
+        1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24,
+        25, 26,
+    ];
+
+    fn office_s6_videos() -> Vec<sdks::stremio::Episode> {
+        OFFICE_S6_VIDEOS
+            .iter()
+            .map(|(ep, name, tvdb)| {
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("tt0386676:6:{ep}"),
+                    "name": name,
+                    "season": 6,
+                    "episode": ep,
+                    "tvdb_id": tvdb,
+                    "released": "2001-01-31T00:00:00.000Z",
+                }))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn match_episode_video_follows_split_hour_long_episodes_by_title() {
+        let videos = office_s6_videos();
+        for ((idx, title, aired), expected) in OFFICE_S6_TMDB
+            .iter()
+            .zip(OFFICE_S6_EXPECTED)
+        {
+            let v = match_episode_video(&videos, 6, *idx, title, date(aired), None)
+                .unwrap();
+            assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02} {title}");
+        }
+        // Every video shares one date, so with no title to go on the number stands.
+        let v =
+            match_episode_video(&videos, 6, 5, "Episodio 5", date("2009-10-15"), None)
+                .unwrap();
+        assert_eq!(v.episode, Some(5));
+    }
+
+    #[test]
+    fn match_episode_video_prefers_the_tvdb_episode_id() {
+        let videos = office_s6_videos();
+        // TMDB's TVDB ids for S06E04, E05, E16 and E24, with titles that match nothing.
+        for (idx, tvdb, expected) in [
+            (4, 1112621, 4),
+            (5, 1148281, 6),
+            (16, 1832421, 17),
+            (24, 2161041, 26),
+        ] {
+            let v = match_episode_video(&videos, 6, idx, "Episodio", None, Some(tvdb))
+                .unwrap();
+            assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02}");
+        }
+    }
+
+    #[test]
+    fn match_episode_video_keeps_the_number_without_clear_evidence() {
+        let videos = season_videos(
+            1,
+            &[
+                (1, "Pilot", "2026-09-07"),
+                (2, "TBA", "2026-09-08"),
+                (3, "TBA", "2026-09-09"),
+                (4, "TBA", "2026-09-10"),
+            ],
+        );
+        // A repeated placeholder title doesn't pull an episode to another airing.
+        let v = match_episode_video(&videos, 1, 4, "TBA", date("2026-09-10"), None)
+            .unwrap();
+        assert_eq!(v.episode, Some(4));
+        // A one-day air date skew on a daily show isn't a different episode.
+        let v =
+            match_episode_video(&videos, 1, 3, "Episodio 3", date("2026-09-08"), None)
+                .unwrap();
+        assert_eq!(v.episode, Some(3));
+        // Missing date and title: the number as before.
+        let v = match_episode_video(&videos, 1, 2, "", None, None).unwrap();
+        assert_eq!(v.episode, Some(2));
+        assert!(match_episode_video(&videos, 2, 1, "Pilot", None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn stremio_meta_fetch_pins_the_matching_video_for_a_tmdb_episode() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon = httpmock::MockServer::start();
+        let whistleblower = addon.mock(|when, then| {
+            when.path("/stream/series/tt0386676:6:26.json");
+            then.status(200)
+                .json_body(serde_json::json!({"streams": [{"url": "https://example.com/6x26.mkv"}]}));
+        });
+        let svc = stremio_service::StremioService::from_url(&addon.base_url()).unwrap();
+        let manifest_url = StremioManifestUrl::try_new(addon.base_url()).unwrap();
+
+        let meta = sdks::stremio::Meta {
+            videos: Some(office_s6_videos()),
+            ..serde_json::from_value(serde_json::json!({
+                "id": "tt0386676",
+                "imdb_id": "tt0386676",
+                "type": "series",
+                "name": "The Office",
+            }))
+            .unwrap()
+        };
+        let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "tt0386676".to_string(),
+            Arc::new(meta),
+        )]));
+        let failed = std::sync::Mutex::new(std::collections::HashSet::new());
+
+        let series = db::Media {
+            id: Uuid::new_v4(),
+            kind: db::MediaKind::Series,
+            title: "The Office".into(),
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0386676".to_string()).ok(),
+                tmdb: Some(2316),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // TMDB's S06E24, which IMDb numbers S06E26.
+        let mut episode = db::Media {
+            id: Uuid::new_v4(),
+            kind: db::MediaKind::Episode,
+            title: "Whistleblower".into(),
+            idx: Some(24),
+            parent_idx: Some(6),
+            parent_id: Some(Uuid::new_v4()),
+            grandparent_id: Some(series.id),
+            released_at: date("2010-05-20").and_then(|d| d.and_hms_opt(0, 0, 0)),
+            ..Default::default()
+        };
+        episode.grandparent = Some(Arc::new(series));
+
+        let found = stremio_meta_fetch(&svc, &episode, ctx, &cache, &failed)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            found
+                .external_ids
+                .custom_stremio_id
+                .as_deref(),
+            Some("tt0386676:6:26")
+        );
+        assert_eq!(found.idx, Some(24));
+
+        episode
+            .external_ids
+            .merge(&found.external_ids, false);
+        let streams = stremio_streams(&svc, &manifest_url, &episode, None)
+            .await
+            .unwrap();
+        assert_eq!(streams.len(), 1);
+        whistleblower.assert();
     }
 
     #[test]
