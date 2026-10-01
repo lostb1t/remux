@@ -84,6 +84,7 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
                     .kind
         });
 
+    let mut manifest_unreachable = false;
     let (
         supported_resources,
         supported_types,
@@ -93,12 +94,23 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
         // Runtime metadata was resolved when the addon was loaded. Listing
         // addons must not make another remote manifest request: one stalled
         // provider would otherwise hold the entire dashboard response open.
-        let meta = addons
-            .get(addon.id)
-            .map(|runtime| {
-                runtime
-                    .caps
+        let loaded = addons.list();
+        let runtime = loaded
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon.id
+            });
+        manifest_unreachable = runtime.is_some_and(|r| {
+            r.caps
+                .manifest_unreachable
+        });
+        let meta = runtime
+            .map(|r| {
+                r.caps
                     .metadata
+                    .clone()
             })
             .unwrap_or_else(|| p.metadata());
         let resources_user = meta
@@ -107,15 +119,32 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
         let types_user = meta
             .supported_types_user
             .clone();
-        (
-            meta.supported_resources
-                .into_iter()
-                .map(|r| r.name)
-                .collect(),
-            meta.supported_types,
-            resources_user,
-            types_user,
-        )
+        let mut resources: Vec<_> = meta
+            .supported_resources
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        let mut types = meta.supported_types;
+        // Disabled addons have no loaded runtime, so keep whatever was already
+        // enabled for them selectable instead of showing only the preset defaults.
+        if runtime.is_none() {
+            for r in &addon.resources {
+                if !resources.contains(r) {
+                    resources.push(r.clone());
+                }
+            }
+            for t in addon
+                .types
+                .iter()
+                .cloned()
+                .map(Into::into)
+            {
+                if !types.contains(&t) {
+                    types.push(t);
+                }
+            }
+        }
+        (resources, types, resources_user, types_user)
     } else {
         (vec![], vec![], vec![], vec![])
     };
@@ -151,6 +180,7 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
             p.metadata()
                 .description
         }),
+        manifest_unreachable,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }

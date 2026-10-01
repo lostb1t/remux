@@ -418,6 +418,10 @@ pub struct AddonDto {
     #[serde(default)]
     pub service_filter: Vec<String>,
     pub description: Option<String>,
+    /// The addon's manifest could not be fetched when it was loaded, so the
+    /// supported resources/types shown are the static fallback.
+    #[serde(default)]
+    pub manifest_unreachable: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
