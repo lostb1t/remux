@@ -2,9 +2,9 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    SubtitleDedupSettings, append_external_subtitles,
+    SidecarSubtitleRoute, SubtitleDedupSettings, append_external_subtitles,
     drop_unsupported_embedded_subtitles_with_external_match,
-    filter_external_subtitles_for_source, inject_sidecar_subtitles,
+    filter_external_subtitles_for_source, inject_sidecar_subtitles, provider_filename,
     save_sidecar_subtitle_routes,
 };
 use axum::{
@@ -54,6 +54,22 @@ use crate::{
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
+
+/// Per-source data gathered alongside each `MediaSourceInfo` in
+/// `items_playbackinfo`, in the same order, until the capability sort has
+/// settled the final source order.
+struct SourceExtras {
+    /// The source id its DeliveryUrls were built with, and its sidecar routes.
+    subtitle_routes: (Uuid, Vec<SidecarSubtitleRoute>),
+    /// Set when the source is a stream-group representative — group order is
+    /// an explicit, admin-authored priority (drag-and-drop in the dashboard),
+    /// not something a device-capability sort should second-guess.
+    group_id: Option<Uuid>,
+    /// Whether extraction is feasible varies per source (a local file vs. a
+    /// remote debrid/torrent release of the same item), so the ranking pass
+    /// needs it per source, not just for the main transcode decision.
+    allow_subtitle_extraction: bool,
+}
 
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
@@ -410,25 +426,7 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
-    let mut sidecar_subtitle_routes = Vec::with_capacity(
-        probed
-            .results
-            .len(),
-    );
-    // Tracked so the capability sort below can be skipped entirely when any
-    // source is a stream-group representative — group order is an explicit,
-    // admin-authored priority (drag-and-drop in the dashboard), not something
-    // a device-capability sort should second-guess.
-    let mut source_group_ids: Vec<Option<Uuid>> = Vec::with_capacity(
-        probed
-            .results
-            .len(),
-    );
-    // Parallels media_sources — whether extraction is feasible varies per
-    // source (a local file vs. a remote debrid/torrent release of the same
-    // item), so the ranking pass below needs it per source too, not just
-    // the one used for the main transcode decision.
-    let mut allow_subtitle_extraction_per_source: Vec<bool> = Vec::with_capacity(
+    let mut source_extras: Vec<SourceExtras> = Vec::with_capacity(
         probed
             .results
             .len(),
@@ -475,10 +473,9 @@ async fn items_playbackinfo_inner(
 
         // Drop an embedded subtitle stream that can't be delivered any way we
         // support (see `subtitle_codec_deliverable`: deliverable via Embed,
-        // or via External when extraction is feasible — always for a local
-        // source, for a remote one only when allow_remote_subtitle_extraction
-        // is on, since it means ffmpeg reading the entire remote file once,
-        // with no way to seek to just the subtitle packets). When not
+        // or via External when extraction is feasible — only ever for a local
+        // source; a remote one would mean ffmpeg reading the entire remote
+        // file, so we never extract those). When not
         // deliverable, an image (PGS) subtitle can still be burned in
         // (subtitle_mode == Burn) — text subtitles have no burn-in path in
         // the transcode pipeline at all, so those (and everything else in
@@ -486,18 +483,7 @@ async fn items_playbackinfo_inner(
         // can do with them.
         // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        let is_local = effective_stream
-            .stream_info
-            .as_ref()
-            .is_some_and(|si| {
-                si.descriptor
-                    .is_local()
-            });
-        let allow_subtitle_extraction = is_local
-            || cfg
-                .encoding_cfg
-                .allow_remote_subtitle_extraction
-                .unwrap_or(false);
+        let allow_subtitle_extraction = effective_stream.allows_subtitle_extraction();
         source
             .media_streams
             .retain(|s| {
@@ -648,6 +634,7 @@ async fn items_playbackinfo_inner(
             // of them would land in the menu.
             let selected = filter_external_subtitles_for_source(
                 &source,
+                provider_filename(&source),
                 &converted,
                 &probe_cfg
                     .subtitle_languages
@@ -708,9 +695,11 @@ async fn items_playbackinfo_inner(
             }
         }
 
-        sidecar_subtitle_routes.push((subtitle_source_id, routes));
-        source_group_ids.push(stream.group_id);
-        allow_subtitle_extraction_per_source.push(allow_subtitle_extraction);
+        source_extras.push(SourceExtras {
+            subtitle_routes: (subtitle_source_id, routes),
+            group_id: stream.group_id,
+            allow_subtitle_extraction,
+        });
         media_sources.push(source);
     }
 
@@ -750,15 +739,18 @@ async fn items_playbackinfo_inner(
     // Rank sources by how well they match the device's capabilities (transcode
     // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio quality, embedded subs)
     // so the auto-play source below is the best version, not just the first
-    // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
-    // lockstep — the later zip below pairs them back up by index.
+    // one probed. `source_extras` is permuted in lockstep so it stays aligned
+    // with `media_sources`.
     let sort_mode = probe_cfg
         .sort_media_sources
         .unwrap_or_default();
     if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
-        && source_group_ids
+        && source_extras
             .iter()
-            .all(|g| g.is_none())
+            .all(|e| {
+                e.group_id
+                    .is_none()
+            })
     {
         // Same combination as `max_bitrate` above, but derived from
         // `sort_device_profile` (fresh-with-persisted-fallback) so this
@@ -783,25 +775,17 @@ async fn items_playbackinfo_inner(
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
             max_bitrate: sort_max_bitrate,
-            // Overridden per source below — extraction feasibility depends
-            // on that source's own locality, not a single shared value.
-            allow_subtitle_extraction: false,
         };
         let mut paired: Vec<_> = media_sources
             .drain(..)
-            .zip(sidecar_subtitle_routes.drain(..))
-            .zip(allow_subtitle_extraction_per_source.drain(..))
+            .zip(source_extras.drain(..))
             .collect();
-        paired.sort_by_cached_key(|((source, _), allow_extraction)| {
-            let ranking = SourceRankingContext {
-                allow_subtitle_extraction: *allow_extraction,
-                ..ranking
-            };
-            std::cmp::Reverse(ranking.sort_key(source))
+        StreamService::rank_sources(&mut paired, ranking, |(source, extras)| {
+            (source.clone(), extras.allow_subtitle_extraction)
         });
-        for ((source, route), _) in paired {
+        for (source, extras) in paired {
             media_sources.push(source);
-            sidecar_subtitle_routes.push(route);
+            source_extras.push(extras);
         }
     }
 
@@ -824,10 +808,11 @@ async fn items_playbackinfo_inner(
         media_sources[0].e_tag = id;
     }
 
-    for (source, (delivery_source_id, routes)) in media_sources
+    for (source, extras) in media_sources
         .iter()
-        .zip(sidecar_subtitle_routes)
+        .zip(source_extras)
     {
+        let (delivery_source_id, routes) = extras.subtitle_routes;
         // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
         // some clients construct the route from the final MediaSourceInfo ID.
         // Cache both keys when auto-play rewrites the first source ID.

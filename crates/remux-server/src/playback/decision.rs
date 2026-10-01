@@ -448,23 +448,11 @@ pub(crate) fn apply_subtitle_delivery(
             .as_deref()
             .unwrap_or_default();
         let profile_supports = |c: SubtitleCodec| -> bool {
-            device_profile
-                .as_ref()
-                .map(|dp| {
-                    dp.subtitle_profiles
-                        .iter()
-                        .filter_map(|p| {
-                            p.format
-                                .as_deref()
-                        })
-                        .any(|f| {
-                            f.parse::<SubtitleCodec>()
-                                .ok()
-                                .as_ref()
-                                == Some(&c)
-                        })
-                })
-                .unwrap_or(false)
+            crate::device_profile::profile_declares_subtitle_codec(
+                device_profile.as_ref(),
+                &c,
+                None,
+            )
         };
         let profile_embeds = |c: SubtitleCodec| -> bool {
             crate::device_profile::profile_embeds_subtitle_codec(

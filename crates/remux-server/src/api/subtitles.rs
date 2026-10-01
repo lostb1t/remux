@@ -86,7 +86,15 @@ struct ExtractableSubtitle {
     map_spec: String,
     cache_codec: api::SubtitleCodec,
     ffmpeg_codec: String,
+    /// Whether ffmpeg is known to convert this stream's codec. An unknown
+    /// one aborts a whole batch, so it's only ever extracted on its own.
+    known_codec: bool,
 }
+
+/// How long an extraction may run before it's killed and its partial output
+/// discarded. Only local files are ever extracted, so this is generous.
+const SUBTITLE_EXTRACTION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(600);
 
 /// A batch extraction's outcome, shared across every caller waiting on the
 /// same in-flight run. `anyhow::Error` isn't `Clone` (required for `Shared`,
@@ -147,68 +155,58 @@ fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitl
     // ones we can actually extract. Skipping image streams from this list
     // entirely would shift every later text stream's ordinal left, mapping
     // it onto the wrong track whenever an image subtitle precedes it.
-    let mut indexes: Vec<i64> = probe
+    let mut embedded: Vec<&api::MediaStream> = probe
         .media_streams
         .iter()
         .filter(|s| {
             matches!(s.type_, Some(api::MediaStreamType::Subtitle)) && !s.is_external
         })
-        .map(|s| s.index)
         .collect();
-    indexes.sort_unstable();
-    indexes
-        .iter()
+    embedded.sort_by_key(|s| s.index);
+    embedded
+        .into_iter()
         .enumerate()
-        .filter_map(|(ordinal, &stream_index)| {
-            let stream = probe
-                .media_streams
-                .iter()
-                .find(|s| s.index == stream_index)?;
-            if !stream.is_text_subtitle_stream() {
-                // Image subtitle: not extractable to text (see the module
-                // doc comment), but its ordinal slot still has to be
-                // accounted for above.
-                return None;
-            }
+        // Image subtitle: not extractable to text (see the module doc
+        // comment), but its ordinal slot is still accounted for above.
+        .filter(|(_, stream)| stream.is_text_subtitle_stream())
+        .flat_map(|(ordinal, stream)| {
             let source_codec = stream
                 .codec
                 .as_deref();
-            let map_spec = format!("0:s:{ordinal}");
+            let known_codec = is_known_text_codec(stream);
+            let output = |cache_codec: api::SubtitleCodec| ExtractableSubtitle {
+                stream_index: stream.index,
+                map_spec: format!("0:s:{ordinal}"),
+                ffmpeg_codec: subtitle_cache_ffmpeg_codec(&cache_codec, source_codec),
+                cache_codec,
+                known_codec,
+            };
             let cache_codec = subtitle_cache_codec(source_codec.unwrap_or(""));
-            let ffmpeg_codec = subtitle_cache_ffmpeg_codec(&cache_codec, source_codec);
-            let mut outputs = vec![ExtractableSubtitle {
-                stream_index,
-                map_spec: map_spec.clone(),
-                cache_codec: cache_codec.clone(),
-                ffmpeg_codec,
-            }];
+            let mut outputs = vec![output(cache_codec.clone())];
             if cache_codec == api::SubtitleCodec::Ass {
-                outputs.push(ExtractableSubtitle {
-                    stream_index,
-                    map_spec,
-                    cache_codec: api::SubtitleCodec::Srt,
-                    ffmpeg_codec: subtitle_cache_ffmpeg_codec(
-                        &api::SubtitleCodec::Srt,
-                        source_codec,
-                    ),
-                });
+                outputs.push(output(api::SubtitleCodec::Srt));
             }
-            Some(outputs)
+            outputs
         })
-        .flatten()
         .collect()
 }
 
-/// Whether embedded stream `stream_index` has a recognized text subtitle
-/// codec. `is_text_subtitle_stream` also counts unknown/missing codecs as
-/// text, which ffmpeg may not be able to convert.
-fn has_known_text_codec(probe: &api::MediaSourceInfo, stream_index: i64) -> bool {
-    probe
-        .media_streams
-        .iter()
-        .find(|s| s.index == stream_index && !s.is_external)
-        .and_then(|s| s.subtitle_codec())
+/// Whether `stream` has a recognized text subtitle codec.
+/// `is_text_subtitle_stream` also counts unknown/missing codecs as text,
+/// which ffmpeg may not be able to convert.
+fn is_known_text_codec(stream: &api::MediaStream) -> bool {
+    stream
+        .subtitle_codec()
         .is_some_and(|c| c.is_text() && !matches!(c, api::SubtitleCodec::Other(_)))
+}
+
+/// A subtitle cache file counts as a hit only when it holds actual text.
+fn is_cached(path: &std::path::Path) -> bool {
+    std::fs::read(path).is_ok_and(|b| {
+        !String::from_utf8_lossy(&b)
+            .trim()
+            .is_empty()
+    })
 }
 
 /// The path ffmpeg actually writes to for a given final cache path — never
@@ -303,7 +301,6 @@ async fn extract_subtitles_to_cache(
     item_id: Uuid,
     media_source_id: Uuid,
     streams: &[ExtractableSubtitle],
-    timeout_seconds: i64,
 ) -> anyhow::Result<()> {
     if streams.is_empty() {
         return Ok(());
@@ -336,20 +333,15 @@ async fn extract_subtitles_to_cache(
         });
     };
 
-    let timeout_secs = timeout_seconds.max(1) as u64;
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    {
-        Err(_) => {
-            delete_tmp_outputs(cache_paths);
-            anyhow::bail!("subtitle extraction timed out");
-        }
-        Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
-        Ok(Ok(output)) => output,
-    };
+    let output =
+        match tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output()).await {
+            Err(_) => {
+                delete_tmp_outputs(cache_paths);
+                anyhow::bail!("subtitle extraction timed out");
+            }
+            Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
+            Ok(Ok(output)) => output,
+        };
 
     if !output
         .status
@@ -399,19 +391,7 @@ async fn ensure_subtitle_cached(
     media_source_id: Uuid,
     stream_index: i64,
     requested_cache_codec: api::SubtitleCodec,
-    timeout_seconds: i64,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let is_cached = |path: &std::path::Path| -> bool {
-        path.exists()
-            && std::fs::read(path)
-                .ok()
-                .map(|b| {
-                    !String::from_utf8_lossy(&b)
-                        .trim()
-                        .is_empty()
-                })
-                .unwrap_or(false)
-    };
     let requested_path = subtitle_cache_path(
         data_dir,
         item_id,
@@ -420,14 +400,20 @@ async fn ensure_subtitle_cached(
         &requested_cache_codec,
     );
     if is_cached(&requested_path) {
+        debug!(%item_id, stream_index, "subtitle cache hit");
         return Ok(requested_path);
     }
+    info!(%item_id, stream_index, "subtitle cache miss — extracting on-demand");
 
     // A codec ffmpeg may not be able to convert (unknown or missing) aborts
     // the whole batch, losing every good track with it. Batch only known
     // text codecs; an unknown-codec track is extracted on its own, and only
     // when it's the one requested.
-    let solo = (!has_known_text_codec(probe, stream_index)).then_some(stream_index);
+    let solo = (!probe
+        .media_streams
+        .iter()
+        .any(|s| s.index == stream_index && !s.is_external && is_known_text_codec(s)))
+    .then_some(stream_index);
     let key = (item_id, media_source_id, solo);
     let shared = {
         let mut inflight = SUBTITLE_EXTRACTION_INFLIGHT
@@ -440,7 +426,7 @@ async fn ensure_subtitle_cached(
                 .into_iter()
                 .filter(|s| match solo {
                     Some(index) => s.stream_index == index,
-                    None => has_known_text_codec(probe, s.stream_index),
+                    None => s.known_codec,
                 })
                 .filter(|s| {
                     !is_cached(&subtitle_cache_path(
@@ -461,7 +447,6 @@ async fn ensure_subtitle_cached(
                     item_id,
                     media_source_id,
                     &missing,
-                    timeout_seconds,
                 )
                 .await
                 .map_err(|e| e.to_string());
@@ -826,16 +811,7 @@ async fn subtitles_stream_inner(
             let subtitle_mode = encoding_cfg
                 .subtitle_mode
                 .unwrap_or_default();
-            let allow_subtitle_extraction = source
-                .stream_info
-                .as_ref()
-                .is_some_and(|si| {
-                    si.descriptor
-                        .is_local()
-                })
-                || encoding_cfg
-                    .allow_remote_subtitle_extraction
-                    .unwrap_or(false);
+            let allow_subtitle_extraction = source.allows_subtitle_extraction();
             let server_cfg = db::Settings::get_config_or_default(
                 &state
                     .ctx
@@ -943,33 +919,20 @@ async fn subtitles_stream_inner(
                         );
                         probe
                     });
-                let scored: Vec<_> =
-                    crate::subtitle_selection::select_external_subtitles(
-                        &subs,
-                        &sub_langs,
-                        source
-                            .stream_info
-                            .as_ref()
-                            .and_then(|info| {
-                                info.filename
-                                    .as_deref()
-                            }),
-                        dedup.max_external_per_language(),
-                    )
-                    .into_iter()
-                    .filter(|sub| {
-                        !dedup.enabled
-                            || !resolved_probe
-                                .as_ref()
-                                .is_some_and(|probe| {
-                                    has_supported_embedded_subtitle(
-                                        probe,
-                                        sub,
-                                        device_profile.as_ref(),
-                                    )
-                                })
-                    })
-                    .collect();
+                let scored = filter_external_subtitles_for_source(
+                    &resolved_probe.unwrap_or_default(),
+                    source
+                        .stream_info
+                        .as_ref()
+                        .and_then(|info| {
+                            info.filename
+                                .as_deref()
+                        }),
+                    &subs,
+                    &sub_langs,
+                    device_profile.as_ref(),
+                    dedup,
+                );
                 if let Some(sub) = scored.get(i as usize) {
                     if let Some(ref descriptor) = sub.url {
                         let output_format = format.to_ascii_lowercase();
@@ -1030,27 +993,9 @@ async fn subtitles_stream_inner(
     // Defense in depth: a client can hit this endpoint directly with any
     // stream_index, regardless of what delivery_method PlaybackInfo actually
     // advertised (`apply_subtitle_delivery`'s upstream feasibility check).
-    // Never start an extraction — reading the whole remote file once — for a
-    // remote source unless the admin opted in; local files are unaffected.
-    let is_local = media
-        .stream_info
-        .as_ref()
-        .is_some_and(|si| {
-            si.descriptor
-                .is_local()
-        });
-    let encoding_cfg = db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
-    let allow_subtitle_extraction = is_local
-        || encoding_cfg
-            .allow_remote_subtitle_extraction
-            .unwrap_or(false);
-    if !allow_subtitle_extraction {
+    // Never start an extraction — reading the whole remote file — for a
+    // remote source.
+    if !media.allows_subtitle_extraction() {
         return Ok((
             StatusCode::NOT_FOUND,
             "subtitle extraction is disabled for remote sources",
@@ -1110,17 +1055,10 @@ async fn subtitles_stream_inner(
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        let timeout_secs = encoding_cfg
-            .subtitle_extraction_timeout_seconds
-            .unwrap_or(1800)
-            .max(1) as u64;
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| anyhow!("subtitle extraction timed out"))?
-        .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+        let output = tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| anyhow!("subtitle extraction timed out"))?
+            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
         if !output
             .status
             .success()
@@ -1141,30 +1079,6 @@ async fn subtitles_stream_inner(
     // ASS/SSA requests use a separate native ASS cache so styled subtitle data is
     // never replaced by SRT bytes under an .ass URL.
     let cache_codec = subtitle_cache_codec(&output_format);
-    let cache_file = subtitle_cache_path(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        item_id,
-        media_source_id,
-        stream_index,
-        &cache_codec,
-    );
-    if cache_file.exists()
-        && std::fs::read(&cache_file)
-            .ok()
-            .map(|b| {
-                !String::from_utf8_lossy(&b)
-                    .trim()
-                    .is_empty()
-            })
-            .unwrap_or(false)
-    {
-        debug!(%item_id, stream_index, "subtitle cache hit");
-    } else {
-        info!(%item_id, stream_index, %map_spec, "subtitle cache miss — extracting on-demand");
-    }
     let probe = media
         .probe_data
         .clone()
@@ -1180,9 +1094,6 @@ async fn subtitles_stream_inner(
         media_source_id,
         stream_index,
         cache_codec,
-        encoding_cfg
-            .subtitle_extraction_timeout_seconds
-            .unwrap_or(1800),
     )
     .await
     {
@@ -1290,14 +1201,10 @@ impl SubtitleDedupSettings {
 /// for this specific source" and need the same language-cap/dedup
 /// treatment. Before this was shared, the per-source list bypassed both:
 /// an addon attaching dozens of languages put all of them in the menu.
-pub(crate) fn filter_external_subtitles_for_source<'a>(
-    source: &api::MediaSourceInfo,
-    subs: &'a [crate::addons::SubtitleInfo],
-    sub_langs: &[String],
-    device_profile: Option<&api::DeviceProfile>,
-    dedup: SubtitleDedupSettings,
-) -> Vec<&'a crate::addons::SubtitleInfo> {
-    let source_filename = source
+/// The release filename PlaybackInfo's probed source carries from its
+/// provider (used to prefer subtitles that match the release).
+pub(crate) fn provider_filename(source: &api::MediaSourceInfo) -> Option<&str> {
+    source
         .remux
         .as_ref()
         .and_then(|remux| {
@@ -1306,7 +1213,17 @@ pub(crate) fn filter_external_subtitles_for_source<'a>(
                 .as_ref()
         })
         .and_then(|info| info.get("filename"))
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+}
+
+pub(crate) fn filter_external_subtitles_for_source<'a>(
+    source: &api::MediaSourceInfo,
+    source_filename: Option<&str>,
+    subs: &'a [crate::addons::SubtitleInfo],
+    sub_langs: &[String],
+    device_profile: Option<&api::DeviceProfile>,
+    dedup: SubtitleDedupSettings,
+) -> Vec<&'a crate::addons::SubtitleInfo> {
     crate::subtitle_selection::select_external_subtitles(
         subs,
         sub_langs,
@@ -1347,6 +1264,7 @@ pub(crate) fn append_external_subtitles(
 
         let scored = filter_external_subtitles_for_source(
             source,
+            provider_filename(source),
             subs,
             sub_langs,
             device_profile,
@@ -2234,7 +2152,7 @@ mod tests {
     }
 
     #[test]
-    fn has_known_text_codec_rejects_unknown_and_missing_codecs() {
+    fn is_known_text_codec_rejects_unknown_and_missing_codecs() {
         let sub = |index: i64, codec: Option<&str>| api::MediaStream {
             index,
             type_: Some(api::MediaStreamType::Subtitle),
@@ -2247,10 +2165,12 @@ mod tests {
             sub(2, None),
             sub(3, Some("hdmv_pgs_subtitle")),
         ]);
-        assert!(has_known_text_codec(&source, 0));
-        assert!(!has_known_text_codec(&source, 1));
-        assert!(!has_known_text_codec(&source, 2));
-        assert!(!has_known_text_codec(&source, 3));
+        let known: Vec<bool> = source
+            .media_streams
+            .iter()
+            .map(is_known_text_codec)
+            .collect();
+        assert_eq!(known, [true, false, false, false]);
     }
 
     #[test]

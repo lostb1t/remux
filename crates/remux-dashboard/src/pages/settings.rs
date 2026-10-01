@@ -384,13 +384,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut enable_audio_transcoding = use_signal(|| true);
     let mut enable_remuxing = use_signal(|| true);
     let mut subtitle_mode = use_signal(|| "Burn".to_string());
-    let mut allow_remote_subtitle_extraction = use_signal(|| false);
-    // No dashboard control for this yet — must be round-tripped as-is so a
-    // custom value set via the API isn't silently reset to the default
-    // (1800s) the next time this page is saved (set_encoding_config is a
-    // full replace, not a patch).
-    let mut subtitle_extraction_timeout_seconds: Signal<Option<i64>> =
-        use_signal(|| None);
     let mut deduplicate_subtitle_tracks = use_signal(|| true);
     let mut max_external_subtitles_per_language = use_signal(|| 1_i64);
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
@@ -517,12 +510,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(EmbeddedSubtitleHandling::Burn)
                             .to_string(),
                     );
-                    allow_remote_subtitle_extraction.set(
-                        opts.allow_remote_subtitle_extraction
-                            .unwrap_or(false),
-                    );
-                    subtitle_extraction_timeout_seconds
-                        .set(opts.subtitle_extraction_timeout_seconds);
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -576,11 +563,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 .peek()
                 .parse::<EmbeddedSubtitleHandling>()
                 .ok(),
-            allow_remote_subtitle_extraction: Some(
-                *allow_remote_subtitle_extraction.peek(),
-            ),
-            subtitle_extraction_timeout_seconds: *subtitle_extraction_timeout_seconds
-                .peek(),
         };
         let min_pct = *min_resume_pct.peek();
         let max_pct = *max_resume_pct.peek();
@@ -651,7 +633,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", "Unsupported Subtitle Handling" }
                             div { class: "field-hint",
-                                "Fallback for an embedded subtitle the client device doesn't support, used when extraction isn't attempted (see \"Extract Subtitles From Remote Sources\" below — local files always try extraction first, since it's cheap for them). Burn encodes it into the video. Strip removes it from the media source so the client never sees it — no subtitle-triggered transcoding."
+                                "Fallback for an embedded subtitle the client device doesn't support, used when extraction isn't attempted (local files always try extraction first; remote sources never extract). Burn encodes it into the video. Strip removes it from the media source so the client never sees it — no subtitle-triggered transcoding."
                             }
                             select {
                                 class: "select-input",
@@ -659,15 +641,6 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 onchange: move |e| subtitle_mode.set(e.value()),
                                 option { value: "Burn", "Burn into video (default)" }
                                 option { value: "Strip", "Strip (remove, no transcoding)" }
-                            }
-                        }
-
-                        div { class: "field",
-                            ToggleRow {
-                                label: "Extract Subtitles From Remote Sources",
-                                description: "Embedded subtitles can't be seeked to directly, so extracting one from a torrent/debrid/HTTP source means reading the entire file once. Off by default. Local files are unaffected by this setting — extraction is always attempted for them, since reading them is cheap.",
-                                checked: *allow_remote_subtitle_extraction.read(),
-                                on_change: move |v| allow_remote_subtitle_extraction.set(v),
                             }
                         }
 

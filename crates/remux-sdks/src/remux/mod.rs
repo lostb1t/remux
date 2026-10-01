@@ -918,24 +918,13 @@ pub struct EncodingOptions {
     #[default(Some(false))]
     pub normalize_audio_loudness: Option<bool>,
     /// Fallback for an unsupported embedded subtitle when extraction isn't
-    /// attempted (see `allow_remote_subtitle_extraction`) — either because the
-    /// source is remote and that's off, or extraction itself failed.
+    /// attempted — extraction only ever happens for local sources, so this
+    /// always applies to remote ones, and to local ones when extraction
+    /// itself failed.
     /// Burn: encode into video (default). Strip: remove from media source so
     /// the client never sees them.
     #[default(Some(EmbeddedSubtitleHandling::Burn))]
     pub subtitle_mode: Option<EmbeddedSubtitleHandling>,
-    /// Whether on-demand subtitle extraction is attempted for remote sources
-    /// (torrent/debrid/usenet/HTTP). Extraction has no way to seek to just the
-    /// subtitle packets — it means ffmpeg reading the entire remote file once
-    /// per source. Off by default; local files are unaffected by this setting
-    /// and always allow extraction, since reading them is cheap.
-    #[default(Some(false))]
-    pub allow_remote_subtitle_extraction: Option<bool>,
-    /// How long an on-demand subtitle extraction may run before it's killed
-    /// and its partial output discarded. Default 1800s (30 min), matching
-    /// Jellyfin's default — reading a whole remote file can take a while.
-    #[default(Some(1800))]
-    pub subtitle_extraction_timeout_seconds: Option<i64>,
 }
 
 // --- Embedded subtitle handling ---
@@ -956,11 +945,9 @@ pub struct EncodingOptions {
 #[strum(serialize_all = "PascalCase")]
 pub enum EmbeddedSubtitleHandling {
     /// Burn unsupported embedded subtitles into the video during transcoding.
-    /// This is the fallback when extraction isn't attempted (see
-    /// `EncodingOptions::allow_remote_subtitle_extraction`) — extraction
-    /// itself is no longer a chosen mode, it's attempted automatically
-    /// whenever it's feasible (always for local files, remote files only
-    /// when that setting is on).
+    /// This is the fallback when extraction isn't attempted — extraction
+    /// itself is no longer a chosen mode, it's attempted automatically for
+    /// local files and never for remote ones.
     #[default]
     Burn,
     /// Remove unsupported embedded subtitle streams from the media source

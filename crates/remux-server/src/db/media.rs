@@ -2045,6 +2045,17 @@ impl Media {
         )
     }
 
+    /// On-demand subtitle extraction reads the whole file, so it is only ever
+    /// attempted for a local source — never for remote (torrent/debrid/HTTP).
+    pub fn allows_subtitle_extraction(&self) -> bool {
+        self.stream_info
+            .as_ref()
+            .is_some_and(|si| {
+                si.descriptor
+                    .is_local()
+            })
+    }
+
     pub fn media_source_protocol(&self) -> &'static str {
         if self.is_remote_url() { "Http" } else { "File" }
     }

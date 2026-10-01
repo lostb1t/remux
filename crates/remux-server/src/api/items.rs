@@ -1625,7 +1625,7 @@ fn rank_item_sources(
         return;
     }
 
-    sources.sort_by_cached_key(|source| {
+    crate::services::StreamService::rank_sources(sources, ranking, |source| {
         let mut info = api::MediaSourceInfo::from(source.clone());
         crate::conversions::apply_filename_guess(&mut info, source);
         info.resolve_default_streams(
@@ -1637,7 +1637,7 @@ fn rank_item_sources(
             None,
             None,
         );
-        std::cmp::Reverse(ranking.sort_key(&info))
+        (info, source.allows_subtitle_extraction())
     });
 }
 
@@ -1879,13 +1879,6 @@ async fn item_for_user(
                         max_bitrate: persisted_device_profile
                             .as_ref()
                             .and_then(|p| p.max_streaming_bitrate),
-                        // Conservative: this is a display/ranking pass over
-                        // cached source metadata, not the live playback
-                        // decision, and per-source locality isn't tracked
-                        // here. `false` only affects whether an unsupported
-                        // embedded *image* subtitle counts as a burn-in cost
-                        // in the ranking -- a narrow case either way.
-                        allow_subtitle_extraction: false,
                     },
                     &user_cfg,
                     server_config
@@ -1964,13 +1957,6 @@ async fn item_for_user(
                         max_bitrate: persisted_device_profile
                             .as_ref()
                             .and_then(|p| p.max_streaming_bitrate),
-                        // Conservative: this is a display/ranking pass over
-                        // cached source metadata, not the live playback
-                        // decision, and per-source locality isn't tracked
-                        // here. `false` only affects whether an unsupported
-                        // embedded *image* subtitle counts as a burn-in cost
-                        // in the ranking -- a narrow case either way.
-                        allow_subtitle_extraction: false,
                     },
                     &user_cfg,
                     server_config
@@ -2118,17 +2104,14 @@ async fn item_for_user(
                 subtitle_mode,
                 explicit_subtitle_index: None,
                 max_bitrate: device_profile.max_streaming_bitrate,
-                // Conservative: title-annotation display pass, not the live
-                // playback decision — see the other SourceRankingContext
-                // construction sites in this file for the same reasoning.
-                allow_subtitle_extraction: false,
             };
             if let Some(sources) = base_item
                 .media_sources
                 .as_mut()
             {
                 for source in sources.iter_mut() {
-                    let assessment = ranking.assess(source);
+                    let assessment = // Subtitle streams were stripped above, so extraction feasibility is moot.
+                    ranking.assess(source, false);
                     let source_bitrate = source.bitrate;
                     if let Some(video) = source
                         .media_streams
