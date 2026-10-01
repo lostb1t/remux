@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790731254646,
+  "lastUpdate": 1790817724163,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -7479,6 +7479,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 60288916,
             "range": "± 6073673",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "committer": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "id": "5f846b57b3b982066f66ff62525cccb304bc7256",
+          "message": "chore(release): 0.35.1 [skip ci]\n\n## [0.35.1](https://github.com/lostb1t/remux/compare/v0.35.0...v0.35.1) (2026-09-30)\n\n### Bug Fixes\n\n* look up and submit RemuxDB episode probes by series id ([df73566](https://github.com/lostb1t/remux/commit/df735664540f0a157c5949e543aa563cbed7fe6e))",
+          "timestamp": "2026-09-30T07:25:25Z",
+          "url": "https://github.com/lostb1t/remux/commit/5f846b57b3b982066f66ff62525cccb304bc7256"
+        },
+        "date": 1790817722264,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 1600459,
+            "range": "± 709052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 5179891,
+            "range": "± 2311919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 20124657,
+            "range": "± 3227545",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 89353823,
+            "range": "± 5040803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 46312779,
+            "range": "± 3876476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 115491141,
+            "range": "± 7368729",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 121120010,
+            "range": "± 7371266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 142555776,
+            "range": "± 7370210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 102277488,
+            "range": "± 6430250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 132209326,
+            "range": "± 6562965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 80389904,
+            "range": "± 14709754",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 18268630,
+            "range": "± 1264803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 242298221,
+            "range": "± 13600078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 246500368,
+            "range": "± 22744598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 240483277,
+            "range": "± 11832106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 245066469,
+            "range": "± 17791221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 245816721,
+            "range": "± 13195599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 247381514,
+            "range": "± 13936030",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 57508438,
+            "range": "± 4422187",
             "unit": "ns/iter"
           }
         ]
