@@ -1142,4 +1142,76 @@ mod test {
                 .is_empty()
         );
     }
+
+    #[tokio::test]
+    async fn list_addons_does_not_refetch_unreachable_manifest() {
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let manifest = httpmock::MockServer::start();
+        let hits = manifest.mock(|when, then| {
+            when.path("/manifest.json");
+            then.status(404);
+        });
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "Unreachable manifest".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: json!({ "manifest_url": manifest.url("/manifest.json") })
+                    .into(),
+            },
+            resources: vec![],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            service_filter: vec![],
+        };
+        addon
+            .insert(
+                &ctx.0
+                    .db,
+            )
+            .await
+            .unwrap();
+        ctx.0
+            .addons
+            .reload(
+                &ctx.0
+                    .db,
+                &ctx.0
+                    .config,
+            )
+            .await
+            .unwrap();
+        let hits_after_load = hits.hits();
+        assert!(hits_after_load >= 1, "load should have probed the manifest");
+
+        for _ in 0..2 {
+            let list: Vec<AddonDto> = server
+                .get("/addons")
+                .add_header(h.clone(), v.clone())
+                .await
+                .json();
+            let dto = list
+                .iter()
+                .find(|a| a.id == addon.id)
+                .expect("addon listed despite unreachable manifest");
+            assert!(dto.manifest_unreachable);
+            assert!(
+                !dto.supported_resources
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            hits.hits(),
+            hits_after_load,
+            "listing addons must not issue manifest requests"
+        );
+    }
 }

@@ -20,7 +20,7 @@ pub mod ytdlp;
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
@@ -1094,6 +1094,8 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------
+
+const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 
 #[derive(Clone)]
 pub struct AddonService {
