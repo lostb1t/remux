@@ -20,7 +20,7 @@ pub mod ytdlp;
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
@@ -897,6 +897,9 @@ pub trait LyricAddon: Send + Sync {
 #[derive(Clone, Default)]
 pub struct AddonCapabilities {
     pub metadata: AddonMetadata,
+    /// The live manifest could not be fetched when the addon was loaded, so
+    /// `metadata` is the preset's static fallback.
+    pub manifest_unreachable: bool,
     pub kind: Option<Arc<dyn AddonKind>>,
     pub catalog: Option<Arc<dyn CatalogAddon>>,
     pub meta: Option<Arc<dyn MetaAddon>>,
@@ -1091,6 +1094,8 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------
+
+const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 
 #[derive(Clone)]
 pub struct AddonService {
@@ -1363,7 +1368,7 @@ impl AddonService {
     ) -> Result<Vec<AddonRuntime>> {
         let presets = registered_presets();
         let addons = Addon::list(db).await?;
-        let mut runtimes = Vec::new();
+        let mut pending = Vec::new();
 
         for mut addon in addons
             .into_iter()
@@ -1396,7 +1401,27 @@ impl AddonService {
                 Ok(mut caps) => {
                     // Start with the preset's static metadata, then upgrade with live manifest data.
                     caps.metadata = preset.metadata();
-                    if let Some(ref kind) = caps.kind {
+                    pending.push((addon, caps));
+                }
+                Err(e) => warn!(
+                    addon_id = %addon.id,
+                    kind = %addon.preset.kind,
+                    error = %e,
+                    "failed to instantiate addon"
+                ),
+            }
+        }
+
+        // Manifests are fetched concurrently so N stalled addons cost one
+        // timeout window, not N.
+        let runtimes = futures::future::join_all(
+            pending
+                .into_iter()
+                .map(|(addon, mut caps)| async move {
+                    if let Some(kind) = caps
+                        .kind
+                        .clone()
+                    {
                         match kind
                             .available_info()
                             .await
@@ -1414,6 +1439,7 @@ impl AddonService {
                             }
                             Ok(None) => {}
                             Err(e) => {
+                                caps.manifest_unreachable = true;
                                 warn!(
                                     addon_id = %addon.id,
                                     name = %addon.name,
@@ -1423,16 +1449,10 @@ impl AddonService {
                             }
                         }
                     }
-                    runtimes.push(AddonRuntime { row: addon, caps });
-                }
-                Err(e) => warn!(
-                    addon_id = %addon.id,
-                    kind = %addon.preset.kind,
-                    error = %e,
-                    "failed to instantiate addon"
-                ),
-            }
-        }
+                    AddonRuntime { row: addon, caps }
+                }),
+        )
+        .await;
         Ok(runtimes)
     }
 
