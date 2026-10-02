@@ -1605,7 +1605,8 @@ pub async fn item(
     item_for_user(state, session, id, fields, None).await
 }
 
-fn rank_item_sources(
+async fn rank_item_sources(
+    db: &sqlx::SqlitePool,
     sources: &mut [db::Media],
     ranking: SourceRankingContext<'_>,
     user_cfg: &api::UserConfiguration,
@@ -1625,6 +1626,16 @@ fn rank_item_sources(
         return;
     }
 
+    let mut extraction: std::collections::HashMap<Uuid, bool> = Default::default();
+    for source in sources.iter() {
+        extraction.insert(
+            source.id,
+            source
+                .allows_subtitle_extraction(db)
+                .await,
+        );
+    }
+
     crate::services::StreamService::rank_sources(sources, ranking, |source| {
         let mut info = api::MediaSourceInfo::from(source.clone());
         crate::conversions::apply_filename_guess(&mut info, source);
@@ -1637,7 +1648,13 @@ fn rank_item_sources(
             None,
             None,
         );
-        (info, source.allows_local_subtitle_extraction())
+        (
+            info,
+            extraction
+                .get(&source.id)
+                .copied()
+                .unwrap_or(false),
+        )
     });
 }
 
@@ -1864,6 +1881,9 @@ async fn item_for_user(
                 .as_mut()
             {
                 rank_item_sources(
+                    &state
+                        .ctx
+                        .db,
                     sources,
                     SourceRankingContext {
                         mode: server_config
@@ -1887,7 +1907,8 @@ async fn item_for_user(
                     media
                         .original_language
                         .as_deref(),
-                );
+                )
+                .await;
             }
         }
 
@@ -1942,6 +1963,9 @@ async fn item_for_user(
                 .as_mut()
             {
                 rank_item_sources(
+                    &state
+                        .ctx
+                        .db,
                     sources,
                     SourceRankingContext {
                         mode: server_config
@@ -1965,7 +1989,8 @@ async fn item_for_user(
                     media
                         .original_language
                         .as_deref(),
-                );
+                )
+                .await;
             }
         }
 

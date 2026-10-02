@@ -677,10 +677,8 @@ async fn items_playbackinfo_inner(
         // Start extracting in the background for the subtitle the client will
         // most likely request (the selected or default one, when it's an
         // embedded text track delivered externally). The subtitle endpoint
-        // joins this run or hits the cache. Local sources only: remote ones extract
-        // on the first subtitle request instead.
+        // joins this run or hits the cache.
         if allow_subtitle_extraction
-            && effective_stream.allows_local_subtitle_extraction()
             && let Some(index) = effective_sub_idx
             && let Some(delivery_format) = source
                 .media_streams
@@ -3427,6 +3425,7 @@ mod tests {
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let now = chrono::Utc::now().naive_utc();
+        let addon_id = insert_extraction_addon(&guard.0).await;
 
         let mut media = crate::db::Media {
             title: "PGS Alias Test".to_string(),
@@ -3435,6 +3434,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(MediaSourceInfo {
@@ -4552,12 +4552,46 @@ mod tests {
         );
     }
 
+    /// Insert an addon row that has opted in to subtitle extraction.
+    async fn insert_extraction_addon(ctx: &crate::AppContext) -> uuid::Uuid {
+        use crate::addons::addon::Addon;
+        use chrono::Utc;
+        use remux_sdks::{remux::AddonPresetRef, stremio::ResourceType};
+        use uuid::Uuid;
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "extraction-test-addon".to_string(),
+            preset: AddonPresetRef {
+                kind: "opendal-local".to_string(),
+                config: serde_json::json!({}).into(),
+            },
+            resources: vec![ResourceType::Stream],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: true,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+        addon.id
+    }
+
     /// Build a Stream with French (index 2) and English (index 3) subtitle tracks.
     async fn insert_subtitle_source(ctx: &crate::AppContext) -> crate::db::Media {
         use crate::{
             api::{MediaSourceInfo, MediaStream, MediaStreamType},
             db,
         };
+        let addon_id = insert_extraction_addon(ctx).await;
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
             container: Some(VideoContainer::Mkv),
@@ -4605,6 +4639,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture-subs.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(probe),

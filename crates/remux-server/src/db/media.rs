@@ -2045,32 +2045,23 @@ impl Media {
         )
     }
 
-    /// On-demand subtitle extraction reads the whole file, so it is only ever
-    /// attempted for a local source — never for remote (torrent/debrid/HTTP)
-    /// unless an OpenDAL addon opts in (see `allows_subtitle_extraction`).
-    pub fn allows_local_subtitle_extraction(&self) -> bool {
-        self.stream_info
-            .as_ref()
-            .is_some_and(|si| {
-                si.descriptor
-                    .is_local()
-            })
-    }
-
-    /// Like `allows_local_subtitle_extraction`, but also true for an OpenDAL
-    /// source whose addon has opted in to subtitle extraction.
+    /// On-demand subtitle extraction reads the whole file, so it only runs for
+    /// sources whose OpenDAL addon has opted in.
     pub async fn allows_subtitle_extraction(&self, db: &SqlitePool) -> bool {
-        if self.allows_local_subtitle_extraction() {
-            return true;
-        }
-        let Some(crate::stream::StreamDescriptor::Opendal { addon_id, .. }) = self
+        let Some(addon_id) = self
             .stream_info
             .as_ref()
-            .map(|si| &si.descriptor)
+            .and_then(|si| {
+                si.addon_id
+                    .or_else(|| {
+                        si.descriptor
+                            .addon_id()
+                    })
+            })
         else {
             return false;
         };
-        crate::addons::Addon::get(db, *addon_id)
+        crate::addons::Addon::get(db, addon_id)
             .await
             .ok()
             .flatten()
