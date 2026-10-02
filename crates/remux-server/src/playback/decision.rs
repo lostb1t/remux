@@ -210,6 +210,7 @@ pub(crate) fn build_transcode_decision(
     q: &api::PlaybackInfoQuery,
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
+    allow_subtitle_extraction: bool,
 ) -> TranscodeDecision {
     let transcode_required = !reasons.is_empty()
         || !q
@@ -260,6 +261,7 @@ pub(crate) fn build_transcode_decision(
         session,
         cfg,
         permissions,
+        allow_subtitle_extraction,
     )
 }
 
@@ -324,6 +326,7 @@ fn build_video_transcode(
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
     permissions: PlaybackPermissions,
+    allow_subtitle_extraction: bool,
 ) -> TranscodeDecision {
     let trans_profile = cfg
         .device_profile
@@ -358,6 +361,7 @@ fn build_video_transcode(
         effective_sub_idx,
         &cfg.subtitle_mode,
         &cfg.device_profile,
+        allow_subtitle_extraction,
     );
 
     // When an encoder is not allowed (server setting or user policy), fall
@@ -509,6 +513,7 @@ fn subtitle_burn_method(
     effective_sub_idx: Option<i64>,
     subtitle_mode: &EmbeddedSubtitleHandling,
     device_profile: &Option<api::DeviceProfile>,
+    allow_extraction: bool,
 ) -> Option<api::SubtitleDeliveryMethod> {
     let stream = effective_sub_idx.and_then(|idx| {
         source
@@ -527,22 +532,17 @@ fn subtitle_burn_method(
         return None;
     }
 
+    // Same rule `subtitle_burn_reason` and `apply_subtitle_delivery` use, so
+    // the URL asks for burn-in exactly when the stream is marked `Encode`.
     let codec = stream
         .codec
         .as_deref()
         .unwrap_or("");
-    let not_in_profile = !device_profile
-        .as_ref()
-        .map(|dp| {
-            dp.subtitle_profiles
-                .iter()
-                .filter_map(|p| {
-                    p.format
-                        .as_deref()
-                })
-                .any(|f| subtitle_codec_matches_profile(codec, f))
-        })
-        .unwrap_or(false);
+    let not_in_profile = !crate::device_profile::subtitle_codec_deliverable(
+        &SubtitleCodec::from_codec_name(codec),
+        device_profile.as_ref(),
+        allow_extraction,
+    );
 
     if not_in_profile {
         Some(api::SubtitleDeliveryMethod::Encode)
@@ -717,6 +717,7 @@ mod tests {
             &q,
             &session,
             &cfg,
+            true,
         );
 
         let TranscodeDecision::Transcode(outcome) = decision else {
@@ -805,6 +806,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -837,6 +839,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(enc),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -862,6 +865,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("video transcoding remains allowed when only remuxing is disabled");
         };
@@ -1044,6 +1048,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected transcode outcome");
         };
@@ -1084,6 +1089,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(enc),
+            true,
         ) else {
             panic!("expected transcode outcome");
         };
@@ -1117,6 +1123,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -1145,6 +1152,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("an HEVC sample-entry mismatch must remux, not direct play");
         };
@@ -1176,6 +1184,7 @@ mod tests {
             &q,
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected a remux");
         };
@@ -1221,6 +1230,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected transcode outcome for container remux");
         };
@@ -1246,6 +1256,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!(
                 "VideoProfileNotSupported must trigger a transcode, not direct play"
@@ -1258,6 +1269,54 @@ mod tests {
             "VideoProfileNotSupported must force real video re-encoding, not copy: {}",
             outcome.url
         );
+    }
+
+    #[test]
+    fn burn_in_url_follows_extraction_feasibility_for_external_only_pgs() {
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Mkv);
+        let stream = |codec: &str, type_, index| api::MediaStream {
+            codec: Some(codec.to_string()),
+            type_: Some(type_),
+            index,
+            ..Default::default()
+        };
+        source.media_streams = vec![
+            stream("h264", api::MediaStreamType::Video, 0),
+            stream("aac", api::MediaStreamType::Audio, 1),
+            stream("hdmv_pgs_subtitle", api::MediaStreamType::Subtitle, 2),
+        ];
+        let mut cfg = base_cfg(EncodingOptions::default());
+        cfg.device_profile = Some(api::DeviceProfile {
+            subtitle_profiles: vec![remux_sdks::remux::SubtitleProfile {
+                format: Some("pgs".to_string()),
+                method: Some(remux_sdks::remux::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        });
+        cfg.subtitle_mode = EmbeddedSubtitleHandling::Burn;
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::SubtitleCodecNotSupported(
+            "hdmv_pgs_subtitle".to_string(),
+        ));
+        let url = |allow_extraction| {
+            let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+                &source,
+                &reasons,
+                Some(2),
+                &api::PlaybackInfoQuery::default(),
+                &session,
+                &cfg,
+                allow_extraction,
+            ) else {
+                panic!("expected a transcode");
+            };
+            outcome.url
+        };
+
+        assert!(url(false).contains("SubtitleMethod=Encode"));
+        assert!(!url(true).contains("SubtitleMethod=Encode"));
     }
 
     #[test]
@@ -1307,8 +1366,9 @@ mod tests {
         // When NO subtitle is selected (None): DirectPlay (no transcode reasons)
         let reasons = api::TranscodeReasons::default();
         let query = api::PlaybackInfoQuery::default();
-        let decision =
-            build_transcode_decision(&source, &reasons, None, &query, &session, &cfg);
+        let decision = build_transcode_decision(
+            &source, &reasons, None, &query, &session, &cfg, true,
+        );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
             "no subtitle selected in burn mode should remain direct play"
@@ -1326,6 +1386,7 @@ mod tests {
             &query,
             &session,
             &cfg,
+            true,
         );
         match decision_sub {
             TranscodeDecision::Transcode(outcome) => {

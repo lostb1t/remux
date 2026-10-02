@@ -132,6 +132,36 @@ static SUBTITLE_EXTRACTION_INFLIGHT: std::sync::LazyLock<
     tokio::sync::Mutex::new(std::collections::HashMap::new())
 });
 
+/// Starts extracting `stream_index` (and every other extractable track on the
+/// source, in the same pass) in the background, so the subtitle request that
+/// follows PlaybackInfo finds the cache written or joins the running pass.
+pub(crate) fn prefetch_embedded_subtitles(
+    data_dir: std::path::PathBuf,
+    input_url: String,
+    probe: api::MediaSourceInfo,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    delivery_format: &str,
+) {
+    let cache_codec = subtitle_cache_codec(delivery_format);
+    tokio::spawn(async move {
+        if let Err(e) = ensure_subtitle_cached(
+            &data_dir,
+            &input_url,
+            &probe,
+            item_id,
+            media_source_id,
+            stream_index,
+            cache_codec,
+        )
+        .await
+        {
+            debug!(%item_id, stream_index, "subtitle prefetch failed: {e}");
+        }
+    });
+}
+
 /// Builds the list of every extractable (embedded, non-external, text)
 /// subtitle stream on `probe`, in container order, with the ffmpeg `-map`
 /// spec and cache codec(s) each one needs. Image/bitmap subtitles (PGS,
@@ -148,7 +178,14 @@ static SUBTITLE_EXTRACTION_INFLIGHT: std::sync::LazyLock<
 /// one: VTT/SRT/JSON requests are always served from the SRT cache (see
 /// `subtitle_cache_codec`), and without it those requests would 404 against
 /// a stream that only ever produced a `.ass` file.
-fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitle> {
+///
+/// `requested` adds one extra output for a stream when the plan above doesn't
+/// already cover it — an `.ass` request for an SRT track is converted, like
+/// Jellyfin does, rather than left with no file to serve.
+fn extractable_subtitles(
+    probe: &api::MediaSourceInfo,
+    requested: Option<(i64, &api::SubtitleCodec)>,
+) -> Vec<ExtractableSubtitle> {
     // ffmpeg's `0:s:N` stream specifier counts every embedded subtitle
     // stream in the container, image ones included — so the ordinal has to
     // be computed over *all* of them, in container order, not just the text
@@ -185,6 +222,14 @@ fn extractable_subtitles(probe: &api::MediaSourceInfo) -> Vec<ExtractableSubtitl
             let mut outputs = vec![output(cache_codec.clone())];
             if cache_codec == api::SubtitleCodec::Ass {
                 outputs.push(output(api::SubtitleCodec::Srt));
+            }
+            if let Some((index, codec)) = requested
+                && index == stream.index
+                && !outputs
+                    .iter()
+                    .any(|o| &o.cache_codec == codec)
+            {
+                outputs.push(output(codec.clone()));
             }
             outputs
         })
@@ -404,25 +449,37 @@ async fn ensure_subtitle_cached(
         return Ok(requested_path);
     }
     info!(%item_id, stream_index, "subtitle cache miss — extracting on-demand");
+    // Another request's batch may already be running without the output this
+    // one needs (e.g. an `.ass` request joining an SRT-only batch). That run
+    // is gone by the time we wake, so go again once, now as the starter.
+    let mut attempt = 0;
+    loop {
+        let mut joined = false;
 
-    // A codec ffmpeg may not be able to convert (unknown or missing) aborts
-    // the whole batch, losing every good track with it. Batch only known
-    // text codecs; an unknown-codec track is extracted on its own, and only
-    // when it's the one requested.
-    let solo = (!probe
-        .media_streams
-        .iter()
-        .any(|s| s.index == stream_index && !s.is_external && is_known_text_codec(s)))
-    .then_some(stream_index);
-    let key = (item_id, media_source_id, solo);
-    let shared = {
-        let mut inflight = SUBTITLE_EXTRACTION_INFLIGHT
-            .lock()
-            .await;
-        if let Some(existing) = inflight.get(&key) {
-            existing.clone()
-        } else {
-            let missing: Vec<ExtractableSubtitle> = extractable_subtitles(probe)
+        // A codec ffmpeg may not be able to convert (unknown or missing) aborts
+        // the whole batch, losing every good track with it. Batch only known
+        // text codecs; an unknown-codec track is extracted on its own, and only
+        // when it's the one requested.
+        let solo = (!probe
+            .media_streams
+            .iter()
+            .any(|s| {
+                s.index == stream_index && !s.is_external && is_known_text_codec(s)
+            }))
+        .then_some(stream_index);
+        let key = (item_id, media_source_id, solo);
+        let shared = {
+            let mut inflight = SUBTITLE_EXTRACTION_INFLIGHT
+                .lock()
+                .await;
+            if let Some(existing) = inflight.get(&key) {
+                joined = true;
+                existing.clone()
+            } else {
+                let missing: Vec<ExtractableSubtitle> = extractable_subtitles(
+                    probe,
+                    Some((stream_index, &requested_cache_codec)),
+                )
                 .into_iter()
                 .filter(|s| match solo {
                     Some(index) => s.stream_index == index,
@@ -438,49 +495,55 @@ async fn ensure_subtitle_cached(
                     ))
                 })
                 .collect();
-            let data_dir = data_dir.to_path_buf();
-            let input_url = input_url.to_string();
-            let future: BoxFuture<'static, ExtractionOutcome> = Box::pin(async move {
-                let result = extract_subtitles_to_cache(
-                    &data_dir,
-                    &input_url,
-                    item_id,
-                    media_source_id,
-                    &missing,
-                )
-                .await
-                .map_err(|e| e.to_string());
-                // Remove ourselves once done (success or failure) so a
-                // later request retries fresh instead of replaying a stale
-                // error, or needlessly re-joining a completed run, forever.
-                SUBTITLE_EXTRACTION_INFLIGHT
-                    .lock()
-                    .await
-                    .remove(&key);
-                result
-            });
-            let shared = future.shared();
-            // Drives `shared` to completion on the runtime directly, so it
-            // keeps running even if every caller currently awaiting a clone
-            // of it (including the one about to be spawned below) stops
-            // polling — e.g. because the HTTP request that triggered it
-            // disconnected.
-            tokio::spawn(shared.clone());
-            inflight.insert(key, shared.clone());
-            shared
+                let data_dir = data_dir.to_path_buf();
+                let input_url = input_url.to_string();
+                let future: BoxFuture<'static, ExtractionOutcome> =
+                    Box::pin(async move {
+                        let result = extract_subtitles_to_cache(
+                            &data_dir,
+                            &input_url,
+                            item_id,
+                            media_source_id,
+                            &missing,
+                        )
+                        .await
+                        .map_err(|e| e.to_string());
+                        // Remove ourselves once done (success or failure) so a
+                        // later request retries fresh instead of replaying a stale
+                        // error, or needlessly re-joining a completed run, forever.
+                        SUBTITLE_EXTRACTION_INFLIGHT
+                            .lock()
+                            .await
+                            .remove(&key);
+                        result
+                    });
+                let shared = future.shared();
+                // Drives `shared` to completion on the runtime directly, so it
+                // keeps running even if every caller currently awaiting a clone
+                // of it (including the one about to be spawned below) stops
+                // polling — e.g. because the HTTP request that triggered it
+                // disconnected.
+                tokio::spawn(shared.clone());
+                inflight.insert(key, shared.clone());
+                shared
+            }
+        };
+
+        shared
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+
+        if !is_cached(&requested_path) {
+            if joined && attempt == 0 {
+                attempt += 1;
+                continue;
+            }
+            anyhow::bail!(
+                "subtitle extraction produced no output for stream {stream_index}"
+            );
         }
-    };
-
-    shared
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-
-    if !is_cached(&requested_path) {
-        anyhow::bail!(
-            "subtitle extraction produced no output for stream {stream_index}"
-        );
+        return Ok(requested_path);
     }
-    Ok(requested_path)
 }
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
@@ -2089,6 +2152,34 @@ mod tests {
     }
 
     #[test]
+    fn requested_ass_output_is_planned_for_an_srt_track() {
+        let source = source_with_subtitles(vec![api::MediaStream {
+            index: 2,
+            type_: Some(api::MediaStreamType::Subtitle),
+            codec: Some("subrip".into()),
+            is_external: false,
+            ..Default::default()
+        }]);
+
+        let plain = extractable_subtitles(&source, None);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].cache_codec, api::SubtitleCodec::Srt);
+
+        let planned =
+            extractable_subtitles(&source, Some((2, &api::SubtitleCodec::Ass)));
+        let ass = planned
+            .iter()
+            .find(|s| s.cache_codec == api::SubtitleCodec::Ass)
+            .expect("the requested ASS output must be planned");
+        assert_eq!(ass.stream_index, 2);
+        assert_eq!(ass.ffmpeg_codec, "ass");
+        assert_eq!(planned.len(), 2);
+
+        let other = extractable_subtitles(&source, Some((9, &api::SubtitleCodec::Ass)));
+        assert_eq!(other.len(), 1);
+    }
+
+    #[test]
     fn extractable_subtitles_skips_external_and_image_streams_and_orders_by_index() {
         let source = source_with_subtitles(vec![
             api::MediaStream {
@@ -2127,7 +2218,7 @@ mod tests {
             },
         ]);
 
-        let extractable = extractable_subtitles(&source);
+        let extractable = extractable_subtitles(&source, None);
         let indexes: Vec<i64> = extractable
             .iter()
             .map(|s| s.stream_index)
@@ -2185,7 +2276,7 @@ mod tests {
             ..Default::default()
         }]);
 
-        let extractable = extractable_subtitles(&source);
+        let extractable = extractable_subtitles(&source, None);
         assert_eq!(
             extractable.len(),
             2,
@@ -2247,7 +2338,7 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        let streams = extractable_subtitles(&source);
+        let streams = extractable_subtitles(&source, None);
         assert_eq!(streams.len(), 3, "1 (subrip) + 2 (ass) + 0 (pgs, excluded)");
 
         let (args, cache_paths) = build_subtitle_extraction_args(
@@ -2351,7 +2442,7 @@ mod tests {
             codec: Some("subrip".into()),
             ..Default::default()
         }]);
-        let streams = extractable_subtitles(&source);
+        let streams = extractable_subtitles(&source, None);
 
         let (args, _) = build_subtitle_extraction_args(
             data_dir,

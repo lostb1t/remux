@@ -516,19 +516,6 @@ async fn items_playbackinfo_inner(
             );
         }
 
-        // Pre-extract all embedded text subtitle streams in the background, in one
-        // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
-        // is already written (same approach Jellyfin uses).
-        // Use effective_stream so the URL matches the stream whose track layout was probed.
-        let effective_url = effective_stream
-            .stream_info
-            .as_ref()
-            .map(|si| {
-                si.descriptor
-                    .server_input(effective_stream.id, port)
-            });
-        let _ = effective_url;
-
         // Resolve default audio/subtitle stream indexes for this source. These are
         // per-request API values (never persisted); resolving before the transcode
         // decision and subtitle delivery means those consumers see the stream the
@@ -583,6 +570,7 @@ async fn items_playbackinfo_inner(
             &q,
             &session,
             &cfg,
+            allow_subtitle_extraction,
         ) {
             TranscodeDecision::DirectPlay => {
                 // These are server capabilities, not the mode selected for this
@@ -679,6 +667,68 @@ async fn items_playbackinfo_inner(
         );
 
         source.transcoding_reasons = transcode_reasons;
+
+        // Start extracting in the background for the subtitle the client will
+        // most likely request (the selected or default one, when it's an
+        // embedded text track delivered externally). The subtitle endpoint
+        // joins this run or hits the cache. Local sources only.
+        if allow_subtitle_extraction
+            && let Some(index) = effective_sub_idx
+            && let Some(delivery_format) = source
+                .media_streams
+                .iter()
+                .find(|s| {
+                    s.index == index
+                        && s.type_ == Some(api::MediaStreamType::Subtitle)
+                        && s.delivery_method
+                            == Some(api::SubtitleDeliveryMethod::External)
+                })
+                .and_then(|s| {
+                    s.delivery_url
+                        .as_deref()
+                })
+                .and_then(|url| {
+                    url.split('?')
+                        .next()
+                        .and_then(|path| {
+                            path.rsplit('.')
+                                .next()
+                        })
+                })
+            && let Some(probe) = effective_stream
+                .probe_data
+                .clone()
+            && probe
+                .media_streams
+                .iter()
+                .any(|s| {
+                    s.index == index
+                        && s.type_ == Some(api::MediaStreamType::Subtitle)
+                        && !s.is_external
+                        && s.is_text_subtitle_stream()
+                })
+            && let Some(input_url) = effective_stream
+                .stream_info
+                .as_ref()
+                .map(|si| {
+                    si.descriptor
+                        .server_input(effective_stream.id, port)
+                })
+        {
+            crate::api::subtitles::prefetch_embedded_subtitles(
+                state
+                    .ctx
+                    .config
+                    .data_dir
+                    .clone(),
+                input_url,
+                probe,
+                id,
+                subtitle_source_id,
+                index,
+                delivery_format,
+            );
+        }
 
         if device_profile.is_some()
             && probe_cfg
