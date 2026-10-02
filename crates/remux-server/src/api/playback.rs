@@ -72,6 +72,18 @@ struct SourceExtras {
     /// remote debrid/torrent release of the same item), so the ranking pass
     /// needs it per source, not just for the main transcode decision.
     allow_subtitle_extraction: bool,
+    /// Background extraction to start if this ends up the source that plays.
+    /// Never started for the other candidates: on a remote source it reads
+    /// the whole file.
+    subtitle_prefetch: Option<SubtitlePrefetch>,
+}
+
+struct SubtitlePrefetch {
+    input_url: String,
+    probe: api::MediaSourceInfo,
+    media_source_id: Uuid,
+    stream_index: i64,
+    delivery_format: String,
 }
 
 #[post("/items/{id}/playbackinfo")]
@@ -674,11 +686,10 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
-        // Start extracting in the background for the subtitle the client will
-        // most likely request (the selected or default one, when it's an
-        // embedded text track delivered externally). The subtitle endpoint
-        // joins this run or hits the cache.
-        if allow_subtitle_extraction
+        // The subtitle the client will most likely request (the selected or
+        // default one, when it's an embedded text track delivered externally).
+        // Only started for the selected source, after ranking.
+        let subtitle_prefetch = if allow_subtitle_extraction
             && let Some(index) = effective_sub_idx
             && let Some(delivery_format) = source
                 .media_streams
@@ -719,22 +730,17 @@ async fn items_playbackinfo_inner(
                 .map(|si| {
                     si.descriptor
                         .server_input(effective_stream.id, port)
-                })
-        {
-            crate::api::subtitles::prefetch_embedded_subtitles(
-                state
-                    .ctx
-                    .config
-                    .data_dir
-                    .clone(),
+                }) {
+            Some(SubtitlePrefetch {
                 input_url,
                 probe,
-                id,
-                subtitle_source_id,
-                index,
-                delivery_format,
-            );
-        }
+                media_source_id: subtitle_source_id,
+                stream_index: index,
+                delivery_format: delivery_format.to_string(),
+            })
+        } else {
+            None
+        };
 
         if device_profile.is_some()
             && probe_cfg
@@ -769,6 +775,7 @@ async fn items_playbackinfo_inner(
             subtitle_routes: (subtitle_source_id, routes),
             group_id: stream.group_id,
             allow_subtitle_extraction,
+            subtitle_prefetch,
         });
         media_sources.push(source);
     }
@@ -857,6 +864,40 @@ async fn items_playbackinfo_inner(
             media_sources.push(source);
             source_extras.push(extras);
         }
+    }
+
+    // Only the source that will actually play gets a background extraction.
+    let selected_idx = if specific_stream_requested {
+        q.media_source_id
+            .and_then(|requested| {
+                media_sources
+                    .iter()
+                    .position(|s| s.id == requested)
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if let Some(prefetch) = source_extras
+        .get_mut(selected_idx)
+        .and_then(|e| {
+            e.subtitle_prefetch
+                .take()
+        })
+    {
+        crate::api::subtitles::prefetch_embedded_subtitles(
+            state
+                .ctx
+                .config
+                .data_dir
+                .clone(),
+            prefetch.input_url,
+            prefetch.probe,
+            id,
+            prefetch.media_source_id,
+            prefetch.stream_index,
+            &prefetch.delivery_format,
+        );
     }
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
