@@ -633,14 +633,13 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", "Unsupported Subtitle Handling" }
                             div { class: "field-hint",
-                                "What to do with embedded subtitle streams the client device doesn't support. Burn encodes them into the video. Extract delivers them separately via the subtitle stream endpoint (may be slow for remote sources). Strip removes them from the media source so the client never sees them — no subtitle-triggered transcoding."
+                                "Fallback for an embedded subtitle the client device doesn't support, used when extraction isn't attempted (local files always try extraction first; remote sources never extract). Burn encodes it into the video. Strip removes it from the media source so the client never sees it — no subtitle-triggered transcoding."
                             }
                             select {
                                 class: "select-input",
                                 value: subtitle_mode.read().clone(),
                                 onchange: move |e| subtitle_mode.set(e.value()),
                                 option { value: "Burn", "Burn into video (default)" }
-                                option { value: "Extract", "Extract and deliver separately" }
                                 option { value: "Strip", "Strip (remove, no transcoding)" }
                             }
                         }

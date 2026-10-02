@@ -1,0 +1,1 @@
+ALTER TABLE addons ADD COLUMN subtitle_extraction BOOLEAN NOT NULL DEFAULT 0;

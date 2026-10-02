@@ -210,6 +210,7 @@ pub(crate) fn build_transcode_decision(
     q: &api::PlaybackInfoQuery,
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
+    allow_subtitle_extraction: bool,
 ) -> TranscodeDecision {
     let transcode_required = !reasons.is_empty()
         || !q
@@ -260,6 +261,7 @@ pub(crate) fn build_transcode_decision(
         session,
         cfg,
         permissions,
+        allow_subtitle_extraction,
     )
 }
 
@@ -324,6 +326,7 @@ fn build_video_transcode(
     session: &db::auth::AuthSession,
     cfg: &PlaybackConfig,
     permissions: PlaybackPermissions,
+    allow_subtitle_extraction: bool,
 ) -> TranscodeDecision {
     let trans_profile = cfg
         .device_profile
@@ -358,6 +361,7 @@ fn build_video_transcode(
         effective_sub_idx,
         &cfg.subtitle_mode,
         &cfg.device_profile,
+        allow_subtitle_extraction,
     );
 
     // When an encoder is not allowed (server setting or user policy), fall
@@ -509,6 +513,7 @@ fn subtitle_burn_method(
     effective_sub_idx: Option<i64>,
     subtitle_mode: &EmbeddedSubtitleHandling,
     device_profile: &Option<api::DeviceProfile>,
+    allow_extraction: bool,
 ) -> Option<api::SubtitleDeliveryMethod> {
     let stream = effective_sub_idx.and_then(|idx| {
         source
@@ -527,22 +532,17 @@ fn subtitle_burn_method(
         return None;
     }
 
+    // Same rule `subtitle_burn_reason` and `apply_subtitle_delivery` use, so
+    // the URL asks for burn-in exactly when the stream is marked `Encode`.
     let codec = stream
         .codec
         .as_deref()
         .unwrap_or("");
-    let not_in_profile = !device_profile
-        .as_ref()
-        .map(|dp| {
-            dp.subtitle_profiles
-                .iter()
-                .filter_map(|p| {
-                    p.format
-                        .as_deref()
-                })
-                .any(|f| subtitle_codec_matches_profile(codec, f))
-        })
-        .unwrap_or(false);
+    let not_in_profile = !crate::device_profile::subtitle_codec_deliverable(
+        &SubtitleCodec::from_codec_name(codec),
+        device_profile.as_ref(),
+        allow_extraction,
+    );
 
     if not_in_profile {
         Some(api::SubtitleDeliveryMethod::Encode)
@@ -561,6 +561,7 @@ pub(crate) fn apply_subtitle_delivery(
     access_token: &str,
     device_profile: &Option<api::DeviceProfile>,
     subtitle_mode: EmbeddedSubtitleHandling,
+    allow_extraction: bool,
 ) {
     let source_id = source.id;
     for stream in source
@@ -575,23 +576,11 @@ pub(crate) fn apply_subtitle_delivery(
             .as_deref()
             .unwrap_or_default();
         let profile_supports = |c: SubtitleCodec| -> bool {
-            device_profile
-                .as_ref()
-                .map(|dp| {
-                    dp.subtitle_profiles
-                        .iter()
-                        .filter_map(|p| {
-                            p.format
-                                .as_deref()
-                        })
-                        .any(|f| {
-                            f.parse::<SubtitleCodec>()
-                                .ok()
-                                .as_ref()
-                                == Some(&c)
-                        })
-                })
-                .unwrap_or(false)
+            crate::device_profile::profile_declares_subtitle_codec(
+                device_profile.as_ref(),
+                &c,
+                None,
+            )
         };
         let profile_embeds = |c: SubtitleCodec| -> bool {
             crate::device_profile::profile_embeds_subtitle_codec(
@@ -619,33 +608,62 @@ pub(crate) fn apply_subtitle_delivery(
         } else {
             "vtt"
         };
-        let client_can_handle_image = is_image_sub
-            && parsed_codec
-                .as_ref()
-                .map(|c| profile_supports(c.clone()) || profile_embeds(c.clone()))
-                .unwrap_or(false);
-        if !stream.is_external
-            && parsed_codec
-                .as_ref()
-                .map(|c| profile_embeds(c.clone()))
-                .unwrap_or(false)
-        {
-            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
-        } else if !stream.is_external
-            && is_image_sub
-            && !client_can_handle_image
-            && subtitle_mode == EmbeddedSubtitleHandling::Burn
-        {
-            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
-        } else {
-            let idx = stream.index;
+        let idx = stream.index;
+        let external_delivery = |stream: &mut api::MediaStream| {
             stream.delivery_url = Some(format!(
                 "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={access_token}",
             ));
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
             stream.is_external_url = Some(false);
             stream.is_external = false;
+        };
+        if stream.is_external {
+            // Already an external URL — no extraction involved, feasibility
+            // is irrelevant. Matches this function's pre-existing behavior
+            // for genuinely external streams (e.g. ones inserted directly,
+            // not via append_external_subtitles).
+            external_delivery(stream);
+        } else if parsed_codec
+            .as_ref()
+            .map(|c| profile_embeds(c.clone()))
+            .unwrap_or(false)
+        {
+            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+        } else if parsed_codec
+            .as_ref()
+            .is_some_and(|c| {
+                crate::device_profile::subtitle_codec_deliverable(
+                    c,
+                    device_profile.as_ref(),
+                    allow_extraction,
+                )
+            })
+        {
+            // Extraction feasible (local source, or remote with the setting
+            // on) — always prefer it over burning in: lossless, and doesn't
+            // force a video re-encode. Same rule the PlaybackInfo filter and
+            // the burn-in reason use (`subtitle_codec_deliverable`), so a PGS
+            // track is only offered as a `.sup` when the profile declares
+            // External PGS support; otherwise it falls through to burn-in.
+            external_delivery(stream);
+        } else if is_image_sub && subtitle_mode == EmbeddedSubtitleHandling::Burn {
+            // Extraction infeasible (or the client can't consume PGS
+            // externally): an image subtitle can still be burned in. Text
+            // subtitles have no burn-in path in the transcode pipeline, so
+            // they fall through to the last branch below regardless of
+            // subtitle_mode — same as a stream that survived the upstream
+            // feasibility filter only because the client's own profile
+            // claims some support for it.
+            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Encode);
         }
+        // Otherwise: nothing we can do — extraction isn't feasible and it's
+        // either a text subtitle (no burn-in path) or subtitle_mode is
+        // Strip. Should be rare in practice: the upstream feasibility filter
+        // (api/playback.rs, before resolve_default_streams) already drops a
+        // stream in this state unless the client's own profile explicitly
+        // claims some support for it — that one survives here with no
+        // delivery method rather than an External URL that would just fail
+        // when fetched.
     }
 }
 
@@ -699,6 +717,7 @@ mod tests {
             &q,
             &session,
             &cfg,
+            true,
         );
 
         let TranscodeDecision::Transcode(outcome) = decision else {
@@ -787,6 +806,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -819,6 +839,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(enc),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -844,6 +865,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("video transcoding remains allowed when only remuxing is disabled");
         };
@@ -1026,6 +1048,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected transcode outcome");
         };
@@ -1066,6 +1089,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(enc),
+            true,
         ) else {
             panic!("expected transcode outcome");
         };
@@ -1099,6 +1123,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
@@ -1127,6 +1152,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("an HEVC sample-entry mismatch must remux, not direct play");
         };
@@ -1158,6 +1184,7 @@ mod tests {
             &q,
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected a remux");
         };
@@ -1203,6 +1230,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!("expected transcode outcome for container remux");
         };
@@ -1228,6 +1256,7 @@ mod tests {
             &force_transcode_query(),
             &session,
             &base_cfg(EncodingOptions::default()),
+            true,
         ) else {
             panic!(
                 "VideoProfileNotSupported must trigger a transcode, not direct play"
@@ -1240,6 +1269,54 @@ mod tests {
             "VideoProfileNotSupported must force real video re-encoding, not copy: {}",
             outcome.url
         );
+    }
+
+    #[test]
+    fn burn_in_url_follows_extraction_feasibility_for_external_only_pgs() {
+        let session =
+            make_session_with_policy(remux_sdks::remux::UserPolicy::default());
+        let mut source = make_video_source(VideoContainer::Mkv);
+        let stream = |codec: &str, type_, index| api::MediaStream {
+            codec: Some(codec.to_string()),
+            type_: Some(type_),
+            index,
+            ..Default::default()
+        };
+        source.media_streams = vec![
+            stream("h264", api::MediaStreamType::Video, 0),
+            stream("aac", api::MediaStreamType::Audio, 1),
+            stream("hdmv_pgs_subtitle", api::MediaStreamType::Subtitle, 2),
+        ];
+        let mut cfg = base_cfg(EncodingOptions::default());
+        cfg.device_profile = Some(api::DeviceProfile {
+            subtitle_profiles: vec![remux_sdks::remux::SubtitleProfile {
+                format: Some("pgs".to_string()),
+                method: Some(remux_sdks::remux::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        });
+        cfg.subtitle_mode = EmbeddedSubtitleHandling::Burn;
+        let mut reasons = api::TranscodeReasons::default();
+        reasons.insert(api::TranscodeReason::SubtitleCodecNotSupported(
+            "hdmv_pgs_subtitle".to_string(),
+        ));
+        let url = |allow_extraction| {
+            let TranscodeDecision::Transcode(outcome) = build_transcode_decision(
+                &source,
+                &reasons,
+                Some(2),
+                &api::PlaybackInfoQuery::default(),
+                &session,
+                &cfg,
+                allow_extraction,
+            ) else {
+                panic!("expected a transcode");
+            };
+            outcome.url
+        };
+
+        assert!(url(false).contains("SubtitleMethod=Encode"));
+        assert!(!url(true).contains("SubtitleMethod=Encode"));
     }
 
     #[test]
@@ -1289,8 +1366,9 @@ mod tests {
         // When NO subtitle is selected (None): DirectPlay (no transcode reasons)
         let reasons = api::TranscodeReasons::default();
         let query = api::PlaybackInfoQuery::default();
-        let decision =
-            build_transcode_decision(&source, &reasons, None, &query, &session, &cfg);
+        let decision = build_transcode_decision(
+            &source, &reasons, None, &query, &session, &cfg, true,
+        );
         assert!(
             matches!(decision, TranscodeDecision::DirectPlay),
             "no subtitle selected in burn mode should remain direct play"
@@ -1308,6 +1386,7 @@ mod tests {
             &query,
             &session,
             &cfg,
+            true,
         );
         match decision_sub {
             TranscodeDecision::Transcode(outcome) => {
@@ -1330,5 +1409,175 @@ mod tests {
                 panic!("PGS subtitle selected in burn mode must trigger transcoding");
             }
         }
+    }
+
+    fn make_subtitle_source(
+        text_codec: &str,
+        image_codec: &str,
+    ) -> api::MediaSourceInfo {
+        api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![
+                api::MediaStream {
+                    codec: Some(text_codec.to_string()),
+                    type_: Some(api::MediaStreamType::Subtitle),
+                    is_text_subtitle_stream: true,
+                    index: 0,
+                    ..Default::default()
+                },
+                api::MediaStream {
+                    codec: Some(image_codec.to_string()),
+                    type_: Some(api::MediaStreamType::Subtitle),
+                    is_text_subtitle_stream: false,
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extraction_feasible_offers_external_delivery_for_text_and_pgs_capable_image_subs()
+     {
+        // local source, or remote with the setting on: allow_extraction = true.
+        // Both text and image subtitles should be offered as External, backed
+        // by extraction, regardless of subtitle_mode — but only once the
+        // client's profile actually declares it can consume the image
+        // format externally (raw PGS; there's no OCR/text conversion for it).
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        let profile = api::DeviceProfile {
+            subtitle_profiles: vec![api::SubtitleProfile {
+                format: Some("pgs".to_string()),
+                method: Some(api::SubtitleDeliveryMethod::External),
+            }],
+            ..Default::default()
+        };
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "tok",
+            &Some(profile),
+            EmbeddedSubtitleHandling::Burn,
+            true,
+        );
+        for stream in &source.media_streams {
+            assert_eq!(
+                stream.delivery_method,
+                Some(api::SubtitleDeliveryMethod::External),
+                "stream {:?} should be delivered externally when extraction is feasible \
+                 and the client's profile can consume it",
+                stream.codec
+            );
+        }
+    }
+
+    #[test]
+    fn extraction_feasible_but_client_cant_consume_pgs_falls_back_to_burn() {
+        // Regression test: allow_extraction = true but no profile declares
+        // PGS support. The image subtitle must NOT be advertised as
+        // External — that would produce a .vtt URL the extraction endpoint
+        // can't satisfy (no OCR/text conversion for image subtitles) — it
+        // should burn in instead when the mode allows it. The text
+        // subtitle's extraction never depended on PGS support, so it's
+        // unaffected.
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "tok",
+            &None,
+            EmbeddedSubtitleHandling::Burn,
+            true,
+        );
+        let text = &source.media_streams[0];
+        let image = &source.media_streams[1];
+        assert_eq!(
+            text.delivery_method,
+            Some(api::SubtitleDeliveryMethod::External),
+            "text subtitle extraction doesn't depend on PGS support"
+        );
+        assert_eq!(
+            image.delivery_method,
+            Some(api::SubtitleDeliveryMethod::Encode),
+            "image subtitle the client can't consume externally must burn in, \
+             not get an unusable vtt URL"
+        );
+    }
+
+    #[test]
+    fn extraction_infeasible_burn_mode_falls_back_to_encode_for_image_only() {
+        // remote source, setting off: allow_extraction = false. Burn mode
+        // should burn in the image subtitle (Encode) but has no burn-in path
+        // for text subtitles, so those get no delivery method at all.
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "tok",
+            &None,
+            EmbeddedSubtitleHandling::Burn,
+            false,
+        );
+        let text = &source.media_streams[0];
+        let image = &source.media_streams[1];
+        assert_eq!(
+            text.delivery_method, None,
+            "text subtitle has no burn-in path and extraction is infeasible"
+        );
+        assert_eq!(
+            image.delivery_method,
+            Some(api::SubtitleDeliveryMethod::Encode),
+            "image subtitle should burn in when extraction is infeasible"
+        );
+    }
+
+    #[test]
+    fn extraction_infeasible_strip_mode_delivers_neither_stream() {
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "tok",
+            &None,
+            EmbeddedSubtitleHandling::Strip,
+            false,
+        );
+        for stream in &source.media_streams {
+            assert_eq!(
+                stream.delivery_method, None,
+                "stream {:?} should not be deliverable in strip mode when extraction is infeasible",
+                stream.codec
+            );
+        }
+    }
+
+    #[test]
+    fn already_external_stream_ignores_extraction_feasibility() {
+        // A stream that's already external (e.g. via append_external_subtitles)
+        // must keep getting a delivery URL whether or not extraction is
+        // feasible — it never needed extraction in the first place.
+        let mut source = make_subtitle_source("subrip", "hdmv_pgs_subtitle");
+        source.media_streams[0].is_external = true;
+        apply_subtitle_delivery(
+            &mut source,
+            Uuid::new_v4(),
+            "real-token",
+            &None,
+            EmbeddedSubtitleHandling::Strip,
+            false,
+        );
+        let text = &source.media_streams[0];
+        assert_eq!(
+            text.delivery_method,
+            Some(api::SubtitleDeliveryMethod::External)
+        );
+        assert!(
+            text.delivery_url
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ApiKey=real-token"),
+            "external stream should still carry a working delivery URL"
+        );
     }
 }
