@@ -88,6 +88,7 @@ impl AddonPreset for StremioPreset {
                 std::collections::HashMap::new(),
             )),
             failed: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            manifest: Default::default(),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -221,6 +222,7 @@ pub struct StremioAddon {
     /// once for the series, then again for every child. Checked alongside
     /// `medias_cache` and evicted at the same point, by `on_series_done`.
     failed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    manifest: super::ManifestCache,
 }
 
 impl StremioAddon {
@@ -246,11 +248,17 @@ impl AddonKind for StremioAddon {
             Vec<remux_sdks::stremio::MediaType>,
         )>,
     > {
-        let svc = self.service()?;
-        let manifest = svc
-            .get_manifest()
+        let info = self
+            .manifest
+            .get_or_fetch(|| async {
+                let manifest = self
+                    .service()?
+                    .get_manifest()
+                    .await?;
+                Ok(parse_manifest_info(&manifest))
+            })
             .await?;
-        Ok(Some(parse_manifest_info(&manifest)))
+        Ok(Some(info))
     }
 }
 
