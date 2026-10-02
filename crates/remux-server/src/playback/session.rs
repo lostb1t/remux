@@ -1,4 +1,4 @@
-use remux_sdks::remux::TranscodeReasons;
+use remux_sdks::remux::{AudioCodec, TranscodeReasons, VideoCodec};
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicU32},
@@ -13,6 +13,44 @@ pub enum TranscodeState {
     Running,
     Complete,
     Error(String),
+}
+
+/// Container ffmpeg writes HLS segments in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentContainer {
+    Ts,
+    Fmp4,
+}
+
+impl SegmentContainer {
+    /// iOS Safari (and the HLS spec) require fMP4 for HEVC, so copied HEVC
+    /// video gets fMP4 segments; everything else uses MPEG-TS.
+    pub fn for_codecs(video_codec: &str, source_video_codec: Option<&str>) -> Self {
+        let hevc_copy = video_codec == "copy"
+            && source_video_codec
+                .and_then(|s| {
+                    s.parse::<VideoCodec>()
+                        .ok()
+                })
+                .is_some_and(|codec| codec.is_hevc());
+        if hevc_copy { Self::Fmp4 } else { Self::Ts }
+    }
+
+    /// Whether source audio can be stream-copied into these segments.
+    ///
+    /// TrueHD, FLAC, and PCM have no MPEG-TS stream type. fMP4 carries FLAC,
+    /// but TrueHD in MP4 is experimental in ffmpeg and browsers can't play
+    /// PCM in fMP4. Unknown codecs are assumed copyable.
+    pub fn can_copy_audio(self, source_audio_codec: Option<&str>) -> bool {
+        match source_audio_codec.and_then(|s| {
+            s.parse::<AudioCodec>()
+                .ok()
+        }) {
+            Some(AudioCodec::TrueHd | AudioCodec::Pcm) => false,
+            Some(AudioCodec::Flac) => self == Self::Fmp4,
+            _ => true,
+        }
+    }
 }
 
 pub struct TranscodeSession {
@@ -149,15 +187,18 @@ impl TranscodeSession {
             .join("main.m3u8")
     }
 
+    pub fn segment_container(&self) -> SegmentContainer {
+        SegmentContainer::for_codecs(
+            &self.video_codec,
+            self.source_video_codec
+                .as_deref(),
+        )
+    }
+
     /// Returns true if this session should use fragmented MP4 (fMP4) segments
-    /// rather than MPEG-TS. iOS Safari (and the HLS spec) require fMP4 for HEVC.
+    /// rather than MPEG-TS.
     pub fn use_fmp4(&self) -> bool {
-        self.video_codec == "copy"
-            && matches!(
-                self.source_video_codec
-                    .as_deref(),
-                Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
-            )
+        self.segment_container() == SegmentContainer::Fmp4
     }
 
     pub fn segment_path(&self, segment_id: &str) -> PathBuf {

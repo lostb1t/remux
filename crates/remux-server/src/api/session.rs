@@ -22,6 +22,7 @@ use crate::{
     db::auth,
     playback::session::TranscodeSession,
     playback_session,
+    playback_session::ServedPlayback,
     services::{self, MediaResolveService},
     signals::{
         Event, PlaybackContext, PlaybackPosition, RemoteCommandInfo, RemotePlayInfo,
@@ -229,14 +230,7 @@ pub async fn report_playback_progress(
                         )
                     },
                     reported_at: std::time::Instant::now(),
-                    video_is_copied: current_playback
-                        .transcode
-                        .as_ref()
-                        .is_none_or(|transcode| {
-                            transcode
-                                .try_read()
-                                .is_ok_and(|session| session.video_codec == "copy")
-                        }),
+                    video_is_copied: current_playback.video_is_copied(),
                 }));
         }
         if data.is_paused && !was_paused {
@@ -768,6 +762,26 @@ pub(crate) async fn build_session_list(
                         .clone(),
                     ..Default::default()
                 }
+            })
+            // Progressive FFmpeg streams have no HLS job. Clients label them
+            // Remux / Direct Stream from the direct flags, and read a missing
+            // VideoCodec as audio-only output — so a re-encoded video must be
+            // named, or it would show as a remux.
+            .or_else(|| match ps.and_then(|ps| ps.served()) {
+                Some(ServedPlayback::Ffmpeg { video, audio }) => {
+                    Some(api::TranscodingInfo {
+                        video_codec: video
+                            .codec
+                            .clone(),
+                        audio_codec: audio
+                            .codec
+                            .clone(),
+                        is_video_direct: video.copied,
+                        is_audio_direct: audio.copied,
+                        ..Default::default()
+                    })
+                }
+                _ => None,
             });
 
         // Build PlayState from active playback session, always non-null.

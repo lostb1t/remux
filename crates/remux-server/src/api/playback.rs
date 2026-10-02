@@ -2,8 +2,9 @@ use anyhow::anyhow;
 use axum::Json;
 
 use super::subtitles::{
-    SubtitleDedupSettings, append_external_subtitles,
-    drop_unsupported_embedded_subtitles_with_external_match, inject_sidecar_subtitles,
+    SidecarSubtitleRoute, SubtitleDedupSettings, append_external_subtitles,
+    drop_unsupported_embedded_subtitles_with_external_match,
+    filter_external_subtitles_for_source, inject_sidecar_subtitles, provider_filename,
     save_sidecar_subtitle_routes,
 };
 use axum::{
@@ -17,7 +18,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
 use remux_macros::{delete, get, post, query};
-use remux_sdks::remux::VideoContainer;
+use remux_sdks::remux::{PlayMethod, VideoContainer};
 use remux_utils::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -36,19 +37,19 @@ use crate::{
     db,
     db::auth,
     playback::hw_accel,
+    playback_session::{FfmpegTrack, ServedPlayback},
 };
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    device_profile::{
-        DeviceProfileExt, SourceRankingContext, SubtitleCodec,
-        subtitle_codec_matches_profile,
-    },
+    device_profile::{DeviceProfileExt, SourceRankingContext, SubtitleCodec},
     playback::{
         decision::{
-            PlaybackConfig, TranscodeDecision, apply_subtitle_delivery,
-            build_transcode_decision,
+            PlaybackConfig, PlaybackPermissions, TranscodeDecision,
+            apply_subtitle_delivery, audio_is_passthrough, build_transcode_decision,
+            selected_audio_stream,
         },
+        engine::ProgressiveFormat,
         session::{TranscodeSession, TranscodeState},
     },
     sdks,
@@ -56,6 +57,34 @@ use crate::{
     torrent,
 };
 use axum_anyhow::ApiResult as Result;
+
+/// Per-source data gathered alongside each `MediaSourceInfo` in
+/// `items_playbackinfo`, in the same order, until the capability sort has
+/// settled the final source order.
+struct SourceExtras {
+    /// The source id its DeliveryUrls were built with, and its sidecar routes.
+    subtitle_routes: (Uuid, Vec<SidecarSubtitleRoute>),
+    /// Set when the source is a stream-group representative — group order is
+    /// an explicit, admin-authored priority (drag-and-drop in the dashboard),
+    /// not something a device-capability sort should second-guess.
+    group_id: Option<Uuid>,
+    /// Whether extraction is feasible varies per source (a local file vs. a
+    /// remote debrid/torrent release of the same item), so the ranking pass
+    /// needs it per source, not just for the main transcode decision.
+    allow_subtitle_extraction: bool,
+    /// Background extraction to start if this ends up the source that plays.
+    /// Never started for the other candidates: on a remote source it reads
+    /// the whole file.
+    subtitle_prefetch: Option<SubtitlePrefetch>,
+}
+
+struct SubtitlePrefetch {
+    input_url: String,
+    probe: api::MediaSourceInfo,
+    media_source_id: Uuid,
+    stream_index: i64,
+    delivery_format: String,
+}
 
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
@@ -338,6 +367,9 @@ async fn items_playbackinfo_inner(
         subtitle_mode,
     };
 
+    let playback_permissions =
+        PlaybackPermissions::for_user(&cfg.encoding_cfg, Some(&session.user));
+
     let port = state
         .ctx
         .config
@@ -412,16 +444,7 @@ async fn items_playbackinfo_inner(
             .results
             .len(),
     );
-    let mut sidecar_subtitle_routes = Vec::with_capacity(
-        probed
-            .results
-            .len(),
-    );
-    // Tracked so the capability sort below can be skipped entirely when any
-    // source is a stream-group representative — group order is an explicit,
-    // admin-authored priority (drag-and-drop in the dashboard), not something
-    // a device-capability sort should second-guess.
-    let mut source_group_ids: Vec<Option<Uuid>> = Vec::with_capacity(
+    let mut source_extras: Vec<SourceExtras> = Vec::with_capacity(
         probed
             .results
             .len(),
@@ -466,36 +489,35 @@ async fn items_playbackinfo_inner(
             api::inject_lyric_stream(&mut source);
         }
 
-        // Strip mode: remove embedded subtitle streams not supported by the client so
-        // they don't trigger a transcode. External/addon subs are never touched.
-        // Must run before resolve_default_streams below, so a stripped-out stream
+        // Drop an embedded subtitle stream that can't be delivered any way we
+        // support (see `subtitle_codec_deliverable`: deliverable via Embed,
+        // or via External when extraction is feasible — only ever for a local
+        // source; a remote one would mean ffmpeg reading the entire remote
+        // file, so we never extract those). When not
+        // deliverable, an image (PGS) subtitle can still be burned in
+        // (subtitle_mode == Burn) — text subtitles have no burn-in path in
+        // the transcode pipeline at all, so those (and everything else in
+        // Strip mode) get dropped entirely, since there's truly nothing we
+        // can do with them.
+        // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        if subtitle_mode == remux_sdks::remux::EmbeddedSubtitleHandling::Strip {
-            source
-                .media_streams
-                .retain(|s| {
-                    !matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        || s.is_external
-                        || device_profile
-                            .as_ref()
-                            .map(|dp| {
-                                dp.subtitle_profiles
-                                    .iter()
-                                    .filter_map(|p| {
-                                        p.format
-                                            .as_deref()
-                                    })
-                                    .any(|f| {
-                                        s.codec
-                                            .as_deref()
-                                            .map_or(false, |c| {
-                                                subtitle_codec_matches_profile(c, f)
-                                            })
-                                    })
-                            })
-                            .unwrap_or(true)
-                });
-        }
+        let allow_subtitle_extraction = effective_stream
+            .allows_subtitle_extraction(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await;
+        source
+            .media_streams
+            .retain(|s| {
+                crate::device_profile::keeps_embedded_subtitle(
+                    s,
+                    device_profile.as_ref(),
+                    allow_subtitle_extraction,
+                    subtitle_mode,
+                )
+            });
 
         // Independent of subtitle_mode: an embedded subtitle that won't be
         // Embed delivery anyway (slow on-demand HTTP extraction to serve it)
@@ -511,19 +533,6 @@ async fn items_playbackinfo_inner(
                 device_profile.as_ref(),
             );
         }
-
-        // Pre-extract all embedded text subtitle streams in the background, in one
-        // FFmpeg pass. By the time the client requests a subtitle URL, the cache file
-        // is already written (same approach Jellyfin uses).
-        // Use effective_stream so the URL matches the stream whose track layout was probed.
-        let effective_url = effective_stream
-            .stream_info
-            .as_ref()
-            .map(|si| {
-                si.descriptor
-                    .server_input(effective_stream.id, port)
-            });
-        let _ = effective_url;
 
         // Resolve default audio/subtitle stream indexes for this source. These are
         // per-request API values (never persisted); resolving before the transcode
@@ -551,6 +560,7 @@ async fn items_playbackinfo_inner(
             subtitle_mode,
             q.subtitle_stream_index,
             max_bitrate,
+            allow_subtitle_extraction,
         );
         // RTSP streams can only be served via ffmpeg — never direct-playable.
         if matches!(
@@ -578,12 +588,21 @@ async fn items_playbackinfo_inner(
             &q,
             &session,
             &cfg,
+            allow_subtitle_extraction,
         ) {
             TranscodeDecision::DirectPlay => {
-                // Keep transcoding available so clients can re-request with a subtitle
-                // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
-                source.supports_transcoding = true;
+                // These are server capabilities, not the mode selected for this
+                // request. Keep permitted processing available so the client can
+                // re-request it later (for example, for subtitle burn-in).
+                source.supports_transcoding =
+                    playback_permissions.processing_available();
                 source.supports_direct_play = true;
+                // Jellyfin's direct stream is the unchanged file through the
+                // server (`Static=true`), not a remux, so no processing
+                // permission applies; Jellyfin keeps it equal to direct play.
+                source.supports_direct_stream = true;
+                source.transcoding_url = None;
+                source.transcoding_container = None;
             }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
@@ -594,7 +613,7 @@ async fn items_playbackinfo_inner(
             .read()
             .await
             .clone();
-        let sidecars = effective_stream
+        let mut sidecars = effective_stream
             .stream_info
             .as_ref()
             .and_then(|stream| {
@@ -603,6 +622,53 @@ async fn items_playbackinfo_inner(
                     .map(|mgr| stream.subtitle_sidecars(mgr))
             })
             .unwrap_or_default();
+        // Subtitles the addon attached directly to this release (Stremio's
+        // Stream.subtitles[], per-source — unlike the shared item-level
+        // provider-addon list below). Folded into the same sidecar
+        // mechanism as torrent-bundled subtitle files: both are subtitles
+        // attached to this specific release rather than the item-level
+        // provider-addon list, and the subtitle-download endpoint only
+        // knows how to resolve a stream_index back to one of these via the
+        // persisted sidecar route below — not via index arithmetic
+        // reconstructed from a re-fetched addon list, which is what the
+        // item-level `append_external_subtitles` call further down relies
+        // on and which has no way to account for subtitles inserted here.
+        // Surfacing these means a debrid/torrent release that already
+        // bundles subs never needs on-demand embedded extraction at all.
+        if let Some(stream_subs) = effective_stream
+            .stream_info
+            .as_ref()
+            .filter(|si| {
+                !si.subtitles
+                    .is_empty()
+            })
+        {
+            let converted: Vec<crate::addons::SubtitleInfo> = stream_subs
+                .subtitles
+                .iter()
+                .map(crate::conversions::stremio_subtitle_to_subtitle_info)
+                .collect();
+            // Same language cap and embedded-overlap dedup the item-level
+            // provider-addon list gets further down — an addon can attach
+            // subtitles in dozens of languages, and without this every one
+            // of them would land in the menu.
+            let selected = filter_external_subtitles_for_source(
+                &source,
+                provider_filename(&source),
+                &converted,
+                &probe_cfg
+                    .subtitle_languages
+                    .clone()
+                    .unwrap_or_default(),
+                device_profile.as_ref(),
+                subtitle_dedup,
+            );
+            sidecars.extend(
+                selected
+                    .into_iter()
+                    .cloned(),
+            );
+        }
         let routes = inject_sidecar_subtitles(&mut source, sidecars);
         let subtitle_source_id = source.id;
 
@@ -615,9 +681,66 @@ async fn items_playbackinfo_inner(
                 .expose(),
             &cfg.device_profile,
             cfg.subtitle_mode,
+            allow_subtitle_extraction,
         );
 
         source.transcoding_reasons = transcode_reasons;
+
+        // The subtitle the client will most likely request (the selected or
+        // default one, when it's an embedded text track delivered externally).
+        // Only started for the selected source, after ranking.
+        let subtitle_prefetch = if allow_subtitle_extraction
+            && let Some(index) = effective_sub_idx
+            && let Some(delivery_format) = source
+                .media_streams
+                .iter()
+                .find(|s| {
+                    s.index == index
+                        && s.type_ == Some(api::MediaStreamType::Subtitle)
+                        && s.delivery_method
+                            == Some(api::SubtitleDeliveryMethod::External)
+                })
+                .and_then(|s| {
+                    s.delivery_url
+                        .as_deref()
+                })
+                .and_then(|url| {
+                    url.split('?')
+                        .next()
+                        .and_then(|path| {
+                            path.rsplit('.')
+                                .next()
+                        })
+                })
+            && let Some(probe) = effective_stream
+                .probe_data
+                .clone()
+            && probe
+                .media_streams
+                .iter()
+                .any(|s| {
+                    s.index == index
+                        && s.type_ == Some(api::MediaStreamType::Subtitle)
+                        && !s.is_external
+                        && s.is_text_subtitle_stream()
+                })
+            && let Some(input_url) = effective_stream
+                .stream_info
+                .as_ref()
+                .map(|si| {
+                    si.descriptor
+                        .server_input(effective_stream.id, port)
+                }) {
+            Some(SubtitlePrefetch {
+                input_url,
+                probe,
+                media_source_id: subtitle_source_id,
+                stream_index: index,
+                delivery_format: delivery_format.to_string(),
+            })
+        } else {
+            None
+        };
 
         if device_profile.is_some()
             && probe_cfg
@@ -648,8 +771,12 @@ async fn items_playbackinfo_inner(
             }
         }
 
-        sidecar_subtitle_routes.push((subtitle_source_id, routes));
-        source_group_ids.push(stream.group_id);
+        source_extras.push(SourceExtras {
+            subtitle_routes: (subtitle_source_id, routes),
+            group_id: stream.group_id,
+            allow_subtitle_extraction,
+            subtitle_prefetch,
+        });
         media_sources.push(source);
     }
 
@@ -689,15 +816,18 @@ async fn items_playbackinfo_inner(
     // Rank sources by how well they match the device's capabilities (transcode
     // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio quality, embedded subs)
     // so the auto-play source below is the best version, not just the first
-    // one probed. Keep `sidecar_subtitle_routes` aligned by permuting it in
-    // lockstep — the later zip below pairs them back up by index.
+    // one probed. `source_extras` is permuted in lockstep so it stays aligned
+    // with `media_sources`.
     let sort_mode = probe_cfg
         .sort_media_sources
         .unwrap_or_default();
     if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
-        && source_group_ids
+        && source_extras
             .iter()
-            .all(|g| g.is_none())
+            .all(|e| {
+                e.group_id
+                    .is_none()
+            })
     {
         // Same combination as `max_bitrate` above, but derived from
         // `sort_device_profile` (fresh-with-persisted-fallback) so this
@@ -725,15 +855,49 @@ async fn items_playbackinfo_inner(
         };
         let mut paired: Vec<_> = media_sources
             .drain(..)
-            .zip(sidecar_subtitle_routes.drain(..))
+            .zip(source_extras.drain(..))
             .collect();
-        paired.sort_by_cached_key(|(source, _)| {
-            std::cmp::Reverse(ranking.sort_key(source))
+        StreamService::rank_sources(&mut paired, ranking, |(source, extras)| {
+            (source.clone(), extras.allow_subtitle_extraction)
         });
-        for (source, route) in paired {
+        for (source, extras) in paired {
             media_sources.push(source);
-            sidecar_subtitle_routes.push(route);
+            source_extras.push(extras);
         }
+    }
+
+    // Only the source that will actually play gets a background extraction.
+    let selected_idx = if specific_stream_requested {
+        q.media_source_id
+            .and_then(|requested| {
+                media_sources
+                    .iter()
+                    .position(|s| s.id == requested)
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if let Some(prefetch) = source_extras
+        .get_mut(selected_idx)
+        .and_then(|e| {
+            e.subtitle_prefetch
+                .take()
+        })
+    {
+        crate::api::subtitles::prefetch_embedded_subtitles(
+            state
+                .ctx
+                .config
+                .data_dir
+                .clone(),
+            prefetch.input_url,
+            prefetch.probe,
+            id,
+            prefetch.media_source_id,
+            prefetch.stream_index,
+            &prefetch.delivery_format,
+        );
     }
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
@@ -755,10 +919,11 @@ async fn items_playbackinfo_inner(
         media_sources[0].e_tag = id;
     }
 
-    for (source, (delivery_source_id, routes)) in media_sources
+    for (source, extras) in media_sources
         .iter()
-        .zip(sidecar_subtitle_routes)
+        .zip(source_extras)
     {
+        let (delivery_source_id, routes) = extras.subtitle_routes;
         // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
         // some clients construct the route from the final MediaSourceInfo ID.
         // Cache both keys when auto-play rewrites the first source ID.
@@ -1103,6 +1268,18 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
+    let user = if let Some(user_id) = user_id {
+        db::User::get_by_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await?
+    } else {
+        None
+    };
+
     // Follow the stream that PlaybackInfo actually probed. A client may echo
     // the item ID, group ID, or original stream ID even after probe fallback;
     // resolving that ID directly would serve the rejected stream instead.
@@ -1162,6 +1339,59 @@ async fn videos_stream_inner(
         return Ok(no_streams_response().into_response());
     };
     let descriptor = si.descriptor;
+    let encoding_opts = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let permissions = PlaybackPermissions::for_user(&encoding_opts, user.as_ref());
+    let requested_video_codec = q
+        .video_codec
+        .as_deref()
+        .unwrap_or("copy");
+    let requested_audio_codec = q
+        .audio_codec
+        .clone();
+    let burn_subtitle_requested = q
+        .subtitle_method
+        .as_deref()
+        == Some("Encode")
+        && q.subtitle_stream_index
+            .is_some_and(|index| index >= 0);
+    let source_audio = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| selected_audio_stream(p, q.audio_stream_index));
+    let requested_audio = requested_audio_codec
+        .as_deref()
+        .unwrap_or("aac");
+    let audio_passthrough = audio_is_passthrough(
+        requested_audio,
+        source_audio
+            .as_ref()
+            .and_then(|s| {
+                s.codec
+                    .as_deref()
+            }),
+        source_audio
+            .as_ref()
+            .and_then(|s| s.channels),
+        source_audio
+            .as_ref()
+            .and_then(|s| s.bit_rate),
+        q.audio_channels
+            .or(q.max_audio_channels)
+            .or(q.transcoding_max_audio_channels),
+        q.audio_bit_rate,
+    );
+    let resolved_codecs = permissions.resolve_codecs(
+        requested_video_codec,
+        requested_audio,
+        audio_passthrough,
+        burn_subtitle_requested,
+    );
     let playback_id = q
         .play_session_id
         .clone()
@@ -1194,12 +1424,25 @@ async fn videos_stream_inner(
         }
     }
 
+    // Record what this endpoint actually serves; the client's report may differ.
+    let sessions = state
+        .ctx
+        .sessions
+        .clone();
+    let record_served = |served: ServedPlayback| {
+        if let Some(playback_id) = playback_id.as_deref() {
+            sessions.record_server_play_method(playback_id, served);
+        }
+    };
+
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
     // our own HTTP proxy — TorrentSource resolves and streams inline.
     if q.static_
         .unwrap_or(false)
+        || resolved_codecs.direct_play_only
     {
+        record_served(ServedPlayback::Direct);
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux —
         // unless the URL's host is only reachable from remux's own network, in
@@ -1273,32 +1516,8 @@ async fn videos_stream_inner(
         .as_deref()
         .unwrap_or("mp4")
         .to_string();
-    let video_codec = q
-        .video_codec
-        .as_deref()
-        .unwrap_or("copy");
-    let encoding_opts = crate::db::Settings::get_encoding_config(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    .unwrap_or_default();
-    let video_transcode_enabled = encoding_opts
-        .enable_video_transcoding
-        .unwrap_or(true);
-    let video_codec = if video_codec == "copy" || !video_transcode_enabled {
-        "copy"
-    } else {
-        "h264"
-    }
-    .to_string();
-    let requested_audio_codec = q
-        .audio_codec
-        .clone();
-    let audio_codec = q
-        .audio_codec
-        .unwrap_or_else(|| "aac".to_string());
+    let video_codec = resolved_codecs.video;
+    let audio_codec = resolved_codecs.audio;
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
 
@@ -1327,18 +1546,27 @@ async fn videos_stream_inner(
     let source_video_range_type = source_video_stream
         .as_ref()
         .and_then(|s| s.video_range_type);
-    let source_audio_codec = media
-        .probe_data
-        .as_ref()
-        .and_then(|p| p.audio_stream())
-        .and_then(|s| {
-            s.codec
-                .clone()
-        });
-    let burn_subtitle_prog = q
-        .subtitle_method
-        .as_deref()
-        == Some("Encode");
+    let source_audio_codec = source_audio.and_then(|s| {
+        s.codec
+            .clone()
+    });
+    // Copying audio the output container can't carry makes ffmpeg fail
+    // mid-stream. Encode it instead, or refuse if audio transcoding is off.
+    let format = ProgressiveFormat::for_request(&container, &video_codec);
+    let audio_codec = if audio_codec == "copy"
+        && !format.can_copy_audio(source_audio_codec.as_deref())
+    {
+        if !permissions.audio_transcoding {
+            return Err(anyhow!("Forbidden")
+                .context_forbidden("Progressive playback requires audio transcoding"));
+        }
+        format
+            .fallback_audio_codec()
+            .to_string()
+    } else {
+        audio_codec
+    };
+    let burn_subtitle_prog = resolved_codecs.burn_subtitle;
 
     // Fast path: a Matroska source requested as Matroska is already the exact
     // output the client wants. Copy/copy MP4 requests are also promoted to
@@ -1372,6 +1600,7 @@ async fn videos_stream_inner(
             .unwrap_or(0)
             == 0
     {
+        record_served(ServedPlayback::Direct);
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
                 .ctx
@@ -1393,6 +1622,11 @@ async fn videos_stream_inner(
         };
         return Ok(resp.into_response());
     }
+
+    record_served(ServedPlayback::Ffmpeg {
+        video: FfmpegTrack::new(&video_codec, source_video_codec.as_deref()),
+        audio: FfmpegTrack::new(&audio_codec, source_audio_codec.as_deref()),
+    });
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
@@ -1623,6 +1857,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn progressive_refuses_uncopyable_audio_when_audio_transcoding_is_disabled() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db, stream,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let fixture = std::env::temp_dir()
+            .join(format!("remux-flac-{}.mkv", uuid::Uuid::new_v4()));
+        tokio::fs::write(&fixture, b"0123456789abcdef")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().naive_utc();
+        let mut media = db::Media {
+            title: "FLAC fixture".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::Local(fixture.clone()),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("flac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        // Remuxing stays allowed, so this reaches the progressive ffmpeg path
+        // with audio forced to copy.
+        let mut encoding = crate::api::EncodingOptions::default();
+        encoding.enable_audio_transcoding = Some(false);
+        crate::db::Settings::set_encoding_config(
+            &guard
+                .0
+                .db,
+            &encoding,
+        )
+        .await
+        .unwrap();
+
+        let response = server
+            .get(&format!(
+                "/videos/{}/stream.ts?VideoCodec=copy&AudioCodec=aac",
+                media.id,
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        response.assert_status(StatusCode::FORBIDDEN);
+
+        tokio::fs::remove_file(fixture)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn bare_mkv_stream_preserves_range_requests() {
         use crate::{
             api::{MediaSourceInfo, MediaStream, MediaStreamType},
@@ -1689,6 +2007,168 @@ mod tests {
         response.assert_status(StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.header("content-range"), "bytes 4-7/16");
         assert_eq!(response.header("accept-ranges"), "bytes");
+
+        // Client codec parameters must not override disabled playback processing.
+        // The progressive endpoint may serve the original bytes, but an HLS request
+        // must fail because redirecting it to raw media changes the requested protocol.
+        let mut encoding = crate::api::EncodingOptions::default();
+        encoding.enable_remuxing = Some(false);
+        encoding.enable_video_transcoding = Some(false);
+        encoding.enable_audio_transcoding = Some(false);
+        crate::db::Settings::set_encoding_config(
+            &guard
+                .0
+                .db,
+            &encoding,
+        )
+        .await
+        .unwrap();
+
+        let playback_info = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "EnableDirectPlay": false,
+                "EnableDirectStream": true,
+                "EnableTranscoding": true
+            }))
+            .await;
+        playback_info.assert_status_ok();
+        playback_info.assert_json_contains(&json!({
+            "MediaSources": [{
+                "SupportsDirectPlay": true,
+                // The unchanged file through the server needs no processing.
+                "SupportsDirectStream": true,
+                "SupportsTranscoding": false
+            }]
+        }));
+        let playback_body: serde_json::Value = playback_info.json();
+        assert!(
+            playback_body["MediaSources"][0]
+                .get("TranscodingUrl")
+                .map_or(true, serde_json::Value::is_null),
+            "direct-play-only response must not advertise a transcode URL"
+        );
+
+        let forced_play_session_id = "forced-direct-play";
+        let transcode_attempt = server
+            .get(&format!(
+                "/videos/{}/stream.mkv?PlaySessionId={forced_play_session_id}&VideoCodec=h264&AudioCodec=aac",
+                media.id,
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_header(http::header::RANGE, HeaderValue::from_static("bytes=8-11"))
+            .await;
+        transcode_attempt.assert_status(StatusCode::PARTIAL_CONTENT);
+        assert_eq!(transcode_attempt.header("content-range"), "bytes 8-11/16");
+
+        let forced_hls = server
+            .get(&format!(
+                "/videos/{}/master.m3u8?PlaySessionId={forced_play_session_id}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
+                media.id, media.id,
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .await;
+        forced_hls.assert_status(StatusCode::FORBIDDEN);
+
+        // The progressive endpoint ultimately served the original file, so it
+        // must correct the client's initial direct-stream decision, and later
+        // client reports must not overwrite what the server recorded.
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "MediaSourceId": media.id,
+                "PlaySessionId": forced_play_session_id,
+                "PlayMethod": "DirectStream"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(forced_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
+        );
+
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": forced_play_session_id,
+                "PlayMethod": "Transcode",
+                "PositionTicks": 10_000_000
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(forced_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
+        );
+
+        // Without a server-recorded method, client reports are still clamped
+        // to what the user's permissions allow, on start and on progress.
+        let client_play_session_id = "client-reported-only";
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "MediaSourceId": media.id,
+                "PlaySessionId": client_play_session_id,
+                "PlayMethod": "DirectPlay"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id,
+                "PlaySessionId": client_play_session_id,
+                "PlayMethod": "Transcode",
+                "PositionTicks": 10_000_000
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            guard
+                .0
+                .sessions
+                .get(client_play_session_id)
+                .and_then(|session| session.play_method),
+            Some("DirectPlay".to_string())
+        );
 
         tokio::fs::remove_file(fixture)
             .await
@@ -1862,6 +2342,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -1945,6 +2426,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -2304,6 +2786,85 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    /// A progressive FFmpeg stream has no HLS job, so `/Sessions` builds its
+    /// `TranscodingInfo` from what the endpoint recorded. jellyfin-web labels
+    /// the session from it, reading a missing `VideoCodec` as audio-only: a
+    /// re-encoded video with copied audio must name its codec, or it shows as
+    /// "Remuxing".
+    #[tokio::test]
+    async fn test_sessions_progressive_video_transcode_is_not_labelled_remux() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let play_session_id = "progressive-video-transcode";
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": play_session_id,
+                "PlayMethod": "Transcode"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        // What the progressive endpoint records for VideoCodec=h264&AudioCodec=copy.
+        guard
+            .0
+            .sessions
+            .record_server_play_method(
+                play_session_id,
+                crate::playback_session::ServedPlayback::Ffmpeg {
+                    video: crate::playback_session::FfmpegTrack::new(
+                        "h264",
+                        Some("hevc"),
+                    ),
+                    audio: crate::playback_session::FfmpegTrack::new(
+                        "copy",
+                        Some("aac"),
+                    ),
+                },
+            );
+
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let sessions: Vec<crate::api::SessionInfoDto> = resp.json();
+        let session = &sessions[0];
+        assert_eq!(
+            session
+                .play_state
+                .as_ref()
+                .and_then(|ps| ps
+                    .play_method
+                    .clone()),
+            Some("Transcode".to_string())
+        );
+        let info = session
+            .transcoding_info
+            .as_ref()
+            .expect("a progressive FFmpeg stream must carry TranscodingInfo");
+        assert!(!info.is_video_direct);
+        assert!(info.is_audio_direct);
+        assert_eq!(
+            info.video_codec
+                .as_deref(),
+            Some("h264")
+        );
+        assert_eq!(
+            info.audio_codec
+                .as_deref(),
+            Some("aac")
+        );
     }
 
     /// DirectPlay clients (e.g. Plezy) omit PlaySessionId from progress/stopped
@@ -2905,6 +3466,7 @@ mod tests {
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let now = chrono::Utc::now().naive_utc();
+        let addon_id = insert_extraction_addon(&guard.0).await;
 
         let mut media = crate::db::Media {
             title: "PGS Alias Test".to_string(),
@@ -2913,6 +3475,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(MediaSourceInfo {
@@ -4030,12 +4593,46 @@ mod tests {
         );
     }
 
+    /// Insert an addon row that has opted in to subtitle extraction.
+    async fn insert_extraction_addon(ctx: &crate::AppContext) -> uuid::Uuid {
+        use crate::addons::addon::Addon;
+        use chrono::Utc;
+        use remux_sdks::{remux::AddonPresetRef, stremio::ResourceType};
+        use uuid::Uuid;
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "extraction-test-addon".to_string(),
+            preset: AddonPresetRef {
+                kind: "opendal-local".to_string(),
+                config: serde_json::json!({}).into(),
+            },
+            resources: vec![ResourceType::Stream],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: true,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+        addon.id
+    }
+
     /// Build a Stream with French (index 2) and English (index 3) subtitle tracks.
     async fn insert_subtitle_source(ctx: &crate::AppContext) -> crate::db::Media {
         use crate::{
             api::{MediaSourceInfo, MediaStream, MediaStreamType},
             db,
         };
+        let addon_id = insert_extraction_addon(ctx).await;
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
             container: Some(VideoContainer::Mkv),
@@ -4083,6 +4680,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture-subs.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(probe),

@@ -2045,6 +2045,29 @@ impl Media {
         )
     }
 
+    /// On-demand subtitle extraction reads the whole file, so it only runs for
+    /// sources whose OpenDAL addon has opted in.
+    pub async fn allows_subtitle_extraction(&self, db: &SqlitePool) -> bool {
+        let Some(addon_id) = self
+            .stream_info
+            .as_ref()
+            .and_then(|si| {
+                si.addon_id
+                    .or_else(|| {
+                        si.descriptor
+                            .addon_id()
+                    })
+            })
+        else {
+            return false;
+        };
+        crate::addons::Addon::get(db, addon_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|a| a.subtitle_extraction)
+    }
+
     pub fn media_source_protocol(&self) -> &'static str {
         if self.is_remote_url() { "Http" } else { "File" }
     }
