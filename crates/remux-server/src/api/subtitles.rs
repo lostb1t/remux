@@ -874,7 +874,13 @@ async fn subtitles_stream_inner(
             let subtitle_mode = encoding_cfg
                 .subtitle_mode
                 .unwrap_or_default();
-            let allow_subtitle_extraction = source.allows_subtitle_extraction();
+            let allow_subtitle_extraction = source
+                .allows_subtitle_extraction(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await;
             let server_cfg = db::Settings::get_config_or_default(
                 &state
                     .ctx
@@ -1058,10 +1064,17 @@ async fn subtitles_stream_inner(
     // advertised (`apply_subtitle_delivery`'s upstream feasibility check).
     // Never start an extraction — reading the whole remote file — for a
     // remote source.
-    if !media.allows_subtitle_extraction() {
+    if !media
+        .allows_subtitle_extraction(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+    {
         return Ok((
             StatusCode::NOT_FOUND,
-            "subtitle extraction is disabled for remote sources",
+            "subtitle extraction is disabled for this source",
         )
             .into_response());
     }

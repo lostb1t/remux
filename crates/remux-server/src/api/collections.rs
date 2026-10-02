@@ -856,6 +856,7 @@ mod tests {
             system: false,
             is_default: true,
             http_redirect_stream: false,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,

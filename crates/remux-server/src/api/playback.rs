@@ -72,6 +72,18 @@ struct SourceExtras {
     /// remote debrid/torrent release of the same item), so the ranking pass
     /// needs it per source, not just for the main transcode decision.
     allow_subtitle_extraction: bool,
+    /// Background extraction to start if this ends up the source that plays.
+    /// Never started for the other candidates: on a remote source it reads
+    /// the whole file.
+    subtitle_prefetch: Option<SubtitlePrefetch>,
+}
+
+struct SubtitlePrefetch {
+    input_url: String,
+    probe: api::MediaSourceInfo,
+    media_source_id: Uuid,
+    stream_index: i64,
+    delivery_format: String,
 }
 
 #[post("/items/{id}/playbackinfo")]
@@ -489,7 +501,13 @@ async fn items_playbackinfo_inner(
         // can do with them.
         // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        let allow_subtitle_extraction = effective_stream.allows_subtitle_extraction();
+        let allow_subtitle_extraction = effective_stream
+            .allows_subtitle_extraction(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await;
         source
             .media_streams
             .retain(|s| {
@@ -668,11 +686,10 @@ async fn items_playbackinfo_inner(
 
         source.transcoding_reasons = transcode_reasons;
 
-        // Start extracting in the background for the subtitle the client will
-        // most likely request (the selected or default one, when it's an
-        // embedded text track delivered externally). The subtitle endpoint
-        // joins this run or hits the cache. Local sources only.
-        if allow_subtitle_extraction
+        // The subtitle the client will most likely request (the selected or
+        // default one, when it's an embedded text track delivered externally).
+        // Only started for the selected source, after ranking.
+        let subtitle_prefetch = if allow_subtitle_extraction
             && let Some(index) = effective_sub_idx
             && let Some(delivery_format) = source
                 .media_streams
@@ -713,22 +730,17 @@ async fn items_playbackinfo_inner(
                 .map(|si| {
                     si.descriptor
                         .server_input(effective_stream.id, port)
-                })
-        {
-            crate::api::subtitles::prefetch_embedded_subtitles(
-                state
-                    .ctx
-                    .config
-                    .data_dir
-                    .clone(),
+                }) {
+            Some(SubtitlePrefetch {
                 input_url,
                 probe,
-                id,
-                subtitle_source_id,
-                index,
-                delivery_format,
-            );
-        }
+                media_source_id: subtitle_source_id,
+                stream_index: index,
+                delivery_format: delivery_format.to_string(),
+            })
+        } else {
+            None
+        };
 
         if device_profile.is_some()
             && probe_cfg
@@ -763,6 +775,7 @@ async fn items_playbackinfo_inner(
             subtitle_routes: (subtitle_source_id, routes),
             group_id: stream.group_id,
             allow_subtitle_extraction,
+            subtitle_prefetch,
         });
         media_sources.push(source);
     }
@@ -851,6 +864,40 @@ async fn items_playbackinfo_inner(
             media_sources.push(source);
             source_extras.push(extras);
         }
+    }
+
+    // Only the source that will actually play gets a background extraction.
+    let selected_idx = if specific_stream_requested {
+        q.media_source_id
+            .and_then(|requested| {
+                media_sources
+                    .iter()
+                    .position(|s| s.id == requested)
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if let Some(prefetch) = source_extras
+        .get_mut(selected_idx)
+        .and_then(|e| {
+            e.subtitle_prefetch
+                .take()
+        })
+    {
+        crate::api::subtitles::prefetch_embedded_subtitles(
+            state
+                .ctx
+                .config
+                .data_dir
+                .clone(),
+            prefetch.input_url,
+            prefetch.probe,
+            id,
+            prefetch.media_source_id,
+            prefetch.stream_index,
+            &prefetch.delivery_format,
+        );
     }
 
     // Cache the group-resolved stream UUID so the stream endpoint can find it
@@ -2295,6 +2342,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -2378,6 +2426,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -3417,6 +3466,7 @@ mod tests {
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let now = chrono::Utc::now().naive_utc();
+        let addon_id = insert_extraction_addon(&guard.0).await;
 
         let mut media = crate::db::Media {
             title: "PGS Alias Test".to_string(),
@@ -3425,6 +3475,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(MediaSourceInfo {
@@ -4542,12 +4593,46 @@ mod tests {
         );
     }
 
+    /// Insert an addon row that has opted in to subtitle extraction.
+    async fn insert_extraction_addon(ctx: &crate::AppContext) -> uuid::Uuid {
+        use crate::addons::addon::Addon;
+        use chrono::Utc;
+        use remux_sdks::{remux::AddonPresetRef, stremio::ResourceType};
+        use uuid::Uuid;
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "extraction-test-addon".to_string(),
+            preset: AddonPresetRef {
+                kind: "opendal-local".to_string(),
+                config: serde_json::json!({}).into(),
+            },
+            resources: vec![ResourceType::Stream],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: true,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+        addon.id
+    }
+
     /// Build a Stream with French (index 2) and English (index 3) subtitle tracks.
     async fn insert_subtitle_source(ctx: &crate::AppContext) -> crate::db::Media {
         use crate::{
             api::{MediaSourceInfo, MediaStream, MediaStreamType},
             db,
         };
+        let addon_id = insert_extraction_addon(ctx).await;
         let now = chrono::Utc::now().naive_utc();
         let probe = MediaSourceInfo {
             container: Some(VideoContainer::Mkv),
@@ -4595,6 +4680,7 @@ mod tests {
                 descriptor: crate::stream::StreamDescriptor::Local(
                     "test-fixture-subs.mkv".into(),
                 ),
+                addon_id: Some(addon_id),
                 ..Default::default()
             }),
             probe_data: Some(probe),
