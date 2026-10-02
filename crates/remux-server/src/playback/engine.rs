@@ -1044,6 +1044,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         }
     } else if is_hw {
         // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
+        // h264_nvenc needs an explicit 8-bit output: 10-bit frames fail, and
+        // CUDA decode leaves frames in software memory so FFmpeg can convert
+        // them to yuv420p before the encoder.
+        if ffmpeg_video_codec == "h264_nvenc" {
+            args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+        }
         if let Some(bitrate) = params.video_bitrate {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
@@ -1854,6 +1860,13 @@ pub(crate) fn build_progressive_args(
             ]);
         }
     } else if is_hw {
+        // h264_nvenc needs an explicit 8-bit output: 10-bit frames fail, and
+        // CUDA decode leaves frames in software memory so FFmpeg can convert
+        // them to yuv420p before the encoder. The option applies with or
+        // without a bitrate.
+        if ffmpeg_video_codec == "h264_nvenc" {
+            args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+        }
         if let Some(bitrate) = params.video_bitrate {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
@@ -3222,12 +3235,42 @@ mod tests {
         assert!(fc.contains("overlay"), "overlay: {fc}");
     }
 
+    /// Exactly one 8-bit output constraint, after the input and before the muxer.
+    fn assert_h264_nvenc_yuv420p(args: &[String]) {
+        assert_eq!(arg_after(args, "-c:v"), Some("h264_nvenc"));
+        assert_eq!(
+            args.iter()
+                .filter(|a| *a == "-pix_fmt")
+                .count(),
+            1,
+            "expected exactly one -pix_fmt: {args:?}"
+        );
+        assert_eq!(arg_after(args, "-pix_fmt"), Some("yuv420p"));
+        let i_pos = args
+            .iter()
+            .position(|a| a == "-i")
+            .expect("-i missing");
+        let pix_pos = args
+            .iter()
+            .position(|a| a == "-pix_fmt")
+            .expect("-pix_fmt missing");
+        let out_pos = args
+            .iter()
+            .position(|a| a == "-f")
+            .expect("-f missing");
+        assert!(
+            i_pos + 1 < pix_pos && pix_pos < out_pos,
+            "-pix_fmt must follow the input and precede the output: {args:?}"
+        );
+    }
+
     #[test]
     fn hls_nvenc_hardware_accel() {
         let dir = PathBuf::from("/tmp/test_nvenc");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
             accelerator: Box::new(hw_accel::Nvenc),
+            enable_tonemapping: false,
             ..default_hls(dir)
         });
 
@@ -3242,8 +3285,83 @@ mod tests {
             .expect("-i missing");
         assert!(hwaccel_pos < i_pos);
         assert_eq!(args[hwaccel_pos + 1], "cuda");
-        // Encoder remapped
-        assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
+        // Unknown range, no scale: the encoder option is the only format constraint.
+        assert_h264_nvenc_yuv420p(&args);
+        assert!(!args_contains(&args, "-vf"));
+        assert!(!args_contains(&args, "-filter_complex"));
+    }
+
+    #[test]
+    fn hls_nvenc_hdr10_without_tonemap_pins_yuv420p() {
+        for bitrate in [None, Some(5_000_000)] {
+            let args = build_hls_args(&TranscodeParams {
+                video_codec: "libx264".into(),
+                accelerator: Box::new(hw_accel::Nvenc),
+                source_video_range_type: Some(VideoRangeType::Hdr10),
+                enable_tonemapping: false,
+                video_bitrate: bitrate,
+                ..default_hls(PathBuf::from("/tmp/test_nvenc_hdr_clamp"))
+            });
+            assert_h264_nvenc_yuv420p(&args);
+            assert_eq!(
+                arg_after(&args, "-vf"),
+                Some(
+                    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+                )
+            );
+            let expected = bitrate.map(|rate| rate.to_string());
+            assert_eq!(arg_after(&args, "-b:v"), expected.as_deref());
+        }
+    }
+
+    #[test]
+    fn hls_nvenc_sw_tonemap_and_subtitle_burn_pin_yuv420p() {
+        let tonemap = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(hw_accel::Nvenc),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            ..default_hls(PathBuf::from("/tmp/test_nvenc_tonemap"))
+        });
+        assert_h264_nvenc_yuv420p(&tonemap);
+        assert_eq!(
+            arg_after(&tonemap, "-vf"),
+            Some(
+                "tonemapx=tonemap=hable:desat=0.0:peak=0.0:t=bt709:m=bt709:p=bt709:format=nv12"
+            )
+        );
+
+        let burned = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            accelerator: Box::new(hw_accel::Nvenc),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(PathBuf::from("/tmp/test_nvenc_tonemap_sub"))
+        });
+        assert_h264_nvenc_yuv420p(&burned);
+        let fc =
+            arg_after(&burned, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains(
+                "tonemapx=tonemap=hable:desat=0.0:peak=0.0:t=bt709:m=bt709:p=bt709:format=yuv420p"
+            ),
+            "{fc}"
+        );
+        assert!(fc.contains("]overlay="), "{fc}");
+    }
+
+    #[test]
+    fn hls_nvenc_stream_copy_omits_pix_fmt() {
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            accelerator: Box::new(hw_accel::Nvenc),
+            video_bitrate: Some(4_000_000),
+            ..default_hls(PathBuf::from("/tmp/test_nvenc_copy"))
+        });
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     #[test]
@@ -3505,6 +3623,7 @@ mod tests {
             "expected hwmap in vf: {vf}"
         );
         assert!(vf.contains("format=qsv"), "expected format=qsv in vf: {vf}");
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     fn qsv() -> hw_accel::Qsv {
@@ -3826,6 +3945,7 @@ mod tests {
 
         let vf = arg_after(&args, "-vf").expect("-vf missing");
         assert_p010_into_tonemap(vf);
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     fn qsv_opencl() -> hw_accel::Qsv {
@@ -4087,6 +4207,7 @@ mod tests {
         assert_vaapi_hw_decode(&args);
         let vf = arg_after(&args, "-vf").expect("-vf missing");
         assert_vaapi_ocl_chain(vf);
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     #[test]
@@ -4123,6 +4244,7 @@ mod tests {
         assert_vaapi_hw_decode(&args);
         let vf = arg_after(&args, "-vf").expect("-vf missing");
         assert_eq!(vf, "scale_vaapi=format=nv12:extra_hw_frames=24");
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     #[test]
@@ -4270,9 +4392,88 @@ mod tests {
             video_codec: "libx264".into(),
             container: "mp4".into(),
             accelerator: Box::new(hw_accel::Nvenc),
+            source_video_range_type: Some(VideoRangeType::Sdr),
+            enable_tonemapping: false,
             ..default_progressive()
         });
-        assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
+        assert_h264_nvenc_yuv420p(&args);
+        assert!(!args_contains(&args, "-vf"));
+        assert!(!args_contains(&args, "-filter_complex"));
+    }
+
+    #[test]
+    fn progressive_nvenc_hdr10_without_tonemap_pins_yuv420p() {
+        for bitrate in [None, Some(5_000_000)] {
+            let args = build_progressive_args(&ProgressiveTranscodeParams {
+                video_codec: "libx264".into(),
+                container: "mp4".into(),
+                accelerator: Box::new(hw_accel::Nvenc),
+                source_video_range_type: Some(VideoRangeType::Hdr10),
+                enable_tonemapping: false,
+                video_bitrate: bitrate,
+                ..default_progressive()
+            });
+            assert_h264_nvenc_yuv420p(&args);
+            assert_eq!(
+                arg_after(&args, "-vf"),
+                Some(
+                    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+                )
+            );
+            let expected = bitrate.map(|rate| rate.to_string());
+            assert_eq!(arg_after(&args, "-b:v"), expected.as_deref());
+        }
+    }
+
+    #[test]
+    fn progressive_nvenc_sw_tonemap_and_subtitle_burn_pin_yuv420p() {
+        let tonemap = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            container: "mp4".into(),
+            accelerator: Box::new(hw_accel::Nvenc),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            ..default_progressive()
+        });
+        assert_h264_nvenc_yuv420p(&tonemap);
+        assert_eq!(
+            arg_after(&tonemap, "-vf"),
+            Some(
+                "tonemapx=tonemap=hable:desat=0.0:peak=0.0:t=bt709:m=bt709:p=bt709:format=nv12"
+            )
+        );
+
+        let burned = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            container: "mp4".into(),
+            accelerator: Box::new(hw_accel::Nvenc),
+            source_video_range_type: Some(VideoRangeType::Hdr10),
+            enable_tonemapping: true,
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_progressive()
+        });
+        assert_h264_nvenc_yuv420p(&burned);
+        let fc =
+            arg_after(&burned, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains(
+                "tonemapx=tonemap=hable:desat=0.0:peak=0.0:t=bt709:m=bt709:p=bt709:format=yuv420p"
+            ),
+            "{fc}"
+        );
+        assert!(fc.contains("]overlay="), "{fc}");
+    }
+
+    #[test]
+    fn progressive_nvenc_stream_copy_omits_pix_fmt() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            accelerator: Box::new(hw_accel::Nvenc),
+            video_bitrate: Some(4_000_000),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert!(!args_contains(&args, "-pix_fmt"));
     }
 
     #[test]
