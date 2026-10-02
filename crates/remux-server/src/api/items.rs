@@ -1625,7 +1625,7 @@ fn rank_item_sources(
         return;
     }
 
-    sources.sort_by_cached_key(|source| {
+    crate::services::StreamService::rank_sources(sources, ranking, |source| {
         let mut info = api::MediaSourceInfo::from(source.clone());
         crate::conversions::apply_filename_guess(&mut info, source);
         info.resolve_default_streams(
@@ -1637,7 +1637,7 @@ fn rank_item_sources(
             None,
             None,
         );
-        std::cmp::Reverse(ranking.sort_key(&info))
+        (info, source.allows_subtitle_extraction())
     });
 }
 
@@ -2110,7 +2110,8 @@ async fn item_for_user(
                 .as_mut()
             {
                 for source in sources.iter_mut() {
-                    let assessment = ranking.assess(source);
+                    let assessment = // Subtitle streams were stripped above, so extraction feasibility is moot.
+                    ranking.assess(source, false);
                     let source_bitrate = source.bitrate;
                     if let Some(video) = source
                         .media_streams
