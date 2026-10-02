@@ -667,7 +667,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to bypass Remux's proxy. Leave empty to apply to all." }
                                     }
                                 }
-                                if edit_kind.as_deref() == Some("opendal") && edit_resources.read().contains("stream") {
+                                if edit_kind.as_deref() == Some("opendal-webdav") && edit_resources.read().contains("stream") {
                                     div { class: "form-group",
                                         ToggleRow {
                                             label: "Enable subtitle extraction",
