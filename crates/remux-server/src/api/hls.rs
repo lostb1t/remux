@@ -21,7 +21,7 @@ use crate::{
     db,
     db::auth,
     playback::{
-        decision::{PlaybackPermissions, audio_is_passthrough},
+        decision::{PlaybackPermissions, audio_is_passthrough, selected_audio_stream},
         hw_accel,
         session::{SegmentContainer, TranscodeSession, TranscodeState},
     },
@@ -282,29 +282,27 @@ async fn create_hls_session(
         };
         let is_live =
             resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
-        let source_audio_codec = resolved_media
-            .probe_data
-            .as_ref()
-            .and_then(|p| p.audio_stream())
-            .and_then(|s| {
-                s.codec
-                    .clone()
-            });
-        // HLS always downmixes re-encoded audio to stereo, so only a source
-        // that is already stereo or less can be passed through unchanged.
         let source_audio = resolved_media
             .probe_data
             .as_ref()
-            .and_then(|p| p.audio_stream());
+            .and_then(|p| {
+                selected_audio_stream(
+                    p,
+                    q.audio_stream_index
+                        .map(i64::from),
+                )
+            });
+        let source_audio_codec = source_audio.and_then(|s| {
+            s.codec
+                .clone()
+        });
+        // HLS always downmixes re-encoded audio to stereo, so only a source
+        // that is already stereo or less can be passed through unchanged.
         let audio_passthrough = audio_is_passthrough(
             &audio_codec_raw,
             source_audio_codec.as_deref(),
-            source_audio
-                .as_ref()
-                .and_then(|s| s.channels),
-            source_audio
-                .as_ref()
-                .and_then(|s| s.bit_rate),
+            source_audio.and_then(|s| s.channels),
+            source_audio.and_then(|s| s.bit_rate),
             Some(2),
             q.audio_bit_rate
                 .map(i64::from),

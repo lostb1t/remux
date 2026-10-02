@@ -121,6 +121,26 @@ pub(crate) struct ResolvedPlaybackCodecs {
     pub burn_subtitle: bool,
 }
 
+/// The audio track FFmpeg will map: the explicitly selected stream index,
+/// otherwise the first audio track.
+pub(crate) fn selected_audio_stream(
+    source: &api::MediaSourceInfo,
+    audio_stream_index: Option<i64>,
+) -> Option<&api::MediaStream> {
+    audio_stream_index
+        .filter(|index| *index >= 0)
+        .and_then(|index| {
+            source
+                .media_streams
+                .iter()
+                .find(|s| {
+                    s.index == index
+                        && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                })
+        })
+        .or_else(|| source.audio_stream())
+}
+
 /// True when encoding `requested_codec` would reproduce the source audio
 /// as-is: same codec, and neither the channel nor bitrate cap cuts into it.
 pub(crate) fn audio_is_passthrough(
@@ -901,6 +921,29 @@ mod tests {
             None,
             Some(128_000)
         ));
+    }
+
+    #[test]
+    fn selected_audio_stream_follows_the_requested_index() {
+        let audio = |index, codec: &str| api::MediaStream {
+            type_: Some(api::MediaStreamType::Audio),
+            index,
+            codec: Some(codec.to_string()),
+            ..Default::default()
+        };
+        let source = api::MediaSourceInfo {
+            media_streams: vec![audio(1, "truehd"), audio(2, "ac3")],
+            ..Default::default()
+        };
+        let codec = |idx| {
+            selected_audio_stream(&source, idx).and_then(|s| {
+                s.codec
+                    .as_deref()
+            })
+        };
+        assert_eq!(codec(None), Some("truehd"));
+        assert_eq!(codec(Some(2)), Some("ac3"));
+        assert_eq!(codec(Some(9)), Some("truehd"));
     }
 
     #[test]

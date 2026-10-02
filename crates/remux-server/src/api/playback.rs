@@ -49,6 +49,7 @@ use crate::{
         decision::{
             PlaybackConfig, PlaybackPermissions, TranscodeDecision,
             apply_subtitle_delivery, audio_is_passthrough, build_transcode_decision,
+            selected_audio_stream,
         },
         engine::ProgressiveFormat,
         session::{TranscodeSession, TranscodeState},
@@ -1211,7 +1212,7 @@ async fn videos_stream_inner(
     let source_audio = media
         .probe_data
         .as_ref()
-        .and_then(|p| p.audio_stream());
+        .and_then(|p| selected_audio_stream(p, q.audio_stream_index));
     let requested_audio = requested_audio_codec
         .as_deref()
         .unwrap_or("aac");
@@ -1394,14 +1395,10 @@ async fn videos_stream_inner(
     let source_video_range_type = source_video_stream
         .as_ref()
         .and_then(|s| s.video_range_type);
-    let source_audio_codec = media
-        .probe_data
-        .as_ref()
-        .and_then(|p| p.audio_stream())
-        .and_then(|s| {
-            s.codec
-                .clone()
-        });
+    let source_audio_codec = source_audio.and_then(|s| {
+        s.codec
+            .clone()
+    });
     // Copying audio the output container can't carry makes ffmpeg fail
     // mid-stream. Encode it instead, or refuse if audio transcoding is off.
     let format = ProgressiveFormat::for_request(&container, &video_codec);

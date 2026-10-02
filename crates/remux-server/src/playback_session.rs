@@ -759,6 +759,22 @@ impl PlaybackSessionManager {
             .sessions
             .get(&session.play_session_id)
         {
+            if session
+                .served
+                .is_none()
+            {
+                session.served = existing
+                    .served
+                    .clone();
+                if session
+                    .served
+                    .is_some()
+                {
+                    session.play_method = existing
+                        .play_method
+                        .clone();
+                }
+            }
             retain_leases(
                 &mut session.torrents,
                 existing
@@ -1322,7 +1338,12 @@ mod tests {
             sessions
                 .get(id)
                 .and_then(|session| session.play_method),
-            Some(PlayMethod::DirectPlay.to_string())
+            Some(PlayMethod::Transcode.to_string())
+        );
+        assert!(
+            sessions
+                .get(id)
+                .is_some_and(|session| session.served == Some(transcoded()))
         );
     }
 
