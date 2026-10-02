@@ -1091,6 +1091,22 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
             && list.contains(&db::MediaKind::Series))
 }
 
+fn apply_manifest_info(
+    caps: &mut AddonCapabilities,
+    resource_refs: Vec<remux_sdks::stremio::ResourceRef>,
+    raw_types: Vec<remux_sdks::stremio::MediaType>,
+) {
+    caps.metadata
+        .supported_resources = resource_refs;
+    if !raw_types.is_empty() {
+        caps.metadata
+            .supported_types = raw_types
+            .into_iter()
+            .filter_map(recognized_manifest_media_kind)
+            .collect();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------
@@ -1100,7 +1116,12 @@ const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 #[derive(Clone)]
 pub struct AddonService {
     inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
+    /// When the unreachable manifests were last retried; throttles the retry
+    /// that `addons_for` kicks off.
+    manifest_retry_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
+
+const MANIFEST_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[async_trait]
 trait PickCap<T: ?Sized + Send + Sync> {
@@ -1114,6 +1135,12 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
             .row
             .resources
             .contains(&ResourceType::Meta)
+        {
+            return false;
+        }
+        if self
+            .caps
+            .manifest_unreachable
         {
             return false;
         }
@@ -1156,6 +1183,12 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
         {
             return false;
         }
+        if self
+            .caps
+            .manifest_unreachable
+        {
+            return false;
+        }
         if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Stream) {
             let gp_ext = media
                 .grandparent
@@ -1191,6 +1224,12 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
             .row
             .resources
             .contains(&ResourceType::Subtitles)
+        {
+            return false;
+        }
+        if self
+            .caps
+            .manifest_unreachable
         {
             return false;
         }
@@ -1233,6 +1272,7 @@ impl AddonService {
         T: ?Sized + Send + Sync + 'static,
         AddonRuntime: PickCap<T>,
     {
+        self.retry_unreachable_manifests();
         let override_ids = match user_id {
             Some(uid) => match addon::user_addon_override(db, uid).await {
                 Ok(ids) => ids,
@@ -1359,7 +1399,114 @@ impl AddonService {
         let runtimes = Self::load_runtimes(db, config).await?;
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(runtimes)),
+            manifest_retry_at: Default::default(),
         })
+    }
+
+    /// An addon whose manifest failed to load is skipped for meta, stream and
+    /// subtitle requests (its static fallback claims to support every id).
+    /// Retry the fetch in the background, at most once per interval, so it
+    /// comes back without waiting for the next addon reload.
+    fn retry_unreachable_manifests(&self) {
+        if !self
+            .inner
+            .load()
+            .iter()
+            .any(|r| {
+                r.caps
+                    .manifest_unreachable
+            })
+        {
+            return;
+        }
+        {
+            let mut last = self
+                .manifest_retry_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < MANIFEST_RETRY_INTERVAL) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        let service = self.clone();
+        tokio::spawn(async move {
+            service
+                .refresh_unreachable_manifests()
+                .await
+        });
+    }
+
+    async fn refresh_unreachable_manifests(&self) {
+        let targets: Vec<(Uuid, Arc<dyn AddonKind>)> = self
+            .inner
+            .load()
+            .iter()
+            .filter(|r| {
+                r.caps
+                    .manifest_unreachable
+            })
+            .filter_map(|r| {
+                r.caps
+                    .kind
+                    .clone()
+                    .map(|k| {
+                        (
+                            r.row
+                                .id,
+                            k,
+                        )
+                    })
+            })
+            .collect();
+        let fetched = futures::future::join_all(
+            targets
+                .into_iter()
+                .map(|(id, kind)| async move {
+                    (
+                        id,
+                        kind.available_info()
+                            .await,
+                    )
+                }),
+        )
+        .await;
+        let updates: HashMap<_, _> = fetched
+            .into_iter()
+            .filter_map(|(id, res)| match res {
+                Ok(Some(info)) => Some((id, info)),
+                _ => None,
+            })
+            .collect();
+        if updates.is_empty() {
+            return;
+        }
+        self.inner
+            .rcu(|current| {
+                let mut next: Vec<AddonRuntime> = (**current).clone();
+                for runtime in &mut next {
+                    if runtime
+                        .caps
+                        .manifest_unreachable
+                        && let Some((refs, types)) = updates.get(
+                            &runtime
+                                .row
+                                .id,
+                        )
+                    {
+                        apply_manifest_info(
+                            &mut runtime.caps,
+                            refs.clone(),
+                            types.clone(),
+                        );
+                        runtime
+                            .caps
+                            .manifest_unreachable = false;
+                    }
+                }
+                next
+            });
+        info!("recovered addon manifests that were unreachable at load time");
     }
 
     async fn load_runtimes(
@@ -1427,15 +1574,11 @@ impl AddonService {
                             .await
                         {
                             Ok(Some((resource_refs, raw_types))) => {
-                                caps.metadata
-                                    .supported_resources = resource_refs;
-                                if !raw_types.is_empty() {
-                                    caps.metadata
-                                        .supported_types = raw_types
-                                        .into_iter()
-                                        .filter_map(recognized_manifest_media_kind)
-                                        .collect();
-                                }
+                                apply_manifest_info(
+                                    &mut caps,
+                                    resource_refs,
+                                    raw_types,
+                                );
                             }
                             Ok(None) => {}
                             Err(e) => {
@@ -4245,12 +4388,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn addon_with_unreachable_manifest_is_not_picked() {
+        let mut runtime = stream_only_runtime_with_tree(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+        runtime
+            .row
+            .resources = vec![ResourceType::Stream];
+        let media = db::Media::default();
+
+        runtime
+            .caps
+            .manifest_unreachable = true;
+        assert!(!PickCap::<dyn StreamAddon>::pick(&runtime, &media).await);
+        assert!(!PickCap::<dyn MetaAddon>::pick(&runtime, &media).await);
+    }
+
+    #[tokio::test]
     async fn get_direct_children_skips_addons_without_meta_resource() {
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runtime = stream_only_runtime_with_tree(called.clone());
 
         let service = AddonService {
             inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+            manifest_retry_at: Default::default(),
         };
 
         let series = db::Media {
@@ -4353,6 +4514,7 @@ mod tests {
 
         let service = AddonService {
             inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+            manifest_retry_at: Default::default(),
         };
 
         let (_, guard) = crate::integration_test::new_test_server()

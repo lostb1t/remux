@@ -125,7 +125,20 @@ pub(super) fn parse_manifest_info(
             continue;
         }
         seen_names.push(name.clone());
-        resources.push(res.into_ref());
+        // A resource given as a plain string takes the manifest's top-level
+        // `types` and `idPrefixes` (Stremio addon SDK, manifest.md). An object
+        // resource without `idPrefixes` means all ids.
+        let inherit = matches!(res, remux_sdks::stremio::Resource::Simple(_));
+        let mut resource_ref = res.into_ref();
+        if inherit {
+            resource_ref.types = manifest
+                .types
+                .clone();
+            resource_ref.id_prefixes = manifest
+                .id_prefixes
+                .clone();
+        }
+        resources.push(resource_ref);
     }
 
     // Detect search support via catalog extras and synthesise a Search resource if needed.
@@ -1987,6 +2000,38 @@ async fn stremio_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_resources_inherit_manifest_types_and_id_prefixes() {
+        let manifest: sdks::stremio::Manifest =
+            serde_json::from_value(serde_json::json!({
+                "id": "test", "name": "Test", "version": "1.0.0",
+                "resources": [
+                    "meta",
+                    { "name": "stream", "types": ["movie"] }
+                ],
+                "types": ["movie", "series"],
+                "idPrefixes": ["tt", "tmdb:"]
+            }))
+            .unwrap();
+
+        let (resources, _) = parse_manifest_info(&manifest);
+        let meta = resources
+            .iter()
+            .find(|r| r.name == ResourceType::Meta)
+            .unwrap();
+        assert_eq!(
+            meta.id_prefixes,
+            Some(vec!["tt".to_string(), "tmdb:".to_string()])
+        );
+        assert_eq!(meta.types, vec!["movie".to_string(), "series".to_string()]);
+
+        let stream = resources
+            .iter()
+            .find(|r| r.name == ResourceType::Stream)
+            .unwrap();
+        assert_eq!(stream.id_prefixes, None);
+    }
 
     #[test]
     fn stremio_torrent_metadata_uses_nested_fallbacks() {
