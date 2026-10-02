@@ -418,6 +418,10 @@ pub struct AddonDto {
     #[serde(default)]
     pub service_filter: Vec<String>,
     pub description: Option<String>,
+    /// The addon's manifest could not be fetched when it was loaded, so the
+    /// supported resources/types shown are the static fallback.
+    #[serde(default)]
+    pub manifest_unreachable: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -907,8 +911,9 @@ pub struct EncodingOptions {
     /// policy flag.
     #[default(Some(true))]
     pub enable_audio_transcoding: Option<bool>,
-    /// Allow container remuxing (video=copy, audio=copy). When false, only
-    /// direct play is served. Stacks AND with the per-user EnablePlaybackRemuxing
+    /// Allow container remuxing (video=copy, audio=copy). When false, a pure
+    /// remux request falls back to direct play; permitted audio/video re-encoding
+    /// remains available. Stacks AND with the per-user EnablePlaybackRemuxing
     /// policy flag.
     #[default(Some(true))]
     pub enable_remuxing: Option<bool>,

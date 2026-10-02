@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use remux_sdks::remux::{MediaSourceInfo, MediaStreamType, PlayMethod};
+use remux_sdks::remux::{MediaSourceInfo, MediaStreamType};
 use uuid::Uuid;
 
 use crate::{
@@ -75,12 +75,10 @@ impl FourKCapabilitySubscriber {
                 .clone(),
         );
 
+        // Only the video matters: the device decoded the 4K stream itself
+        // whether it arrived untouched or remuxed. `video_is_copied` covers
+        // both, where `play_method` records any FFmpeg job as `Transcode`.
         if !report.video_is_copied
-            || !matches!(
-                info.play_method
-                    .as_ref(),
-                Some(PlayMethod::DirectPlay | PlayMethod::DirectStream)
-            )
             || self
                 .ctx
                 .store
