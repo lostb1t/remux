@@ -51,6 +51,8 @@ impl PlaybackPermissions {
         }
     }
 
+    /// `audio_passthrough`: the requested audio codec equals the source's and
+    /// no downmix or bitrate reduction is needed (see `audio_is_passthrough`).
     /// Resolve requested codecs and subtitle burn-in through the server/user
     /// permissions. Video resolves to `copy` or `h264` (burn-in forces a
     /// re-encode); disabled encoders become stream-copy requests. If that
@@ -60,6 +62,7 @@ impl PlaybackPermissions {
         self,
         requested_video: &str,
         requested_audio: &str,
+        audio_passthrough: bool,
         subtitle_burn_requested: bool,
     ) -> ResolvedPlaybackCodecs {
         let burn_subtitle = subtitle_burn_requested && self.video_transcoding;
@@ -76,8 +79,12 @@ impl PlaybackPermissions {
         } else {
             requested_audio.to_string()
         };
-        let direct_play_only =
-            codec_is_copy(&video) && codec_is_copy(&audio) && !self.remuxing;
+        // Re-encoding audio into the codec it already has, without reshaping
+        // it, is a pure remux in effect; the codec string above is left alone
+        // so a genuine AAC downmix still reaches FFmpeg when remuxing is on.
+        let direct_play_only = codec_is_copy(&video)
+            && (codec_is_copy(&audio) || audio_passthrough)
+            && !self.remuxing;
 
         ResolvedPlaybackCodecs {
             video,
@@ -95,15 +102,12 @@ impl PlaybackPermissions {
     /// The stream endpoint records the exact effective method when it runs;
     /// this is the fallback for clients that report playback before requesting
     /// the media URL, or whose stream URL carries no PlaySessionId.
-    /// `DirectStream` is Jellyfin's static stream through the server — the same
-    /// unchanged file as direct play — so it is
-    /// recorded as `DirectPlay`.
+    /// `DirectStream` is stored as reported, like Jellyfin does.
     pub(crate) fn constrain_reported_method(self, method: PlayMethod) -> PlayMethod {
         match method {
             PlayMethod::Transcode if !self.processing_available() => {
                 PlayMethod::DirectPlay
             }
-            PlayMethod::DirectStream => PlayMethod::DirectPlay,
             method => method,
         }
     }
@@ -115,6 +119,29 @@ pub(crate) struct ResolvedPlaybackCodecs {
     pub audio: String,
     pub direct_play_only: bool,
     pub burn_subtitle: bool,
+}
+
+/// True when encoding `requested_codec` would reproduce the source audio
+/// as-is: same codec, and neither the channel nor bitrate cap cuts into it.
+pub(crate) fn audio_is_passthrough(
+    requested_codec: &str,
+    source_codec: Option<&str>,
+    source_channels: Option<i64>,
+    source_bitrate: Option<i64>,
+    max_channels: Option<i64>,
+    max_bitrate: Option<i64>,
+) -> bool {
+    let Some(source_codec) = source_codec else {
+        return false;
+    };
+    let exceeds = |cap: Option<i64>, source: Option<i64>| match (cap, source) {
+        (Some(cap), Some(source)) => source > cap,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    requested_codec.eq_ignore_ascii_case(source_codec)
+        && !exceeds(max_channels, source_channels)
+        && !exceeds(max_bitrate, source_bitrate)
 }
 
 fn codec_is_copy(codec: &str) -> bool {
@@ -323,6 +350,7 @@ fn build_video_transcode(
             "copy"
         },
         if needs_audio_transcode { "aac" } else { "copy" },
+        false,
         subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
     );
     if codecs.direct_play_only {
@@ -820,12 +848,59 @@ mod tests {
             Some(&session.user),
         );
 
-        let codecs = permissions.resolve_codecs("h264", "aac", false);
+        let codecs = permissions.resolve_codecs("h264", "aac", false, false);
 
         assert_eq!(codecs.video, "copy");
         assert_eq!(codecs.audio, "copy");
         assert!(codecs.direct_play_only);
         assert!(!permissions.processing_available());
+    }
+
+    #[test]
+    fn same_codec_audio_without_reshaping_is_a_remux_when_remuxing_is_off() {
+        let permissions = PlaybackPermissions {
+            remuxing: false,
+            video_transcoding: true,
+            audio_transcoding: true,
+        };
+        let passthrough = audio_is_passthrough(
+            "aac",
+            Some("AAC"),
+            Some(2),
+            Some(192_000),
+            None,
+            None,
+        );
+        assert!(passthrough);
+        let codecs = permissions.resolve_codecs("copy", "aac", passthrough, false);
+        assert!(codecs.direct_play_only);
+        assert_eq!(codecs.audio, "aac");
+
+        let downmix =
+            audio_is_passthrough("aac", Some("aac"), Some(6), None, Some(2), None);
+        assert!(!downmix);
+        assert!(
+            !permissions
+                .resolve_codecs("copy", "aac", downmix, false)
+                .direct_play_only
+        );
+        assert!(!audio_is_passthrough(
+            "aac",
+            Some("ac3"),
+            None,
+            None,
+            None,
+            None
+        ));
+        assert!(!audio_is_passthrough("aac", None, None, None, None, None));
+        assert!(!audio_is_passthrough(
+            "aac",
+            Some("aac"),
+            Some(2),
+            None,
+            None,
+            Some(128_000)
+        ));
     }
 
     #[test]
@@ -843,19 +918,19 @@ mod tests {
         );
 
         for permissions in [globally_disabled, user_disabled] {
-            let codecs = permissions.resolve_codecs("copy", "copy", true);
+            let codecs = permissions.resolve_codecs("copy", "copy", false, true);
             assert_eq!(codecs.video, "copy");
             assert!(!codecs.burn_subtitle);
         }
 
         let allowed = PlaybackPermissions::for_user(&EncodingOptions::default(), None)
-            .resolve_codecs("copy", "copy", true);
+            .resolve_codecs("copy", "copy", false, true);
         assert_eq!(allowed.video, "h264");
         assert!(allowed.burn_subtitle);
     }
 
     #[test]
-    fn client_direct_stream_report_is_recorded_as_direct_play() {
+    fn client_direct_stream_report_is_kept_as_reported() {
         let permissions = PlaybackPermissions {
             remuxing: false,
             video_transcoding: true,
@@ -864,7 +939,7 @@ mod tests {
 
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::DirectStream),
-            PlayMethod::DirectPlay
+            PlayMethod::DirectStream
         );
         assert_eq!(
             permissions.constrain_reported_method(PlayMethod::Transcode),

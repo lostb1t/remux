@@ -5,8 +5,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::playback::decision::PlaybackPermissions;
-use crate::{common, db, db::auth, playback::session::TranscodeSession};
+use crate::{
+    common, db,
+    db::auth,
+    playback::{decision::PlaybackPermissions, session::TranscodeSession},
+};
 use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]
@@ -84,12 +87,9 @@ impl ServedPlayback {
     /// vocabulary; clients tell Remux / Direct Stream apart via
     /// `TranscodingInfo.IsVideoDirect` / `IsAudioDirect`.
     ///
-    /// Unchanged source bytes are always `DirectPlay`. Jellyfin stores
-    /// whichever of `DirectPlay` / `DirectStream` the client reports, but
-    /// jellyfin-web only reports `DirectStream` when `SupportsDirectPlay` is
-    /// false, and remux never offers the static route then. A client that
-    /// reports `DirectStream` anyway is overridden; clients display the two
-    /// the same.
+    /// Unchanged source bytes are recorded as `DirectPlay`: remux only serves
+    /// the static route when direct play is offered, so a client's
+    /// `DirectStream` report is superseded by what the stream endpoint served.
     pub fn play_method(&self) -> PlayMethod {
         match self {
             Self::Direct => PlayMethod::DirectPlay,

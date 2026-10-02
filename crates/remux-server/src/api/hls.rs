@@ -15,17 +15,17 @@ use uuid::Uuid;
 
 use remux_sdks::remux::{AudioCodec, HardwareAccelerationType};
 
-use crate::playback_session::{FfmpegTrack, ServedPlayback};
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
     playback::{
-        decision::PlaybackPermissions,
+        decision::{PlaybackPermissions, audio_is_passthrough},
         hw_accel,
         session::{SegmentContainer, TranscodeSession, TranscodeState},
     },
+    playback_session::{FfmpegTrack, ServedPlayback},
 };
 
 /// Serializes the lookup-or-create-transcode sequence per play_session_id so
@@ -79,6 +79,7 @@ async fn create_hls_session(
     let resolved_codecs = permissions.resolve_codecs(
         video_codec_raw,
         &audio_codec_raw,
+        false,
         q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode)
             && q.subtitle_stream_index
                 .is_some_and(|index| index >= 0),
@@ -289,6 +290,38 @@ async fn create_hls_session(
                 s.codec
                     .clone()
             });
+        // HLS always downmixes re-encoded audio to stereo, so only a source
+        // that is already stereo or less can be passed through unchanged.
+        let source_audio = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.audio_stream());
+        let audio_passthrough = audio_is_passthrough(
+            &audio_codec_raw,
+            source_audio_codec.as_deref(),
+            source_audio
+                .as_ref()
+                .and_then(|s| s.channels),
+            source_audio
+                .as_ref()
+                .and_then(|s| s.bit_rate),
+            Some(2),
+            q.audio_bit_rate
+                .map(i64::from),
+        );
+        if permissions
+            .resolve_codecs(
+                video_codec_raw,
+                &audio_codec_raw,
+                audio_passthrough,
+                burn_subtitle,
+            )
+            .direct_play_only
+        {
+            return Ok(HlsSessionResult::Forbidden(
+                "HLS playback requires remuxing",
+            ));
+        }
         let source_video_stream = resolved_media
             .probe_data
             .as_ref()

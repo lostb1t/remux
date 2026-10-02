@@ -28,7 +28,6 @@ use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 
-use crate::playback_session::{FfmpegTrack, ServedPlayback};
 use crate::{
     AppState, api,
     api::MediaSourceInfoExt,
@@ -37,6 +36,7 @@ use crate::{
     db,
     db::auth,
     playback::hw_accel,
+    playback_session::{FfmpegTrack, ServedPlayback},
 };
 
 use crate::{
@@ -48,7 +48,7 @@ use crate::{
     playback::{
         decision::{
             PlaybackConfig, PlaybackPermissions, TranscodeDecision,
-            apply_subtitle_delivery, build_transcode_decision,
+            apply_subtitle_delivery, audio_is_passthrough, build_transcode_decision,
         },
         engine::ProgressiveFormat,
         session::{TranscodeSession, TranscodeState},
@@ -1208,11 +1208,36 @@ async fn videos_stream_inner(
         == Some("Encode")
         && q.subtitle_stream_index
             .is_some_and(|index| index >= 0);
+    let source_audio = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| p.audio_stream());
+    let requested_audio = requested_audio_codec
+        .as_deref()
+        .unwrap_or("aac");
+    let audio_passthrough = audio_is_passthrough(
+        requested_audio,
+        source_audio
+            .as_ref()
+            .and_then(|s| {
+                s.codec
+                    .as_deref()
+            }),
+        source_audio
+            .as_ref()
+            .and_then(|s| s.channels),
+        source_audio
+            .as_ref()
+            .and_then(|s| s.bit_rate),
+        q.audio_channels
+            .or(q.max_audio_channels)
+            .or(q.transcoding_max_audio_channels),
+        q.audio_bit_rate,
+    );
     let resolved_codecs = permissions.resolve_codecs(
         requested_video_codec,
-        requested_audio_codec
-            .as_deref()
-            .unwrap_or("aac"),
+        requested_audio,
+        audio_passthrough,
         burn_subtitle_requested,
     );
     let playback_id = q

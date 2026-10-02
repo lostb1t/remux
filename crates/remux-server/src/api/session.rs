@@ -15,7 +15,6 @@ use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::playback_session::ServedPlayback;
 use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
@@ -23,6 +22,7 @@ use crate::{
     db::auth,
     playback::session::TranscodeSession,
     playback_session,
+    playback_session::ServedPlayback,
     services::{self, MediaResolveService},
     signals::{
         Event, PlaybackContext, PlaybackPosition, RemoteCommandInfo, RemotePlayInfo,
