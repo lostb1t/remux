@@ -1637,7 +1637,7 @@ fn rank_item_sources(
             None,
             None,
         );
-        (info, source.allows_subtitle_extraction())
+        (info, source.allows_local_subtitle_extraction())
     });
 }
 

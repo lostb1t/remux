@@ -489,7 +489,13 @@ async fn items_playbackinfo_inner(
         // can do with them.
         // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        let allow_subtitle_extraction = effective_stream.allows_subtitle_extraction();
+        let allow_subtitle_extraction = effective_stream
+            .allows_subtitle_extraction(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await;
         source
             .media_streams
             .retain(|s| {
@@ -671,8 +677,10 @@ async fn items_playbackinfo_inner(
         // Start extracting in the background for the subtitle the client will
         // most likely request (the selected or default one, when it's an
         // embedded text track delivered externally). The subtitle endpoint
-        // joins this run or hits the cache. Local sources only.
+        // joins this run or hits the cache. Local sources only: remote ones extract
+        // on the first subtitle request instead.
         if allow_subtitle_extraction
+            && effective_stream.allows_local_subtitle_extraction()
             && let Some(index) = effective_sub_idx
             && let Some(delivery_format) = source
                 .media_streams
@@ -2295,6 +2303,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -2378,6 +2387,7 @@ mod tests {
             system: false,
             is_default: false,
             http_redirect_stream: true,
+            subtitle_extraction: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,

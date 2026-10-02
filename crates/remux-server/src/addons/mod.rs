@@ -4234,6 +4234,7 @@ mod tests {
                 system: false,
                 is_default: false,
                 http_redirect_stream: false,
+                subtitle_extraction: false,
                 service_filter: vec![],
             },
             caps: AddonCapabilities {
@@ -4339,6 +4340,7 @@ mod tests {
                 system: true,
                 is_default: false,
                 http_redirect_stream: false,
+                subtitle_extraction: false,
                 service_filter: vec![],
             },
             caps: AddonCapabilities {

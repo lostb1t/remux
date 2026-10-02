@@ -64,6 +64,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     > = use_signal(std::collections::HashMap::new);
 
     let mut edit_http_redirect_stream = use_signal(|| false);
+    let mut edit_subtitle_extraction = use_signal(|| false);
     let mut edit_service_filter = use_signal(String::new);
 
     // Confirm-delete state
@@ -259,6 +260,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 edit_types.set(type_set);
                                                                 edit_is_default.set(a.is_default);
                                                                 edit_http_redirect_stream.set(a.http_redirect_stream);
+                                                                edit_subtitle_extraction.set(a.subtitle_extraction);
                                                                 edit_service_filter.set(a.service_filter.join(", "));
                                                                 let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                                 edit_catalogs.set(Vec::new());
@@ -665,6 +667,17 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to bypass Remux's proxy. Leave empty to apply to all." }
                                     }
                                 }
+                                if edit_kind.as_deref() == Some("opendal") && edit_resources.read().contains("stream") {
+                                    div { class: "form-group",
+                                        ToggleRow {
+                                            label: "Enable subtitle extraction",
+                                            description: "Extract embedded subtitles from files on this source so clients can show them as external subtitles.",
+                                            checked: *edit_subtitle_extraction.read(),
+                                            on_change: move |v| edit_subtitle_extraction.set(v),
+                                        }
+                                        span { class: "field-hint", "Extraction reads the entire file over the network the first time a subtitle is requested, so it can be slow and use a lot of bandwidth on remote sources." }
+                                    }
+                                }
                                 // Catalogs section (only shown for global addons with catalog resource active)
                                 if *edit_is_default.read() && edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
@@ -794,6 +807,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             let c = client.clone();
                                             let is_default = *edit_is_default.peek();
                                             let http_redirect_stream = *edit_http_redirect_stream.peek();
+                                            let subtitle_extraction = *edit_subtitle_extraction.peek();
                                             let service_filter: Vec<String> = edit_service_filter
                                                 .peek()
                                                 .split(',')
@@ -810,6 +824,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     priority: None,
                                                     is_default: Some(is_default),
                                                     http_redirect_stream: Some(http_redirect_stream),
+                                                    subtitle_extraction: Some(subtitle_extraction),
                                                     service_filter: Some(service_filter),
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
