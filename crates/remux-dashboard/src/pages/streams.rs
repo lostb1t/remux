@@ -13,7 +13,6 @@ use remux_sdks::remux::{
     StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     UpdateStreamGroup, UpdateStreamGroupRequest, UpdateSystemConfiguration,
 };
-use std::collections::HashMap;
 use uuid::Uuid;
 
 #[component]
@@ -492,11 +491,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                 } else {
                     {
                         let group_items = groups.read().clone();
-                        let groups_by_id: HashMap<Uuid, StreamGroupDto> = group_items
-                            .iter()
-                            .cloned()
-                            .map(|group| (group.id, group))
-                            .collect();
                         let list_key = group_items
                             .iter()
                             .map(|group| group.id.to_string())
@@ -616,17 +610,14 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                 items,
                                 aria_label: "Stream groups",
                                 on_reorder: move |new_order: Vec<String>| {
-                                    let reordered_groups: Vec<StreamGroupDto> = new_order
-                                        .iter()
-                                        .enumerate()
-                                        .filter_map(|(index, id)| {
-                                            let id = id.parse::<Uuid>().ok()?;
-                                            let mut group = groups_by_id.get(&id)?.clone();
-                                            group.priority = index as i64 * 10;
-                                            Some(group)
-                                        })
-                                        .collect();
-                                    let updates: Vec<(Uuid, UpdateStreamGroupRequest)> =
+                                    let mut reordered_groups = groups.peek().clone();
+                                    reordered_groups.sort_by_key(|group| {
+                                        new_order.iter().position(|id| *id == group.id.to_string())
+                                    });
+                                    for (index, group) in reordered_groups.iter_mut().enumerate() {
+                                        group.priority = index as i64 * 10;
+                                    }
+                                    let reorder_updates: Vec<(Uuid, UpdateStreamGroupRequest)> =
                                         reordered_groups
                                             .iter()
                                             .map(|group| {
@@ -646,7 +637,7 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                     groups.set(reordered_groups);
                                     let client = client.clone();
                                     spawn(async move {
-                                        for (id, payload) in updates {
+                                        for (id, payload) in reorder_updates {
                                             if let Err(e) = client
                                                 .execute(UpdateStreamGroup { id, payload })
                                                 .await
@@ -654,8 +645,6 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                 error.set(Some(format!(
                                                     "Failed to update stream group order: {e}"
                                                 )));
-                                                let value = *page_refresh.peek() + 1;
-                                                page_refresh.set(value);
                                                 return;
                                             }
                                         }
@@ -772,18 +761,19 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                         match_mode: create_match.peek().clone(),
                                         rules: create_rules.peek().clone(),
                                     };
-                                    let priority = groups
+                                    // New groups go to the top of the list.
+                                    let new_prio = groups
                                         .peek()
                                         .iter()
                                         .map(|group| group.priority)
-                                        .max()
-                                        .map_or(0, |priority| priority.saturating_add(10));
+                                        .min()
+                                        .map_or(0, |priority| priority.saturating_sub(10));
                                     spawn(async move {
                                         match c.execute(CreateStreamGroup {
                                             payload: CreateStreamGroupRequest {
                                                 name,
                                                 filter,
-                                                priority,
+                                                priority: new_prio,
                                             },
                                         }).await {
                                             Ok(_) => {
