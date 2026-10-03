@@ -613,6 +613,24 @@ fn apply_video_bitrate_fallback(
     }
 }
 
+/// Reduces an HTTP(S) URL to `scheme://host[:port]/…` for logs and errors:
+/// signed query tokens, credentials and path segments can all be secrets.
+/// Filesystem paths and other inputs pass through unchanged.
+pub(crate) fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+            let host = parsed
+                .host_str()
+                .unwrap_or("");
+            match parsed.port() {
+                Some(port) => format!("{}://{host}:{port}/…", parsed.scheme()),
+                None => format!("{}://{host}/…", parsed.scheme()),
+            }
+        }
+        _ => url.to_string(),
+    }
+}
+
 /// Runs ffprobe to completion, killing the process once `deadline` passes so a
 /// hung source can't leave it running after the caller has given up.
 fn run_ffprobe(
@@ -693,7 +711,8 @@ pub fn probe_media_with(
     headers: Option<&str>,
     timeout: Option<std::time::Duration>,
 ) -> Result<(api::MediaSourceInfo, MediaSegments)> {
-    debug!(url, "probing media");
+    let shown = redact_url(url);
+    debug!(url = %shown, "probing media");
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
 
     let mut output = run_ffprobe(&ffprobe_args(url, false, headers), deadline)?;
@@ -712,8 +731,8 @@ pub fn probe_media_with(
         .status
         .success()
     {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("ffprobe failed for {}: {}", url, stderr));
+        let stderr = String::from_utf8_lossy(&output.stderr).replace(url, &shown);
+        return Err(anyhow!("ffprobe failed for {}: {}", shown, stderr));
     }
 
     let probe: FfprobeOutput = serde_json::from_slice(&output.stdout)
@@ -2350,5 +2369,37 @@ mod timeout_tests {
         }
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_url;
+
+    #[test]
+    fn http_urls_lose_credentials_path_and_query() {
+        assert_eq!(
+            redact_url("https://user:pw@cdn.example:8443/dl/abc123/f.mkv?token=s3cret"),
+            "https://cdn.example:8443/…"
+        );
+        assert_eq!(redact_url("http://host/a.mkv"), "http://host/…");
+    }
+
+    #[test]
+    fn filesystem_paths_pass_through() {
+        assert_eq!(redact_url("/media/Movies/a.mkv"), "/media/Movies/a.mkv");
+    }
+
+    #[test]
+    fn failure_error_does_not_contain_the_url() {
+        let url = "http://127.0.0.1:1/secret-path/f.mkv?token=s3cret";
+        let err =
+            super::probe_media_with(url, None, Some(std::time::Duration::from_secs(5)))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            !err.contains("s3cret") && !err.contains("secret-path"),
+            "{err}"
+        );
     }
 }

@@ -679,6 +679,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         }
                                         span { class: "field-hint", "Extraction reads the entire file over the network the first time a subtitle is requested, so it can be slow and use a lot of bandwidth on remote sources." }
                                     }
+                                    if edit_form_values.read().get("media_kind").and_then(|v| v.as_str()) != Some("track") {
                                     div { class: "form-group",
                                         ToggleRow {
                                             label: "Probe files during scan",
@@ -687,6 +688,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             on_change: move |v| edit_probe_on_scan.set(v),
                                         }
                                         span { class: "field-hint", "Probing reads the start of each new or changed file, so the first scan of a large remote library takes longer." }
+                                    }
                                     }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)

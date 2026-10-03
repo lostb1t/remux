@@ -1172,8 +1172,17 @@ async fn scan_addon(
     let mut upserted = 0usize;
 
     let probe_on_scan = addon.probe_on_scan && media_kind != "track";
+    // With probing off, existing probe data is kept, but it must still be dropped
+    // when its file changes, so changes are tracked while any probe data remains.
+    let track_probes = probe_on_scan
+        || sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM opendal_files WHERE addon_id = ? AND probe_data IS NOT NULL)",
+        )
+        .bind(addon.id)
+        .fetch_one(&ctx.db)
+        .await?;
     let known_probes: std::collections::HashMap<Uuid, (Option<String>, bool)> =
-        if probe_on_scan {
+        if track_probes {
             sqlx::query_as::<_, (Uuid, Option<String>, bool)>(
                 "SELECT id, probe_version, probe_data IS NOT NULL FROM opendal_files WHERE addon_id = ?",
             )
@@ -1669,7 +1678,7 @@ async fn scan_addon(
             let mut meta = entry
                 .metadata()
                 .clone();
-            if probe_on_scan
+            if track_probes
                 && (meta.content_length() == 0
                     || (meta
                         .last_modified()
@@ -1689,7 +1698,7 @@ async fn scan_addon(
             // For `.strm` files `stored_path` is the URL, so a retargeted file
             // changes the version even when its size doesn't.
             let probe_version =
-                probe_on_scan.then(|| probe_version_of(&stored_path, &meta));
+                track_probes.then(|| probe_version_of(&stored_path, &meta));
             let now = Utc::now()
                 .naive_utc()
                 .to_string();
@@ -1745,20 +1754,26 @@ async fn scan_addon(
                         .is_some_and(|(old_version, has_probe)| {
                             *has_probe && *old_version == probe_version
                         });
-                    if let Some(version) = probe_version.filter(|_| !unchanged) {
+                    if let Some(version) =
+                        probe_version.filter(|_| probe_on_scan && !unchanged)
+                    {
                         let target = if stored_path.starts_with("http://")
                             || stored_path.starts_with("https://")
                         {
                             Some(ProbeJob {
                                 row_id,
-                                input: stored_path.clone(),
+                                input: stored_path
+                                    .clone()
+                                    .into(),
                                 headers: None,
                                 version: version.clone(),
                             })
                         } else if is_local {
                             Some(ProbeJob {
                                 row_id,
-                                input: stored_path.clone(),
+                                input: stored_path
+                                    .clone()
+                                    .into(),
                                 headers: None,
                                 version: version.clone(),
                             })
@@ -1812,7 +1827,7 @@ const PROBE_CONCURRENCY: usize = 4;
 
 struct ProbeJob {
     row_id: Uuid,
-    input: String,
+    input: remux_utils::Secret<String>,
     headers: Option<String>,
     version: String,
 }
@@ -1856,7 +1871,7 @@ impl WebdavProbeBase {
             .join("/");
         ProbeJob {
             row_id,
-            input: format!("{}/{}", self.endpoint, encoded),
+            input: format!("{}/{}", self.endpoint, encoded).into(),
             headers: self
                 .auth_header
                 .clone(),
@@ -1883,10 +1898,10 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
     let mut stored = 0usize;
     let mut results = futures::stream::iter(jobs)
         .map(|job| async move {
-            let input = job.input.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 crate::playback::probe::probe_media_with(
-                    &job.input,
+                    job.input
+                        .expose(),
                     job.headers
                         .as_deref(),
                     Some(probe_timeout),
@@ -1910,7 +1925,7 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
                     }
                 }
                 Ok(Ok(Err(e))) => {
-                    debug!(input = %redact_probe_input(&input), error = %e, "opendal: probe failed");
+                    debug!(error = %e, "opendal: probe failed");
                     None
                 }
                 Ok(Err(e)) => {
@@ -1918,7 +1933,7 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
                     None
                 }
                 Err(_) => {
-                    debug!(input = %redact_probe_input(&input), "opendal: probe timed out");
+                    debug!("opendal: probe timed out");
                     None
                 }
             };
@@ -1944,13 +1959,6 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
         }
     }
     info!(addon = %addon.name, stored, "opendal: probing complete");
-}
-
-fn redact_probe_input(input: &str) -> &str {
-    input
-        .split('?')
-        .next()
-        .unwrap_or(input)
 }
 
 fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
@@ -4349,6 +4357,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn probing_disabled_keeps_probe_until_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join(PROBE_MOVIE);
+        if !make_probeable_mp4(&file) {
+            eprintln!("ffmpeg unavailable, skipping");
+            return;
+        }
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, mut db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        db_addon.probe_on_scan = true;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(stored_probe(ctx, db_addon.id).await);
+
+        db_addon.probe_on_scan = false;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(stored_probe(ctx, db_addon.id).await);
+
+        std::fs::write(&file, b"no longer a video").unwrap();
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(!stored_probe(ctx, db_addon.id).await);
+    }
+
+    #[tokio::test]
     async fn probe_on_scan_failure_does_not_abort_the_scan() {
         let dir = tempfile::tempdir().unwrap();
         write_files(dir.path(), &[(PROBE_MOVIE, b"fake")]);
@@ -4375,7 +4420,8 @@ mod tests {
         .unwrap();
         let job = base.job(Uuid::nil(), "/Movies/The Matrix #1.mkv", String::new());
         assert_eq!(
-            job.input,
+            job.input
+                .expose(),
             "https://dav.example/remote.php/Movies/The%20Matrix%20%231.mkv"
         );
         assert_eq!(
