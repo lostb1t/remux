@@ -1172,16 +1172,16 @@ async fn scan_addon(
     let mut upserted = 0usize;
 
     let probe_on_scan = addon.probe_on_scan && media_kind != "track";
-    let known_probes: std::collections::HashMap<Uuid, (Option<i64>, bool)> =
+    let known_probes: std::collections::HashMap<Uuid, (Option<String>, bool)> =
         if probe_on_scan {
-            sqlx::query_as::<_, (Uuid, Option<i64>, bool)>(
-                "SELECT id, size, probe_data IS NOT NULL FROM opendal_files WHERE addon_id = ?",
+            sqlx::query_as::<_, (Uuid, Option<String>, bool)>(
+                "SELECT id, probe_version, probe_data IS NOT NULL FROM opendal_files WHERE addon_id = ?",
             )
             .bind(addon.id)
             .fetch_all(&ctx.db)
             .await?
             .into_iter()
-            .map(|(id, size, has)| (id, (size, has)))
+            .map(|(id, version, has)| (id, (version, has)))
             .collect()
         } else {
             Default::default()
@@ -1664,20 +1664,32 @@ async fn scan_addon(
                 }
             };
 
-            // The local lister doesn't report lengths, but change detection for
-            // probing relies on the size.
-            let mut size_bytes = entry
+            // The local lister reports neither length nor mtime, so probing falls
+            // back to a stat to detect changed files.
+            let mut meta = entry
                 .metadata()
-                .content_length();
-            if probe_on_scan && size_bytes == 0 {
-                if let Ok(meta) = operator
+                .clone();
+            if probe_on_scan
+                && (meta.content_length() == 0
+                    || (meta
+                        .last_modified()
+                        .is_none()
+                        && meta
+                            .etag()
+                            .is_none()))
+            {
+                if let Ok(statted) = operator
                     .stat(entry.path())
                     .await
                 {
-                    size_bytes = meta.content_length();
+                    meta = statted;
                 }
             }
-            let size = Some(size_bytes as i64);
+            let size = Some(meta.content_length() as i64);
+            // For `.strm` files `stored_path` is the URL, so a retargeted file
+            // changes the version even when its size doesn't.
+            let probe_version =
+                probe_on_scan.then(|| probe_version_of(&stored_path, &meta));
             let now = Utc::now()
                 .naive_utc()
                 .to_string();
@@ -1694,7 +1706,7 @@ async fn scan_addon(
                    season = excluded.season, episode = excluded.episode, \
                    track_number = excluded.track_number, \
                    year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at, \
-                   probe_data = CASE WHEN excluded.size IS NOT opendal_files.size THEN NULL ELSE opendal_files.probe_data END",
+                   probe_data = CASE WHEN ? IS NOT NULL AND ? IS NOT opendal_files.probe_version THEN NULL ELSE opendal_files.probe_data END",
             )
             .bind(row_id)
             .bind(addon.id)
@@ -1709,6 +1721,8 @@ async fn scan_addon(
             .bind(year)
             .bind(size)
             .bind(&now)
+            .bind(probe_version.as_deref())
+            .bind(probe_version.as_deref())
             .execute(&ctx.db)
             .await;
 
@@ -1728,10 +1742,10 @@ async fn scan_addon(
                     upserted += 1;
                     let unchanged = known_probes
                         .get(&row_id)
-                        .is_some_and(|(old_size, has_probe)| {
-                            *has_probe && *old_size == size
+                        .is_some_and(|(old_version, has_probe)| {
+                            *has_probe && *old_version == probe_version
                         });
-                    if probe_on_scan && !unchanged {
+                    if let Some(version) = probe_version.filter(|_| !unchanged) {
                         let target = if stored_path.starts_with("http://")
                             || stored_path.starts_with("https://")
                         {
@@ -1739,17 +1753,19 @@ async fn scan_addon(
                                 row_id,
                                 input: stored_path.clone(),
                                 headers: None,
+                                version: version.clone(),
                             })
                         } else if is_local {
                             Some(ProbeJob {
                                 row_id,
                                 input: stored_path.clone(),
                                 headers: None,
+                                version: version.clone(),
                             })
                         } else {
                             webdav_probe
                                 .as_ref()
-                                .map(|base| base.job(row_id, &entry_rel))
+                                .map(|base| base.job(row_id, &entry_rel, version))
                         };
                         probe_jobs.extend(target);
                     }
@@ -1779,12 +1795,26 @@ async fn scan_addon(
     Ok(())
 }
 
+/// Identifies the exact file content a probe was taken from. For `.strm` files
+/// `stored_path` is the target URL, so retargeting changes it even when the
+/// size doesn't.
+fn probe_version_of(stored_path: &str, meta: &opendal::Metadata) -> String {
+    format!(
+        "{stored_path}|{}|{:?}|{}",
+        meta.content_length(),
+        meta.last_modified(),
+        meta.etag()
+            .unwrap_or("")
+    )
+}
+
 const PROBE_CONCURRENCY: usize = 4;
 
 struct ProbeJob {
     row_id: Uuid,
     input: String,
     headers: Option<String>,
+    version: String,
 }
 
 struct WebdavProbeBase {
@@ -1817,7 +1847,7 @@ impl WebdavProbeBase {
         })
     }
 
-    fn job(&self, row_id: Uuid, rel_path: &str) -> ProbeJob {
+    fn job(&self, row_id: Uuid, rel_path: &str, version: String) -> ProbeJob {
         let encoded = rel_path
             .trim_start_matches('/')
             .split('/')
@@ -1830,6 +1860,7 @@ impl WebdavProbeBase {
             headers: self
                 .auth_header
                 .clone(),
+            version,
         }
     }
 }
@@ -1891,19 +1922,22 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
                     None
                 }
             };
-            (job.row_id, probed)
+            (job.row_id, job.version, probed)
         })
         .buffer_unordered(PROBE_CONCURRENCY);
-    while let Some((row_id, probed)) = results
+    while let Some((row_id, version, probed)) = results
         .next()
         .await
     {
         let Some(info) = probed else { continue };
-        match sqlx::query("UPDATE opendal_files SET probe_data = ? WHERE id = ?")
-            .bind(sqlx::types::Json(&info))
-            .bind(row_id)
-            .execute(&ctx.db)
-            .await
+        match sqlx::query(
+            "UPDATE opendal_files SET probe_data = ?, probe_version = ? WHERE id = ?",
+        )
+        .bind(sqlx::types::Json(&info))
+        .bind(version)
+        .bind(row_id)
+        .execute(&ctx.db)
+        .await
         {
             Ok(_) => stored += 1,
             Err(e) => warn!(error = %e, "opendal: failed to store probe data"),
@@ -4339,7 +4373,7 @@ mod tests {
             "password": "p",
         }))
         .unwrap();
-        let job = base.job(Uuid::nil(), "/Movies/The Matrix #1.mkv");
+        let job = base.job(Uuid::nil(), "/Movies/The Matrix #1.mkv", String::new());
         assert_eq!(
             job.input,
             "https://dav.example/remote.php/Movies/The%20Matrix%20%231.mkv"
@@ -4349,5 +4383,52 @@ mod tests {
                 .as_deref(),
             Some("Authorization: Basic dTpw\r\n")
         );
+    }
+
+    #[test]
+    fn probe_version_changes_with_strm_target_even_at_same_size() {
+        let meta = opendal::Metadata::new(EntryMode::FILE).with_content_length(24);
+        let a = probe_version_of("http://host/aaaaaaaaa.mkv", &meta);
+        let b = probe_version_of("http://host/bbbbbbbbb.mkv", &meta);
+        assert_ne!(a, b);
+        assert_eq!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &meta));
+        let tagged = meta
+            .clone()
+            .with_etag("\"v2\"".to_string());
+        assert_ne!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &tagged));
+    }
+
+    #[tokio::test]
+    async fn probe_on_scan_drops_stale_probe_when_same_size_file_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join(PROBE_MOVIE);
+        if !make_probeable_mp4(&file) {
+            eprintln!("ffmpeg unavailable, skipping");
+            return;
+        }
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, mut db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        db_addon.probe_on_scan = true;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(stored_probe(ctx, db_addon.id).await);
+
+        let len = std::fs::metadata(&file)
+            .unwrap()
+            .len() as usize;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::write(&file, vec![b'x'; len]).unwrap();
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(!stored_probe(ctx, db_addon.id).await);
     }
 }
