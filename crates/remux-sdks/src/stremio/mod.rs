@@ -86,6 +86,7 @@ impl Endpoint for ManifestEndpoint {
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub id: String,
     pub name: String,

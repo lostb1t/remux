@@ -898,7 +898,9 @@ pub trait LyricAddon: Send + Sync {
 pub struct AddonCapabilities {
     pub metadata: AddonMetadata,
     /// The live manifest could not be fetched when the addon was loaded, so
-    /// `metadata` is the preset's static fallback.
+    /// `metadata` is the preset's static fallback. Such an addon re-checks its
+    /// manifest per request (see `AddonRuntime::live_id_prefixes`) and is
+    /// skipped while that still fails.
     pub manifest_unreachable: bool,
     pub kind: Option<Arc<dyn AddonKind>>,
     pub catalog: Option<Arc<dyn CatalogAddon>>,
@@ -1023,6 +1025,45 @@ impl AddonRuntime {
                     .as_deref()
             })
     }
+
+    /// The id prefixes `kind` is limited to, or `Err` when the addon's manifest
+    /// couldn't be loaded and it should be skipped. An addon whose manifest
+    /// failed at load is asked again here; it answers from its cache, and
+    /// after a failure only retries once per cooldown.
+    async fn live_id_prefixes(
+        &self,
+        kind: &ResourceType,
+    ) -> Result<Option<std::borrow::Cow<'_, [String]>>> {
+        if !self
+            .caps
+            .manifest_unreachable
+        {
+            return Ok(self
+                .resource_id_prefixes(kind)
+                .map(std::borrow::Cow::Borrowed));
+        }
+        let info = match &self
+            .caps
+            .kind
+        {
+            Some(k) => {
+                k.available_info()
+                    .await?
+            }
+            None => None,
+        };
+        let Some((resources, _)) = info else {
+            return Ok(None);
+        };
+        let resource = resources
+            .iter()
+            .find(|r| &r.name == kind)
+            .ok_or_else(|| anyhow!("manifest does not declare {kind}"))?;
+        Ok(resource
+            .id_prefixes
+            .clone()
+            .map(std::borrow::Cow::Owned))
+    }
 }
 
 /// Returns true when `runtime` should run for the given user context.
@@ -1091,6 +1132,85 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
             && list.contains(&db::MediaKind::Series))
 }
 
+pub(crate) type ManifestInfo = (
+    Vec<remux_sdks::stremio::ResourceRef>,
+    Vec<remux_sdks::stremio::MediaType>,
+);
+
+const MANIFEST_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+
+enum ManifestState {
+    Empty,
+    Loaded(ManifestInfo),
+    Failed { at: Instant, error: String },
+}
+
+/// Remembers an addon's manifest once it loaded, and after a failure answers
+/// from the failure until the cooldown passes, so an unreachable addon is
+/// retried at most once per cooldown however often it is asked.
+pub(crate) struct ManifestCache {
+    state: tokio::sync::Mutex<ManifestState>,
+}
+
+impl Default for ManifestCache {
+    fn default() -> Self {
+        Self {
+            state: tokio::sync::Mutex::new(ManifestState::Empty),
+        }
+    }
+}
+
+impl ManifestCache {
+    pub(crate) async fn get_or_fetch<F, Fut>(&self, fetch: F) -> Result<ManifestInfo>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<ManifestInfo>>,
+    {
+        let mut state = self
+            .state
+            .lock()
+            .await;
+        match &*state {
+            ManifestState::Loaded(info) => return Ok(info.clone()),
+            ManifestState::Failed { at, error }
+                if at.elapsed() < MANIFEST_FAILURE_COOLDOWN =>
+            {
+                return Err(anyhow!("{error}"));
+            }
+            _ => {}
+        }
+        match fetch().await {
+            Ok(info) => {
+                *state = ManifestState::Loaded(info.clone());
+                Ok(info)
+            }
+            Err(e) => {
+                *state = ManifestState::Failed {
+                    at: Instant::now(),
+                    error: format!("{e:#}"),
+                };
+                Err(e)
+            }
+        }
+    }
+}
+
+fn apply_manifest_info(
+    caps: &mut AddonCapabilities,
+    resource_refs: Vec<remux_sdks::stremio::ResourceRef>,
+    raw_types: Vec<remux_sdks::stremio::MediaType>,
+) {
+    caps.metadata
+        .supported_resources = resource_refs;
+    if !raw_types.is_empty() {
+        caps.metadata
+            .supported_types = raw_types
+            .into_iter()
+            .filter_map(recognized_manifest_media_kind)
+            .collect();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AddonService
 // ---------------------------------------------------------------------------
@@ -1124,7 +1244,13 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
         else {
             return false;
         };
-        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Meta) {
+        let Ok(prefixes) = self
+            .live_id_prefixes(&ResourceType::Meta)
+            .await
+        else {
+            return false;
+        };
+        if let Some(prefixes) = prefixes.as_deref() {
             let gp_ext = media
                 .grandparent
                 .as_deref()
@@ -1156,7 +1282,13 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
         {
             return false;
         }
-        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Stream) {
+        let Ok(prefixes) = self
+            .live_id_prefixes(&ResourceType::Stream)
+            .await
+        else {
+            return false;
+        };
+        if let Some(prefixes) = prefixes.as_deref() {
             let gp_ext = media
                 .grandparent
                 .as_deref()
@@ -1194,7 +1326,13 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
         {
             return false;
         }
-        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Subtitles) {
+        let Ok(prefixes) = self
+            .live_id_prefixes(&ResourceType::Subtitles)
+            .await
+        else {
+            return false;
+        };
+        if let Some(prefixes) = prefixes.as_deref() {
             let gp_ext = media
                 .grandparent
                 .as_deref()
@@ -1246,16 +1384,22 @@ impl AddonService {
         let all = self
             .inner
             .load();
-        let mut out = Vec::new();
-        for r in all
+        let candidates: Vec<&AddonRuntime> = all
             .iter()
             .filter(|r| r.supports_type(&media.kind))
             .filter(|r| user_scoped(r, override_ids.as_deref()))
-        {
-            if PickCap::<T>::pick(r, media).await {
-                out.push(r.clone());
-            }
-        }
+            .collect();
+        let picks = futures::future::join_all(
+            candidates
+                .iter()
+                .map(|r| PickCap::<T>::pick(*r, media)),
+        )
+        .await;
+        let mut out: Vec<AddonRuntime> = candidates
+            .into_iter()
+            .zip(picks)
+            .filter_map(|(r, picked)| picked.then(|| r.clone()))
+            .collect();
         if let Some(ids) = &override_ids {
             out.sort_by_key(|r| {
                 ids.iter()
@@ -1427,15 +1571,11 @@ impl AddonService {
                             .await
                         {
                             Ok(Some((resource_refs, raw_types))) => {
-                                caps.metadata
-                                    .supported_resources = resource_refs;
-                                if !raw_types.is_empty() {
-                                    caps.metadata
-                                        .supported_types = raw_types
-                                        .into_iter()
-                                        .filter_map(recognized_manifest_media_kind)
-                                        .collect();
-                                }
+                                apply_manifest_info(
+                                    &mut caps,
+                                    resource_refs,
+                                    raw_types,
+                                );
                             }
                             Ok(None) => {}
                             Err(e) => {
@@ -2830,8 +2970,33 @@ impl AddonService {
         } else {
             info!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
         }
-        ctx.store
-            .save(cache_key, subs.clone(), SUBTITLES_TTL);
+        // An addon skipped while its manifest is unreachable would be missing
+        // from this result until the cache expires, even once it recovers.
+        let mut skipped_unreachable = false;
+        for r in self
+            .inner
+            .load()
+            .iter()
+            .filter(|r| {
+                r.caps
+                    .manifest_unreachable
+                    && r.row
+                        .resources
+                        .contains(&ResourceType::Subtitles)
+            })
+        {
+            if r.live_id_prefixes(&ResourceType::Subtitles)
+                .await
+                .is_err()
+            {
+                skipped_unreachable = true;
+                break;
+            }
+        }
+        if !skipped_unreachable {
+            ctx.store
+                .save(cache_key, subs.clone(), SUBTITLES_TTL);
+        }
         subs
     }
 
@@ -2857,9 +3022,16 @@ impl AddonService {
             .map(|r| async move {
                 let name = &r.row.name;
                 let t = std::time::Instant::now();
-                let id_prefixes = r
-                    .resource_id_prefixes(&ResourceType::Stream)
-                    .map(|p| p.to_vec());
+                let id_prefixes = match r
+                    .live_id_prefixes(&ResourceType::Stream)
+                    .await
+                {
+                    Ok(p) => p.map(|p| p.into_owned()),
+                    Err(e) => {
+                        warn!(addon = %name, error = %e, "stream addon manifest unavailable");
+                        return vec![];
+                    }
+                };
                 match r
                     .stream
                     .as_ref()
@@ -4383,6 +4555,204 @@ mod tests {
         );
         assert_eq!(subs_a.len(), 1);
         assert_eq!(subs_b.len(), 1);
+    }
+
+    fn unreachable_runtime(
+        resources: Vec<ResourceType>,
+        kind: Option<Arc<dyn AddonKind>>,
+    ) -> AddonRuntime {
+        let now = chrono::Utc::now().naive_utc();
+        AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "unreachable".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources,
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: true,
+                is_default: false,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                manifest_unreachable: true,
+                kind,
+                ..Default::default()
+            },
+        }
+    }
+
+    struct RecoveredManifestKind;
+
+    #[async_trait]
+    impl AddonKind for RecoveredManifestKind {
+        fn id(&self) -> &'static str {
+            "recovered"
+        }
+
+        async fn available_info(
+            &self,
+        ) -> Result<
+            Option<(
+                Vec<remux_sdks::stremio::ResourceRef>,
+                Vec<remux_sdks::stremio::MediaType>,
+            )>,
+        > {
+            Ok(Some((
+                vec![remux_sdks::stremio::ResourceRef {
+                    name: ResourceType::Meta,
+                    types: vec![],
+                    id_prefixes: Some(vec!["tt".into()]),
+                }],
+                vec![],
+            )))
+        }
+    }
+
+    struct FailingManifestKind;
+
+    #[async_trait]
+    impl AddonKind for FailingManifestKind {
+        fn id(&self) -> &'static str {
+            "failing"
+        }
+
+        async fn available_info(&self) -> Result<Option<ManifestInfo>> {
+            Err(anyhow!("manifest unreachable"))
+        }
+    }
+
+    fn media_with_imdb(imdb: &str) -> db::Media {
+        db::Media {
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn unreachable_addon_is_skipped_until_its_manifest_loads() {
+        let mut runtime = unreachable_runtime(
+            vec![ResourceType::Meta],
+            Some(Arc::new(FailingManifestKind)),
+        );
+        runtime
+            .caps
+            .meta = Some(Arc::new(AlwaysMeta));
+        let media = media_with_imdb("tt0111161");
+        assert!(!PickCap::<dyn MetaAddon>::pick(&runtime, &media).await);
+    }
+
+    #[tokio::test]
+    async fn recovered_addon_applies_its_manifest_id_prefixes() {
+        let mut runtime = unreachable_runtime(
+            vec![ResourceType::Meta],
+            Some(Arc::new(RecoveredManifestKind)),
+        );
+        runtime
+            .caps
+            .meta = Some(Arc::new(AlwaysMeta));
+        assert!(
+            PickCap::<dyn MetaAddon>::pick(&runtime, &media_with_imdb("tt0111161"))
+                .await
+        );
+        assert!(
+            !PickCap::<dyn MetaAddon>::pick(&runtime, &media_with_imdb("xx0111161"))
+                .await
+        );
+    }
+
+    struct AlwaysMeta;
+
+    #[async_trait]
+    impl MetaAddon for AlwaysMeta {
+        async fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn meta_fetch(
+            &self,
+            _media: &db::Media,
+            _ctx: &AppContext,
+            _config: &crate::api::ServerConfiguration,
+        ) -> Result<Option<db::Media>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn manifest_cache_remembers_success_and_throttles_failure() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let failing = ManifestCache::default();
+        for _ in 0..3 {
+            let res = failing
+                .get_or_fetch(|| async {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(anyhow!("down"))
+                })
+                .await;
+            assert!(res.is_err());
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let loaded = ManifestCache::default();
+        for _ in 0..3 {
+            loaded
+                .get_or_fetch(|| async {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok((vec![], vec![]))
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn subtitles_are_not_cached_while_a_subtitle_addon_is_unreachable() {
+        let mut runtime = unreachable_runtime(
+            vec![ResourceType::Subtitles],
+            Some(Arc::new(FailingManifestKind)),
+        );
+        runtime
+            .caps
+            .manifest_unreachable = true;
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![runtime])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        let mut media = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Movie,
+            title: "Unreachable Subtitles".into(),
+            ..Default::default()
+        };
+
+        service
+            .fetch_subtitles(&mut media, &ctx, false, None)
+            .await;
+
+        assert!(
+            ctx.store
+                .get::<Vec<SubtitleInfo>>(&format!("addon-subtitles:{}:anon", media.id))
+                .is_none()
+        );
     }
 
     /// Remote search mints a fresh id (and fresh, possibly-drifted data) per
