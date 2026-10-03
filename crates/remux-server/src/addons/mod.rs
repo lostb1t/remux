@@ -1384,16 +1384,22 @@ impl AddonService {
         let all = self
             .inner
             .load();
-        let mut out = Vec::new();
-        for r in all
+        let candidates: Vec<&AddonRuntime> = all
             .iter()
             .filter(|r| r.supports_type(&media.kind))
             .filter(|r| user_scoped(r, override_ids.as_deref()))
-        {
-            if PickCap::<T>::pick(r, media).await {
-                out.push(r.clone());
-            }
-        }
+            .collect();
+        let picks = futures::future::join_all(
+            candidates
+                .iter()
+                .map(|r| PickCap::<T>::pick(*r, media)),
+        )
+        .await;
+        let mut out: Vec<AddonRuntime> = candidates
+            .into_iter()
+            .zip(picks)
+            .filter_map(|(r, picked)| picked.then(|| r.clone()))
+            .collect();
         if let Some(ids) = &override_ids {
             out.sort_by_key(|r| {
                 ids.iter()
@@ -3016,9 +3022,16 @@ impl AddonService {
             .map(|r| async move {
                 let name = &r.row.name;
                 let t = std::time::Instant::now();
-                let id_prefixes = r
-                    .resource_id_prefixes(&ResourceType::Stream)
-                    .map(|p| p.to_vec());
+                let id_prefixes = match r
+                    .live_id_prefixes(&ResourceType::Stream)
+                    .await
+                {
+                    Ok(p) => p.map(|p| p.into_owned()),
+                    Err(e) => {
+                        warn!(addon = %name, error = %e, "stream addon manifest unavailable");
+                        return vec![];
+                    }
+                };
                 match r
                     .stream
                     .as_ref()
