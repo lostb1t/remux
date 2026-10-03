@@ -15,15 +15,26 @@ use remux_sdks::{
     },
     stremio::ResourceType,
 };
-use std::collections::HashMap;
 use url::Url;
 use uuid::Uuid;
 
 #[component]
 pub fn AddonsPage(app_state: AppState) -> Element {
-    let mut addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
-    let mut global_addon_order: Signal<Vec<String>> = use_signal(Vec::new);
-    let mut user_addon_order: Signal<Vec<String>> = use_signal(Vec::new);
+    // Addons split by tab: `is_default` addons on Global, the rest on User.
+    let mut global_addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let mut user_addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let find_addon = move |id: Uuid| -> Option<AddonDto> {
+        global_addons
+            .read()
+            .iter()
+            .chain(
+                user_addons
+                    .read()
+                    .iter(),
+            )
+            .find(|addon| addon.id == id)
+            .cloned()
+    };
     let mut kinds: Signal<Vec<AddonMetadata>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error: Signal<Option<String>> = use_signal(|| None);
@@ -85,28 +96,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                 .await;
             match (kinds_res, addons_res) {
                 (Ok(k), Ok(a)) => {
-                    global_addon_order.set(
-                        a.iter()
-                            .filter(|addon| addon.is_default)
-                            .map(|addon| {
-                                addon
-                                    .id
-                                    .to_string()
-                            })
-                            .collect(),
-                    );
-                    user_addon_order.set(
-                        a.iter()
-                            .filter(|addon| !addon.is_default)
-                            .map(|addon| {
-                                addon
-                                    .id
-                                    .to_string()
-                            })
-                            .collect(),
-                    );
                     kinds.set(k);
-                    addons.set(a);
+                    let (global, user): (Vec<AddonDto>, Vec<AddonDto>) = a
+                        .into_iter()
+                        .partition(|addon| addon.is_default);
+                    global_addons.set(global);
+                    user_addons.set(user);
                     error.set(None);
                 }
                 (Err(e), _) | (_, Err(e)) => {
@@ -167,17 +162,11 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                         }
                     }
                     {
-                        let visible: Vec<AddonDto> = addons.read().clone().into_iter()
-                            .filter(|a| if *active_tab.read() == "global" { a.is_default } else { !a.is_default })
-                            .collect();
+                        let mut tab_addons = if *active_tab.read() == "global" { global_addons } else { user_addons };
+                        let visible: Vec<AddonDto> = tab_addons.read().clone();
                         if visible.is_empty() {
                             rsx! { EmptyState { message: "No addons configured — add one to get started." } }
                         } else {
-                            let mut addon_order = if *active_tab.read() == "global" {
-                                global_addon_order
-                            } else {
-                                user_addon_order
-                            };
                             let list_key = visible
                                 .iter()
                                 .map(|addon| addon.id.to_string())
@@ -231,7 +220,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         let client = app_state.clone();
                                                         move |e| {
                                                             e.stop_propagation();
-                                                            if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
+                                                            if let Some(a) = find_addon(id) {
                                                                 edit_name_input.set(a.name.clone());
                                                                 let mut config_map: std::collections::HashMap<String, serde_json::Value> = a.config.as_object()
                                                                     .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -324,27 +313,22 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     items,
                                     aria_label: "Addons",
                                     on_reorder: move |new_order: Vec<String>| {
-                                        let previous_positions: HashMap<String, usize> = addon_order
-                                            .peek()
+                                        let mut reordered_addons = tab_addons.peek().clone();
+                                        reordered_addons.sort_by_key(|addon| {
+                                            new_order.iter().position(|id| *id == addon.id.to_string())
+                                        });
+                                        for (index, addon) in reordered_addons.iter_mut().enumerate() {
+                                            addon.priority = index as i64 * 10;
+                                        }
+                                        let reorder_updates: Vec<(Uuid, i64)> = reordered_addons
                                             .iter()
-                                            .enumerate()
-                                            .map(|(index, id)| (id.clone(), index))
+                                            .map(|addon| (addon.id, addon.priority))
                                             .collect();
-                                        let updates: Vec<(Uuid, i64)> = new_order
-                                            .iter()
-                                            .enumerate()
-                                            .filter_map(|(index, id)| {
-                                                let priority = index as i64 * 10;
-                                                (previous_positions.get(id).copied() != Some(index))
-                                                    .then(|| id.parse().ok().map(|id| (id, priority)))
-                                                    .flatten()
-                                            })
-                                            .collect();
-                                        addon_order.set(new_order);
+                                        tab_addons.set(reordered_addons);
                                         let client = client.clone();
                                         let mut reorder_error = error;
                                         spawn(async move {
-                                            for (id, priority) in updates {
+                                            for (id, priority) in reorder_updates {
                                                 if let Err(e) = client
                                                     .execute(UpdateAddon {
                                                         id,
@@ -495,6 +479,14 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         );
                                         creating.set(true);
                                         let is_default = *create_is_default.peek();
+                                        // New addons go to the top of their tab.
+                                        let target_addons = if is_default { global_addons } else { user_addons };
+                                        let new_prio = target_addons
+                                            .peek()
+                                            .iter()
+                                            .map(|addon| addon.priority)
+                                            .min()
+                                            .map_or(0, |priority| priority.saturating_sub(10));
                                         let c = client.clone();
                                         spawn(async move {
                                             let payload = CreateAddonRequest {
@@ -502,7 +494,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 name,
                                                 resources: Vec::new(),
                                                 types: Vec::new(),
-                                                priority: 0,
+                                                priority: new_prio,
                                                 is_default,
                                             };
                                             match c.execute(CreateAddon { payload }).await {
@@ -529,16 +521,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
 
         if let Some(edit_id) = *id_to_edit.read() {
             {
-                let edit_kind = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.kind.clone());
+                let edit_kind = find_addon(edit_id).map(|a| a.kind);
                 let edit_kind_meta = edit_kind.as_ref().and_then(|k| kinds.read().iter().find(|m| m.id == *k).cloned());
                 // Use supported_resources from the addon row (manifest-derived for Stremio,
                 // kind-static for others) as the checkbox option list.
                 let is_user_addon = !*edit_is_default.read();
-                let resource_options: Vec<ResourceType> = addons
-                    .read()
-                    .iter()
-                    .find(|a| a.id == edit_id)
-                    .map(|a| if is_user_addon { a.supported_resources_user.clone() } else { a.supported_resources.clone() })
+                let resource_options: Vec<ResourceType> = find_addon(edit_id)
+                    .map(|a| if is_user_addon { a.supported_resources_user } else { a.supported_resources })
                     .unwrap_or_default();
                 rsx! {
                     div { class: "modal-backdrop",
@@ -577,7 +566,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     let res_str = format!("{res}");
                                                     let res_str_check = res_str.clone();
                                                     let checked = edit_resources.read().contains(&res_str);
-                                                    let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
+                                                    let is_system = find_addon(edit_id).is_some_and(|a| a.system);
                                                     rsx! {
                                                         div { class: "check-row",
                                                             Switch {
@@ -602,11 +591,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 }
                                 // Types section
                                 {
-                                    let type_options: Vec<remux_sdks::remux::MediaKind> = addons
-                                        .read()
-                                        .iter()
-                                        .find(|a| a.id == edit_id)
-                                        .map(|a| if is_user_addon { a.supported_types_user.clone() } else { a.supported_types.clone() })
+                                    let type_options: Vec<remux_sdks::remux::MediaKind> = find_addon(edit_id)
+                                        .map(|a| if is_user_addon { a.supported_types_user } else { a.supported_types })
                                         .unwrap_or_default();
                                     if !type_options.is_empty() {
                                         rsx! {
@@ -618,7 +604,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             let t_str = format!("{t}");
                                                             let t_str_check = t_str.clone();
                                                             let checked = edit_types.read().contains(&t_str);
-                                                            let is_system = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.system).unwrap_or(false);
+                                                            let is_system = find_addon(edit_id).is_some_and(|a| a.system);
                                                             rsx! {
                                                                 div { class: "check-row",
                                                                     Switch {

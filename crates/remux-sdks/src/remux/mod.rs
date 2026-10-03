@@ -4140,6 +4140,8 @@ pub struct RemuxInfo {
     pub collection_default_sort: Option<Vec<ItemSortBy>>,
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
     pub image_config: Option<CollectionImageConfig>,
+    /// Stored display order (`DisplayOrder` sort); `None` sorts last.
+    pub sort_order: Option<i64>,
 }
 
 #[dto]

@@ -7,7 +7,6 @@ use remux_sdks::remux::{
     GetItems, GetItemsQuery, GetWatchProviders, HexColor, ItemSortBy, MediaType,
     PatchItem, PatchItemPayload, SortOrder, WatchProviderItem,
 };
-use std::collections::HashMap;
 
 fn is_group_container(item: &BaseItemDto) -> bool {
     item.collection_type
@@ -134,7 +133,6 @@ impl PartialEq for FormMode {
 #[component]
 pub fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    let mut collection_order: Signal<Vec<String>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh = use_signal(|| 0_u32);
@@ -157,16 +155,6 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                 .await
             {
                 Ok(result) => {
-                    collection_order.set(
-                        result
-                            .items
-                            .iter()
-                            .map(|item| {
-                                item.id
-                                    .to_string()
-                            })
-                            .collect(),
-                    );
                     collections.set(result.items);
                     error.set(None);
                 }
@@ -276,28 +264,28 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                     items,
                                     aria_label: "Collections",
                                     on_reorder: move |new_order: Vec<String>| {
-                                        let previous_positions: HashMap<String, usize> = collection_order
-                                            .peek()
+                                        let mut reordered_collections = collections.peek().clone();
+                                        reordered_collections.sort_by_key(|col| {
+                                            new_order.iter().position(|id| *id == col.id.to_string())
+                                        });
+                                        for (index, col) in reordered_collections.iter_mut().enumerate() {
+                                            col.remux
+                                                .get_or_insert_with(Default::default)
+                                                .sort_order = Some(index as i64 * 10);
+                                        }
+                                        let reorder_updates: Vec<(String, i64)> = reordered_collections
                                             .iter()
-                                            .enumerate()
-                                            .map(|(index, id)| (id.clone(), index))
-                                            .collect();
-                                        let updates: Vec<(String, i64)> = new_order
-                                            .iter()
-                                            .enumerate()
-                                            .filter_map(|(index, id)| {
-                                                (previous_positions.get(id).copied() != Some(index))
-                                                    .then(|| (id.clone(), index as i64 * 10))
+                                            .filter_map(|col| {
+                                                Some((col.id.to_string(), col.remux.as_ref()?.sort_order?))
                                             })
                                             .collect();
-
-                                        collection_order.set(new_order);
+                                        collections.set(reordered_collections);
 
                                         let app_state = app_state_reorder.clone();
                                         let mut reorder_error = error;
 
                                         spawn(async move {
-                                            for (id, so) in updates {
+                                            for (id, so) in reorder_updates {
                                                 if let Err(e) = app_state
                                                     .execute(PatchItem {
                                                         item_id: id,
@@ -330,6 +318,13 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                     CollectionForm {
                         mode,
                         app_state: app_state.clone(),
+                        // New collections go to the top of the list.
+                        new_sort_order: collections
+                            .peek()
+                            .iter()
+                            .filter_map(|col| col.remux.as_ref()?.sort_order)
+                            .min()
+                            .map_or(0, |sort_order| sort_order.saturating_sub(10)),
                         on_done: move |_| {
                             form_mode.set(None);
                             let v = *refresh.peek() + 1;
@@ -347,6 +342,8 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
 pub fn CollectionForm(
     mode: FormMode,
     app_state: AppState,
+    /// `sort_order` for a newly created collection; ignored when editing.
+    new_sort_order: i64,
     on_done: EventHandler,
     on_cancel: EventHandler,
 ) -> Element {
@@ -913,7 +910,6 @@ pub fn CollectionForm(
                             smart_filter: smart_filter_payload,
                             promoted: Some(prm),
                             tags: Some(current_tags),
-                            sort_order: None,
                             latest_auto_unplayed: Some(if is_group {
                                 false
                             } else {
@@ -927,6 +923,7 @@ pub fn CollectionForm(
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                             image_config: image_config_payload,
+                            ..Default::default()
                         },
                     })
                     .await;
@@ -953,7 +950,7 @@ pub fn CollectionForm(
                             collection_type: Some(ct),
                             collection_kind: Some(ck),
                             promoted: Some(prm),
-                            sort_order: None,
+                            sort_order: Some(new_sort_order),
                         },
                     })
                     .await
@@ -968,13 +965,8 @@ pub fn CollectionForm(
                     .execute(PatchItem {
                         item_id: new_id.clone(),
                         payload: PatchItemPayload {
-                            name: None,
-                            collection_type: None,
-                            collection_kind: None,
                             smart_filter: smart_filter_payload,
-                            promoted: None,
                             tags: Some(current_tags),
-                            sort_order: None,
                             latest_auto_unplayed: Some(if is_group {
                                 false
                             } else {
@@ -988,6 +980,7 @@ pub fn CollectionForm(
                             collection_default_sort: default_sort_payload,
                             collection_default_sort_order: default_sort_order_payload,
                             image_config: image_config_payload,
+                            ..Default::default()
                         },
                     })
                     .await;
