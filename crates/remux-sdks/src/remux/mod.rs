@@ -418,6 +418,8 @@ pub struct AddonDto {
     #[serde(default)]
     pub subtitle_extraction: bool,
     #[serde(default)]
+    pub probe_on_scan: bool,
+    #[serde(default)]
     pub service_filter: Vec<String>,
     pub description: Option<String>,
     /// The addon's manifest could not be fetched when it was loaded, so the
@@ -458,6 +460,7 @@ pub struct UpdateAddonRequest {
     pub is_default: Option<bool>,
     pub http_redirect_stream: Option<bool>,
     pub subtitle_extraction: Option<bool>,
+    pub probe_on_scan: Option<bool>,
     pub service_filter: Option<Vec<String>>,
 }
 

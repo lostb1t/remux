@@ -76,6 +76,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
 
     let mut edit_http_redirect_stream = use_signal(|| false);
     let mut edit_subtitle_extraction = use_signal(|| false);
+    let mut edit_probe_on_scan = use_signal(|| false);
     let mut edit_service_filter = use_signal(String::new);
 
     // Confirm-delete state
@@ -250,6 +251,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 edit_is_default.set(a.is_default);
                                                                 edit_http_redirect_stream.set(a.http_redirect_stream);
                                                                 edit_subtitle_extraction.set(a.subtitle_extraction);
+                                                                edit_probe_on_scan.set(a.probe_on_scan);
                                                                 edit_service_filter.set(a.service_filter.join(", "));
                                                                 let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                                 edit_catalogs.set(Vec::new());
@@ -663,6 +665,17 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         }
                                         span { class: "field-hint", "Extraction reads the entire file over the network the first time a subtitle is requested, so it can be slow and use a lot of bandwidth on remote sources." }
                                     }
+                                    if edit_form_values.read().get("media_kind").and_then(|v| v.as_str()) != Some("track") {
+                                    div { class: "form-group",
+                                        ToggleRow {
+                                            label: "Probe files during scan",
+                                            description: "Read stream details (codecs, resolution, audio and subtitle tracks) for new and changed files when the library is scanned, so playback doesn't have to probe them first.",
+                                            checked: *edit_probe_on_scan.read(),
+                                            on_change: move |v| edit_probe_on_scan.set(v),
+                                        }
+                                        span { class: "field-hint", "Probing reads the start of each new or changed file, so the first scan of a large remote library takes longer." }
+                                    }
+                                    }
                                 }
                                 // Catalogs section (only shown for global addons with catalog resource active)
                                 if *edit_is_default.read() && edit_resources.read().contains("catalog") {
@@ -794,6 +807,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             let is_default = *edit_is_default.peek();
                                             let http_redirect_stream = *edit_http_redirect_stream.peek();
                                             let subtitle_extraction = *edit_subtitle_extraction.peek();
+                                            let probe_on_scan = *edit_probe_on_scan.peek();
                                             let service_filter: Vec<String> = edit_service_filter
                                                 .peek()
                                                 .split(',')
@@ -811,6 +825,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     is_default: Some(is_default),
                                                     http_redirect_stream: Some(http_redirect_stream),
                                                     subtitle_extraction: Some(subtitle_extraction),
+                                                    probe_on_scan: Some(probe_on_scan),
                                                     service_filter: Some(service_filter),
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
