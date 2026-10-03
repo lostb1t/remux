@@ -22,7 +22,11 @@ fn should_retry_with_relaxed_hls_extensions(stderr: &str) -> bool {
         || stderr.contains("mismatches allowed extensions")
 }
 
-fn ffprobe_args(url: &str, allow_nonstandard_hls_extensions: bool) -> Vec<String> {
+fn ffprobe_args(
+    url: &str,
+    allow_nonstandard_hls_extensions: bool,
+    headers: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "-v".into(),
         "error".into(),
@@ -41,6 +45,9 @@ fn ffprobe_args(url: &str, allow_nonstandard_hls_extensions: bool) -> Vec<String
             "-extension_picky".into(),
             "0".into(),
         ]);
+    }
+    if let Some(headers) = headers {
+        args.extend(["-headers".into(), headers.into()]);
     }
     args.push(url.into());
     args
@@ -65,7 +72,8 @@ mod extension_retry_tests {
 
     #[test]
     fn retry_uses_hls_extension_compatibility_options() {
-        let args = super::ffprobe_args("https://relay.example/hls?url=playlist", true);
+        let args =
+            super::ffprobe_args("https://relay.example/hls?url=playlist", true, None);
 
         assert!(
             args.windows(2)
@@ -605,16 +613,90 @@ fn apply_video_bitrate_fallback(
     }
 }
 
+/// Runs ffprobe to completion, killing the process once `deadline` passes so a
+/// hung source can't leave it running after the caller has given up.
+fn run_ffprobe(
+    args: &[String],
+    deadline: Option<std::time::Instant>,
+) -> Result<std::process::Output> {
+    use std::{io::Read, process::Stdio};
+
+    let mut child = std::process::Command::new(ffprobe_bin())
+        .args(args)
+        .hide_console()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
+
+    fn drain<R: Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let stdout = drain(
+        child
+            .stdout
+            .take(),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take(),
+    );
+
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let stdout = stdout
+        .join()
+        .unwrap_or_default();
+    let stderr = stderr
+        .join()
+        .unwrap_or_default();
+    match status {
+        Some(status) => Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        None => Err(anyhow!("ffprobe timed out")),
+    }
+}
+
 /// Probe a media URL with ffprobe and return a Jellyfin `MediaSourceInfo`
 /// alongside any chapter-derived `MediaSegments`.
 pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
-    debug!(url, "probing media");
+    probe_media_with(url, None, None)
+}
 
-    let mut output = std::process::Command::new(ffprobe_bin())
-        .args(ffprobe_args(url, false))
-        .hide_console()
-        .output()
-        .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
+/// `headers` is an ffmpeg `-headers` value (`"Name: value\r\n"` lines) sent with
+/// HTTP requests, e.g. for a WebDAV source that needs basic auth. `timeout`
+/// bounds the whole probe; ffprobe is killed when it expires.
+pub fn probe_media_with(
+    url: &str,
+    headers: Option<&str>,
+    timeout: Option<std::time::Duration>,
+) -> Result<(api::MediaSourceInfo, MediaSegments)> {
+    debug!(url, "probing media");
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+
+    let mut output = run_ffprobe(&ffprobe_args(url, false, headers), deadline)?;
 
     if !output
         .status
@@ -623,11 +705,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
             &output.stderr,
         ))
     {
-        output = std::process::Command::new(ffprobe_bin())
-            .args(ffprobe_args(url, true))
-            .hide_console()
-            .output()
-            .map_err(|e| anyhow!("Failed to rerun ffprobe: {}", e))?;
+        output = run_ffprobe(&ffprobe_args(url, true, headers), deadline)?;
     }
 
     if !output
@@ -1218,7 +1296,13 @@ pub(crate) async fn probe_stream(
         restrict_resolution,
         port,
         db,
-        |url| probe_media(&url),
+        move |url| {
+            probe_media_with(
+                &url,
+                None,
+                Some(std::time::Duration::from_secs(timeout_secs)),
+            )
+        },
     )
     .await;
 
@@ -2238,5 +2322,33 @@ mod probe_tests {
                 sibling.id
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn probe_of_a_hung_source_is_killed_at_the_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/video.mkv",
+            listener
+                .local_addr()
+                .unwrap()
+        );
+        let started = std::time::Instant::now();
+        let result =
+            probe_media_with(&url, None, Some(std::time::Duration::from_millis(700)));
+        let err = result
+            .unwrap_err()
+            .to_string();
+        if err.contains("Failed to run ffprobe") {
+            eprintln!("ffprobe unavailable, skipping");
+            return;
+        }
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

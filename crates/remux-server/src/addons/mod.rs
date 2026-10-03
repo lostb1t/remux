@@ -4407,6 +4407,7 @@ mod tests {
                 is_default: false,
                 http_redirect_stream: false,
                 subtitle_extraction: false,
+                probe_on_scan: false,
                 service_filter: vec![],
             },
             caps: AddonCapabilities {
@@ -4513,6 +4514,7 @@ mod tests {
                 is_default: false,
                 http_redirect_stream: false,
                 subtitle_extraction: false,
+                probe_on_scan: false,
                 service_filter: vec![],
             },
             caps: AddonCapabilities {
@@ -4580,6 +4582,7 @@ mod tests {
                 is_default: false,
                 http_redirect_stream: false,
                 subtitle_extraction: false,
+                probe_on_scan: false,
                 service_filter: vec![],
             },
             caps: AddonCapabilities {

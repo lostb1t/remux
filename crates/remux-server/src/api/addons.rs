@@ -176,6 +176,7 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
         is_default: addon.is_default,
         http_redirect_stream: addon.http_redirect_stream,
         subtitle_extraction: addon.subtitle_extraction,
+        probe_on_scan: addon.probe_on_scan,
         service_filter: addon.service_filter,
         description: preset.map(|p| {
             p.metadata()
@@ -345,6 +346,7 @@ pub async fn create_addon(
         is_default: payload.is_default,
         http_redirect_stream: false,
         subtitle_extraction: false,
+        probe_on_scan: false,
         service_filter: vec![],
     };
 
@@ -396,6 +398,7 @@ pub async fn update_addon(
         is_default,
         http_redirect_stream,
         subtitle_extraction,
+        probe_on_scan,
         service_filter,
     } = payload;
     let mut addon = Addon::get(
@@ -446,6 +449,9 @@ pub async fn update_addon(
     }
     if let Some(http_redirect_stream) = http_redirect_stream {
         addon.http_redirect_stream = http_redirect_stream;
+    }
+    if let Some(probe_on_scan) = probe_on_scan {
+        addon.probe_on_scan = probe_on_scan;
     }
     if let Some(subtitle_extraction) = subtitle_extraction {
         addon.subtitle_extraction = subtitle_extraction;
@@ -1109,6 +1115,7 @@ mod test {
             is_default: false,
             http_redirect_stream: false,
             subtitle_extraction: false,
+            probe_on_scan: false,
             service_filter: vec![],
         };
         addon
@@ -1178,6 +1185,7 @@ mod test {
             is_default: false,
             http_redirect_stream: false,
             subtitle_extraction: false,
+            probe_on_scan: false,
             service_filter: vec![],
         };
         addon

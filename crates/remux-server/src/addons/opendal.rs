@@ -336,6 +336,8 @@ pub struct OpendalFile {
     pub track_number: Option<i64>,
     pub year: Option<i64>,
     pub size: Option<i64>,
+    #[sqlx(default)]
+    pub probe_data: Option<sqlx::types::Json<crate::api::MediaSourceInfo>>,
 }
 
 #[async_trait]
@@ -668,7 +670,7 @@ impl StreamAddon for OpendalAddon {
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
             sqlx::query_as(
-                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size, probe_data \
                  FROM opendal_files \
                  WHERE addon_id = ? AND media_kind = 'track' AND LOWER(title) = LOWER(?)",
             )
@@ -697,7 +699,7 @@ impl StreamAddon for OpendalAddon {
                 None => return Ok(vec![]),
             };
             sqlx::query_as(
-                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size, probe_data \
                  FROM opendal_files \
                  WHERE addon_id = ? AND media_kind = ? AND imdb_id = ?",
             )
@@ -745,6 +747,9 @@ impl StreamAddon for OpendalAddon {
                             .clone(),
                     ),
                     service_cached: Some(true),
+                    probe_data: f
+                        .probe_data
+                        .map(|p| p.0),
                     ..Default::default()
                 }
             })
@@ -1165,6 +1170,28 @@ async fn scan_addon(
 
     let mut seen_ids: Vec<Uuid> = Vec::new();
     let mut upserted = 0usize;
+
+    let probe_on_scan = addon.probe_on_scan && media_kind != "track";
+    let known_probes: std::collections::HashMap<Uuid, (Option<i64>, bool)> =
+        if probe_on_scan {
+            sqlx::query_as::<_, (Uuid, Option<i64>, bool)>(
+                "SELECT id, size, probe_data IS NOT NULL FROM opendal_files WHERE addon_id = ?",
+            )
+            .bind(addon.id)
+            .fetch_all(&ctx.db)
+            .await?
+            .into_iter()
+            .map(|(id, size, has)| (id, (size, has)))
+            .collect()
+        } else {
+            Default::default()
+        };
+    let webdav_probe = if probe_on_scan && !is_local {
+        WebdavProbeBase::from_cfg(cfg)
+    } else {
+        None
+    };
+    let mut probe_jobs: Vec<ProbeJob> = Vec::new();
 
     for (operator, list_from, path_prefix) in scan_roots {
         let mut lister = operator
@@ -1637,11 +1664,20 @@ async fn scan_addon(
                 }
             };
 
-            let size = Some(
-                entry
-                    .metadata()
-                    .content_length() as i64,
-            );
+            // The local lister doesn't report lengths, but change detection for
+            // probing relies on the size.
+            let mut size_bytes = entry
+                .metadata()
+                .content_length();
+            if probe_on_scan && size_bytes == 0 {
+                if let Ok(meta) = operator
+                    .stat(entry.path())
+                    .await
+                {
+                    size_bytes = meta.content_length();
+                }
+            }
+            let size = Some(size_bytes as i64);
             let now = Utc::now()
                 .naive_utc()
                 .to_string();
@@ -1657,7 +1693,8 @@ async fn scan_addon(
                    imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
                    season = excluded.season, episode = excluded.episode, \
                    track_number = excluded.track_number, \
-                   year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at",
+                   year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at, \
+                   probe_data = CASE WHEN excluded.size IS NOT opendal_files.size THEN NULL ELSE opendal_files.probe_data END",
             )
             .bind(row_id)
             .bind(addon.id)
@@ -1687,7 +1724,36 @@ async fn scan_addon(
             // still propagated — swallowing those could make the scan report success
             // while `prune_stale_paths` deletes rows based on an incomplete `seen_ids`.
             match insert_result {
-                Ok(_) => upserted += 1,
+                Ok(_) => {
+                    upserted += 1;
+                    let unchanged = known_probes
+                        .get(&row_id)
+                        .is_some_and(|(old_size, has_probe)| {
+                            *has_probe && *old_size == size
+                        });
+                    if probe_on_scan && !unchanged {
+                        let target = if stored_path.starts_with("http://")
+                            || stored_path.starts_with("https://")
+                        {
+                            Some(ProbeJob {
+                                row_id,
+                                input: stored_path.clone(),
+                                headers: None,
+                            })
+                        } else if is_local {
+                            Some(ProbeJob {
+                                row_id,
+                                input: stored_path.clone(),
+                                headers: None,
+                            })
+                        } else {
+                            webdav_probe
+                                .as_ref()
+                                .map(|base| base.job(row_id, &entry_rel))
+                        };
+                        probe_jobs.extend(target);
+                    }
+                }
                 Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
                     warn!(
                         path = %stored_path,
@@ -1701,6 +1767,7 @@ async fn scan_addon(
     }
 
     let deleted = prune_stale_paths(ctx, addon.id, &seen_ids).await?;
+    run_probe_jobs(ctx, addon, probe_jobs).await;
 
     info!(
         addon = %addon.name,
@@ -1710,6 +1777,146 @@ async fn scan_addon(
     );
 
     Ok(())
+}
+
+const PROBE_CONCURRENCY: usize = 4;
+
+struct ProbeJob {
+    row_id: Uuid,
+    input: String,
+    headers: Option<String>,
+}
+
+struct WebdavProbeBase {
+    endpoint: String,
+    auth_header: Option<String>,
+}
+
+impl WebdavProbeBase {
+    fn from_cfg(cfg: &serde_json::Value) -> Option<Self> {
+        use base64::Engine;
+        let endpoint = cfg["endpoint"]
+            .as_str()
+            .filter(|s| s.starts_with("http://") || s.starts_with("https://"))?
+            .trim_end_matches('/')
+            .to_string();
+        let username = cfg["username"]
+            .as_str()
+            .filter(|s| !s.is_empty());
+        let password = cfg["password"]
+            .as_str()
+            .unwrap_or("");
+        let auth_header = username.map(|u| {
+            let token = base64::engine::general_purpose::STANDARD
+                .encode(format!("{u}:{password}"));
+            format!("Authorization: Basic {token}\r\n")
+        });
+        Some(Self {
+            endpoint,
+            auth_header,
+        })
+    }
+
+    fn job(&self, row_id: Uuid, rel_path: &str) -> ProbeJob {
+        let encoded = rel_path
+            .trim_start_matches('/')
+            .split('/')
+            .map(|seg| urlencoding::encode(seg).into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        ProbeJob {
+            row_id,
+            input: format!("{}/{}", self.endpoint, encoded),
+            headers: self
+                .auth_header
+                .clone(),
+        }
+    }
+}
+
+/// Probes the queued files a few at a time and stores each result on its
+/// `opendal_files` row. A failed probe is only logged: the row keeps no
+/// probe data and playback probes it on demand as before.
+async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
+    use futures::StreamExt;
+    if jobs.is_empty() {
+        return;
+    }
+    info!(addon = %addon.name, files = jobs.len(), "opendal: probing files");
+    let probe_timeout = Duration::from_secs(
+        db::Settings::get_config_or_default(&ctx.db)
+            .await
+            .probe_timeout_secs
+            .unwrap_or(20) as u64,
+    );
+    let mut stored = 0usize;
+    let mut results = futures::stream::iter(jobs)
+        .map(|job| async move {
+            let input = job.input.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                crate::playback::probe::probe_media_with(
+                    &job.input,
+                    job.headers
+                        .as_deref(),
+                    Some(probe_timeout),
+                )
+            });
+            let probed = match tokio::time::timeout(probe_timeout, handle).await {
+                Ok(Ok(Ok((mut info, segments)))) => {
+                    if info
+                        .video_stream()
+                        .is_none()
+                        && info
+                            .audio_stream()
+                            .is_none()
+                    {
+                        None
+                    } else {
+                        if !segments.is_empty() {
+                            info.segments = Some(segments);
+                        }
+                        Some(info)
+                    }
+                }
+                Ok(Ok(Err(e))) => {
+                    debug!(input = %redact_probe_input(&input), error = %e, "opendal: probe failed");
+                    None
+                }
+                Ok(Err(e)) => {
+                    warn!(error = %e, "opendal: probe task panicked");
+                    None
+                }
+                Err(_) => {
+                    debug!(input = %redact_probe_input(&input), "opendal: probe timed out");
+                    None
+                }
+            };
+            (job.row_id, probed)
+        })
+        .buffer_unordered(PROBE_CONCURRENCY);
+    while let Some((row_id, probed)) = results
+        .next()
+        .await
+    {
+        let Some(info) = probed else { continue };
+        match sqlx::query("UPDATE opendal_files SET probe_data = ? WHERE id = ?")
+            .bind(sqlx::types::Json(&info))
+            .bind(row_id)
+            .execute(&ctx.db)
+            .await
+        {
+            Ok(_) => stored += 1,
+            Err(e) => warn!(error = %e, "opendal: failed to store probe data"),
+        }
+    }
+    info!(addon = %addon.name, stored, "opendal: probing complete");
+}
+
+fn redact_probe_input(input: &str) -> &str {
+    input
+        .split('?')
+        .next()
+        .unwrap_or(input)
 }
 
 fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
@@ -1901,6 +2108,7 @@ mod tests {
             is_default: true,
             http_redirect_stream: false,
             subtitle_extraction: false,
+            probe_on_scan: false,
             service_filter: vec![],
             created_at: now,
             updated_at: now,
@@ -3987,6 +4195,159 @@ mod tests {
                 .to_lowercase()
                 .contains("wallace"),
             "title must contain the series name from the directory; got: {title:?}"
+        );
+    }
+
+    // --- probe on scan -------------------------------------------------
+
+    const PROBE_MOVIE: &str = "[imdbid-tt0133093] The Matrix (1999).mp4";
+
+    fn make_probeable_mp4(path: &std::path::Path) -> bool {
+        std::process::Command::new(
+            std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into()),
+        )
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=64x64:rate=5",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    }
+
+    async fn stored_probe(ctx: &AppContext, addon_id: Uuid) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT probe_data IS NOT NULL FROM opendal_files WHERE addon_id = ?",
+        )
+        .bind(addon_id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn probe_on_scan_stores_probe_data_and_serves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        if !make_probeable_mp4(
+            &dir.path()
+                .join(PROBE_MOVIE),
+        ) {
+            eprintln!("ffmpeg unavailable, skipping");
+            return;
+        }
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, mut db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(!stored_probe(ctx, db_addon.id).await, "off by default");
+
+        db_addon.probe_on_scan = true;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(stored_probe(ctx, db_addon.id).await);
+
+        let media = db::Media {
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0133093".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let streams = addon
+            .get_streams(&media, ctx, None)
+            .await
+            .unwrap();
+        assert_eq!(streams.len(), 1);
+        assert!(
+            streams[0]
+                .probe_data
+                .as_ref()
+                .and_then(|p| p.video_stream())
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_on_scan_drops_stale_probe_when_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join(PROBE_MOVIE);
+        if !make_probeable_mp4(&file) {
+            eprintln!("ffmpeg unavailable, skipping");
+            return;
+        }
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, mut db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        db_addon.probe_on_scan = true;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(stored_probe(ctx, db_addon.id).await);
+
+        std::fs::write(&file, b"no longer a video").unwrap();
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(!stored_probe(ctx, db_addon.id).await);
+    }
+
+    #[tokio::test]
+    async fn probe_on_scan_failure_does_not_abort_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        write_files(dir.path(), &[(PROBE_MOVIE, b"fake")]);
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, mut db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        db_addon.probe_on_scan = true;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        assert!(!stored_probe(ctx, db_addon.id).await);
+    }
+
+    #[test]
+    fn webdav_probe_job_encodes_path_and_adds_basic_auth() {
+        let base = WebdavProbeBase::from_cfg(&serde_json::json!({
+            "endpoint": "https://dav.example/remote.php/",
+            "username": "u",
+            "password": "p",
+        }))
+        .unwrap();
+        let job = base.job(Uuid::nil(), "/Movies/The Matrix #1.mkv");
+        assert_eq!(
+            job.input,
+            "https://dav.example/remote.php/Movies/The%20Matrix%20%231.mkv"
+        );
+        assert_eq!(
+            job.headers
+                .as_deref(),
+            Some("Authorization: Basic dTpw\r\n")
         );
     }
 }
