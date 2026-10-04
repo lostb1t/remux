@@ -1110,8 +1110,9 @@ pub(crate) fn recognized_manifest_media_kind(
         MT::Album => MK::Album,
         MT::Artist => MK::Artist,
         MT::Track => MK::Track,
-        MT::Events => MK::TvProgram,
+        MT::Events => MK::TvChannel,
         MT::Other(s) => match s.as_str() {
+            t if crate::db::is_live_tv_type_alias(t) => MK::TvChannel,
             "episode" => MK::Episode,
             "season" => MK::Season,
             "person" => MK::Person,

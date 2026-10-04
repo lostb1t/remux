@@ -62,6 +62,7 @@ impl AddonPreset for StremioPreset {
             supported_types_user: vec![
                 MediaKind::Movie,
                 MediaKind::Series,
+                MediaKind::TvChannel,
                 MediaKind::TvProgram,
             ],
             options: vec![AddonOption {

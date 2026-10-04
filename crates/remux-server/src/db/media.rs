@@ -248,9 +248,7 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
                 .to_lowercase()
                 .as_str()
             {
-                "sport" | "sports" | "event" | "live" | "livetv" | "live_tv" => {
-                    Ok(MediaKind::TvChannel)
-                }
+                t if is_live_tv_type_alias(t) => Ok(MediaKind::TvChannel),
                 "episode" => Ok(MediaKind::Episode),
                 "season" => Ok(MediaKind::Season),
                 "person" => Ok(MediaKind::Person),
@@ -258,6 +256,15 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
             },
         }
     }
+}
+
+/// Non-standard Stremio types that addons use for live TV content.
+pub(crate) fn is_live_tv_type_alias(t: &str) -> bool {
+    matches!(
+        t.to_lowercase()
+            .as_str(),
+        "sport" | "sports" | "event" | "live" | "livetv" | "live_tv"
+    )
 }
 
 /// Categorises a live TV listing from its raw Stremio type, then its genres.
@@ -9542,9 +9549,15 @@ mod tests {
             let media_type: sdks::stremio::MediaType =
                 serde_json::from_value(serde_json::Value::String(t.into())).unwrap();
             assert_eq!(
-                MediaKind::try_from(media_type).ok(),
+                MediaKind::try_from(media_type.clone()).ok(),
                 Some(MediaKind::TvChannel),
                 "{t}"
+            );
+            assert_eq!(
+                crate::addons::recognized_manifest_media_kind(media_type)
+                    .map(|k| k.to_string()),
+                Some(MediaKind::TvChannel.to_string()),
+                "manifest {t}"
             );
         }
     }

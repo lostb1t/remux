@@ -271,7 +271,7 @@ async fn create_hls_session(
                 .ctx
                 .db;
             match db::Media::get_by_id(db, &id).await {
-                Ok(opt) => opt.map_or(false, |m| m.kind == db::MediaKind::TvChannel),
+                Ok(opt) => opt.map_or(false, |m| m.is_live()),
                 Err(e) => {
                     warn!(err = %e, item_id = %id, "failed to look up parent media for is_live; treating as not-live");
                     false
@@ -280,8 +280,7 @@ async fn create_hls_session(
         } else {
             false
         };
-        let is_live =
-            resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
+        let is_live = resolved_media.is_live() || parent_is_tv_channel;
         let source_audio = resolved_media
             .probe_data
             .as_ref()
@@ -776,6 +775,18 @@ pub async fn variant_hls_video(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     variant_hls_video_inner(state, q).await
+}
+
+/// Segment route resolved from `/videos/{id}/main/stream.m3u8`, whose relative
+/// `hls/{session}/{segment}` URIs land under `main/`.
+#[get("/videos/{id}/main/hls/{play_session_id}/{segment_file}")]
+pub async fn hls_main_session_segment(
+    State(state): State<AppState>,
+    Path((_id, play_session_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, play_session_id, q).await
 }
 
 /// Returns the audio codec to use for browser-facing HLS transcoding.
