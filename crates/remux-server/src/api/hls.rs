@@ -271,7 +271,7 @@ async fn create_hls_session(
                 .ctx
                 .db;
             match db::Media::get_by_id(db, &id).await {
-                Ok(opt) => opt.map_or(false, |m| m.kind == db::MediaKind::TvChannel),
+                Ok(opt) => opt.map_or(false, |m| m.is_live()),
                 Err(e) => {
                     warn!(err = %e, item_id = %id, "failed to look up parent media for is_live; treating as not-live");
                     false
@@ -280,8 +280,7 @@ async fn create_hls_session(
         } else {
             false
         };
-        let is_live =
-            resolved_media.kind == db::MediaKind::TvChannel || parent_is_tv_channel;
+        let is_live = resolved_media.is_live() || parent_is_tv_channel;
         let source_audio = resolved_media
             .probe_data
             .as_ref()
@@ -778,6 +777,18 @@ pub async fn variant_hls_video(
     variant_hls_video_inner(state, q).await
 }
 
+/// Segment route resolved from `/videos/{id}/main/stream.m3u8`, whose relative
+/// `hls/{session}/{segment}` URIs land under `main/`.
+#[get("/videos/{id}/main/hls/{play_session_id}/{segment_file}")]
+pub async fn hls_main_session_segment(
+    State(state): State<AppState>,
+    Path((_id, play_session_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
+}
+
 /// Returns the audio codec to use for browser-facing HLS transcoding.
 ///
 /// Live IPTV sources often carry LATM-encoded AAC (see the large comment block
@@ -846,7 +857,7 @@ async fn variant_hls_video_inner(
 
     // For live streams, fMP4 sessions, and resumed TS-HLS sessions we must
     // serve the ffmpeg-written playlist:
-    // - live streams need the rolling EVENT playlist
+    // - live streams need FFmpeg's EVENT playlist
     // - fMP4 segments snap to keyframe boundaries, so actual durations differ
     //   from the target and the playlist must reflect the real segment timing
     // - resumed TS-HLS sessions start ffmpeg at a non-zero segment number; a
@@ -858,13 +869,13 @@ async fn variant_hls_video_inner(
         session_read.start_time_secs,
     ) {
         drop(session_read);
-        // For live streams, serve the ffmpeg-written EVENT playlist directly.
+        // For live streams, serve FFmpeg's EVENT playlist directly.
         // For fMP4 VOD, also use ffmpeg's playlist because fMP4 segments snap to
         // keyframe boundaries so actual durations differ from our target.
         // For resumed TS-HLS sessions, ffmpeg's playlist carries the correct
         // non-zero MEDIA-SEQUENCE and segment filenames after -start_number.
         // Poll until ffmpeg has written at least the first segment entry.
-        let content = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let content = tokio::time::timeout(std::time::Duration::from_secs(60), async {
             loop {
                 if let Ok(text) = tokio::fs::read_to_string(&playlist_path).await {
                     if text.contains("#EXTINF") {
@@ -875,7 +886,7 @@ async fn variant_hls_video_inner(
             }
         })
         .await
-        .unwrap_or_default();
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the first HLS segment"))?;
 
         // For non-live VOD sessions: once ffmpeg finishes it appends
         // #EXT-X-ENDLIST and the playlist type stays as EVENT. Upgrade
@@ -883,23 +894,21 @@ async fn variant_hls_video_inner(
         // a live feed; leave live streams untouched.
         let is_complete = !is_live && content.contains("#EXT-X-ENDLIST");
 
-        // Inject ?PlaySessionId=... into segment/map lines so hls_segment_inner can find the session.
+        // Scope each segment URL to the playback session, matching Jellyfin's
+        // HLS URL shape. This keeps session lookup out of query-string
+        // rewriting, which is important for browser HLS clients.
         let content = content
             .lines()
             .map(|line| {
                 if !line.starts_with('#')
                     && (line.ends_with(".ts") || line.ends_with(".m4s"))
                 {
-                    format!("{}?PlaySessionId={}", line, psid)
+                    format!("hls/{}/{}", psid, line)
                 } else if line.starts_with("#EXT-X-MAP:")
-                    && !line.contains("PlaySessionId")
+                    && line.contains("\"init.mp4\"")
                 {
-                    // Inject PlaySessionId into the fMP4 init segment URI.
-                    // e.g. #EXT-X-MAP:URI="init.mp4" → #EXT-X-MAP:URI="init.mp4?PlaySessionId=…"
-                    line.replace(
-                        "\"init.mp4\"",
-                        &format!("\"init.mp4?PlaySessionId={}\"", psid),
-                    )
+                    // Scope the fMP4 init segment to the playback session too.
+                    line.replace("\"init.mp4\"", &format!("\"hls/{}/init.mp4\"", psid))
                 } else if is_complete && line == "#EXT-X-PLAYLIST-TYPE:EVENT" {
                     "#EXT-X-PLAYLIST-TYPE:VOD".to_string()
                 } else {
@@ -945,7 +954,7 @@ pub async fn hls_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
 }
 
 /// Segment route at the same level as main.m3u8 — browsers resolve bare
@@ -957,7 +966,18 @@ pub async fn hls_segment_flat(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
+}
+
+/// Jellyfin-style HLS segment route with the playback session in the path.
+#[get("/videos/{id}/hls/{play_session_id}/{segment_file}")]
+pub async fn hls_session_segment(
+    State(state): State<AppState>,
+    Path((_id, play_session_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
 }
 
 /// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
@@ -968,7 +988,7 @@ pub async fn hls1_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
 }
 
 fn strip_segment_extension(filename: &str) -> String {
@@ -1068,12 +1088,15 @@ async fn wait_for_file_ready(
 async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
+    path_session_id: Option<String>,
     q: api::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
-    let play_session_id = q
-        .play_session_id
+    let play_session_id = path_session_id
+        .or_else(|| {
+            q.play_session_id
+                .clone()
+        })
         .context_not_found("PlaySessionId is required")?;
-
     trace!(
         segment_id = %segment_id,
         play_session_id = %play_session_id,
