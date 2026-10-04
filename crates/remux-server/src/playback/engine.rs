@@ -655,14 +655,18 @@ fn is_hls_input_url(input_url: &str) -> bool {
     let path = url
         .path()
         .to_ascii_lowercase();
+    let is_hls_endpoint = path.ends_with("/hls");
     path.ends_with(".m3u8")
-        // Some stream relays expose their HLS manifest through a generic
-        // endpoint such as `/api/manifest?url=https://origin/live.m3u8`.
+        // Stream relays expose their HLS manifest through a generic endpoint
+        // such as `/api/manifest?url=https://origin/live.m3u8`, or through
+        // `/hls?url=...` where the target may have no extension at all.
         || url.query_pairs().any(|(name, value)| {
             name.eq_ignore_ascii_case("url")
-                && url::Url::parse(&value)
-                    .ok()
-                    .is_some_and(|target| target.path().to_ascii_lowercase().ends_with(".m3u8"))
+                && url::Url::parse(&value).ok().is_some_and(|target| {
+                    let target_path = target.path().to_ascii_lowercase();
+                    target_path.ends_with(".m3u8")
+                        || (is_hls_endpoint && !target_path.ends_with(".mpd"))
+                })
         })
 }
 
