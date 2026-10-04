@@ -36,6 +36,8 @@ pub trait JellyfinClient: Send {
                             ItemSortBy::SortName
                                 | ItemSortBy::Name
                                 | ItemSortBy::IsFolder
+                                | ItemSortBy::DateCreated
+                                | ItemSortBy::DateLastContentAdded
                         )
                     )
             })
@@ -88,6 +90,8 @@ impl JellyfinClient for SenPlayer {
                                 ItemSortBy::SortName
                                     | ItemSortBy::Name
                                     | ItemSortBy::IsFolder
+                                    | ItemSortBy::DateCreated
+                                    | ItemSortBy::DateLastContentAdded
                             )
                         )
                 })
@@ -174,6 +178,23 @@ pub fn merge_device_profile_subtitles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_created_sort_counts_as_default_sort() {
+        let q = |sort_by| GetItemsQuery {
+            sort_by,
+            ..Default::default()
+        };
+        assert!(GenericClient.is_default_sort(&q(Some(vec![ItemSortBy::DateCreated]))));
+        assert!(
+            GenericClient
+                .is_default_sort(&q(Some(vec![ItemSortBy::DateLastContentAdded])))
+        );
+        assert!(GenericClient.is_default_sort(&q(Some(vec![ItemSortBy::SortName]))));
+        assert!(
+            !GenericClient.is_default_sort(&q(Some(vec![ItemSortBy::CommunityRating])))
+        );
+    }
 
     #[test]
     fn infuse_adds_embed_without_replacing_reported_subtitle_profiles() {
