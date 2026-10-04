@@ -209,6 +209,11 @@ impl MediaKind {
         )
     }
 
+    /// Live TV content: channels and the guide programs scheduled on them.
+    pub fn is_live_tv(&self) -> bool {
+        matches!(self, Self::TvChannel | Self::TvProgram)
+    }
+
     /// Whether the kind is a directly-playable leaf item, as opposed to a
     /// container that only groups other media (albums, artists, series, ...).
     pub fn is_playable_leaf(&self) -> bool {
@@ -2159,7 +2164,8 @@ impl Media {
     }
 
     pub fn is_live(&self) -> bool {
-        matches!(self.kind, MediaKind::TvChannel | MediaKind::TvProgram)
+        self.kind
+            .is_live_tv()
     }
 
     pub fn is_track(&self) -> bool {
@@ -7625,12 +7631,10 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                         .map(|x| x.naive_utc())
                 })
                 .flatten(),
-            program_kind: matches!(
-                media_kind,
-                MediaKind::TvChannel | MediaKind::TvProgram
-            )
-            .then(|| stremio_program_kind(&meta))
-            .flatten(),
+            program_kind: media_kind
+                .is_live_tv()
+                .then(|| stremio_program_kind(&meta))
+                .flatten(),
             digital_released_at,
             runtime: meta
                 .runtime

@@ -292,7 +292,8 @@ where
         let existing_live_tv: Vec<db::Media> = existing_items
             .iter()
             .filter(|m| {
-                matches!(m.kind, db::MediaKind::TvChannel | db::MediaKind::TvProgram)
+                m.kind
+                    .is_live_tv()
             })
             .cloned()
             .collect();

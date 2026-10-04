@@ -786,7 +786,7 @@ pub async fn hls_main_session_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, play_session_id, q).await
+    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
 }
 
 /// Returns the audio codec to use for browser-facing HLS transcoding.
@@ -954,11 +954,7 @@ pub async fn hls_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    let play_session_id = q
-        .play_session_id
-        .clone()
-        .context_not_found("PlaySessionId is required")?;
-    hls_segment_inner(state, segment_id, play_session_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
 }
 
 /// Segment route at the same level as main.m3u8 — browsers resolve bare
@@ -970,11 +966,7 @@ pub async fn hls_segment_flat(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    let play_session_id = q
-        .play_session_id
-        .clone()
-        .context_not_found("PlaySessionId is required")?;
-    hls_segment_inner(state, segment_id, play_session_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
 }
 
 /// Jellyfin-style HLS segment route with the playback session in the path.
@@ -985,7 +977,7 @@ pub async fn hls_session_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, play_session_id, q).await
+    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
 }
 
 /// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
@@ -996,11 +988,7 @@ pub async fn hls1_segment(
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    let play_session_id = q
-        .play_session_id
-        .clone()
-        .context_not_found("PlaySessionId is required")?;
-    hls_segment_inner(state, segment_id, play_session_id, q).await
+    hls_segment_inner(state, segment_id, None, q).await
 }
 
 fn strip_segment_extension(filename: &str) -> String {
@@ -1100,9 +1088,15 @@ async fn wait_for_file_ready(
 async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
-    play_session_id: String,
+    path_session_id: Option<String>,
     q: api::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
+    let play_session_id = path_session_id
+        .or_else(|| {
+            q.play_session_id
+                .clone()
+        })
+        .context_not_found("PlaySessionId is required")?;
     trace!(
         segment_id = %segment_id,
         play_session_id = %play_session_id,
