@@ -2152,7 +2152,7 @@ impl Media {
     }
 
     pub fn is_live(&self) -> bool {
-        self.kind == MediaKind::TvChannel
+        matches!(self.kind, MediaKind::TvChannel | MediaKind::TvProgram)
     }
 
     pub fn is_track(&self) -> bool {

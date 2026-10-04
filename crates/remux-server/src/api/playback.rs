@@ -336,10 +336,6 @@ async fn items_playbackinfo_inner(
         ),
     });
     let is_live = media.is_live();
-    let is_live_tv_item = matches!(
-        media.kind,
-        db::MediaKind::TvChannel | db::MediaKind::TvProgram
-    );
 
     // A live channel's source is often an addon relay URL. It may be a valid
     // HLS stream, but browsers cannot reliably open it directly: redirects,
@@ -420,7 +416,7 @@ async fn items_playbackinfo_inner(
                 .ok()
                 .flatten(),
             };
-            let external_subtitles = if is_live_tv_item {
+            let external_subtitles = if is_live {
                 Vec::new()
             } else if let Some(ref mut sub_media) = subtitle_media {
                 state
