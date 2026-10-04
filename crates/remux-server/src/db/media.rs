@@ -243,8 +243,14 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
             sdks::stremio::MediaType::Album => Ok(MediaKind::Album),
             sdks::stremio::MediaType::Artist => Ok(MediaKind::Artist),
             sdks::stremio::MediaType::Track => Ok(MediaKind::Track),
-            sdks::stremio::MediaType::Events => Ok(MediaKind::TvProgram),
-            sdks::stremio::MediaType::Other(s) => match s.as_str() {
+            sdks::stremio::MediaType::Events => Ok(MediaKind::TvChannel),
+            sdks::stremio::MediaType::Other(s) => match s
+                .to_lowercase()
+                .as_str()
+            {
+                "sport" | "sports" | "event" | "live" | "livetv" | "live_tv" => {
+                    Ok(MediaKind::TvChannel)
+                }
                 "episode" => Ok(MediaKind::Episode),
                 "season" => Ok(MediaKind::Season),
                 "person" => Ok(MediaKind::Person),
@@ -252,6 +258,21 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
             },
         }
     }
+}
+
+/// Categorises a live TV listing from its raw Stremio type, then its genres.
+fn stremio_program_kind(meta: &sdks::stremio::Meta) -> Option<ProgramKind> {
+    crate::iptv::parse_program_kind(
+        &meta
+            .media_type
+            .to_string(),
+    )
+    .or_else(|| {
+        meta.genres
+            .iter()
+            .flatten()
+            .find_map(|genre| crate::iptv::parse_program_kind(genre))
+    })
 }
 
 /// Extracts the addon's raw Stremio type string when it's a non-standard type
@@ -7597,8 +7618,12 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                         .map(|x| x.naive_utc())
                 })
                 .flatten(),
-            program_kind: (media_kind == MediaKind::TvProgram)
-                .then_some(ProgramKind::Sports),
+            program_kind: matches!(
+                media_kind,
+                MediaKind::TvChannel | MediaKind::TvProgram
+            )
+            .then(|| stremio_program_kind(&meta))
+            .flatten(),
             digital_released_at,
             runtime: meta
                 .runtime
@@ -7708,7 +7733,6 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 .map(chrono::Duration::seconds)
                 .unwrap_or_else(|| chrono::Duration::hours(24));
             program.live_end = Some(start + duration);
-            program.program_kind = Some(ProgramKind::Sports);
             return Ok(vec![media, program]);
         }
     }
@@ -9510,6 +9534,38 @@ mod tests {
                 "nuvio_sport_spk_admin-rally-tv"
             )
         );
+    }
+
+    #[test]
+    fn non_standard_live_types_map_to_tv_channels() {
+        for t in ["sport", "Sports", "events", "live", "event"] {
+            let media_type: sdks::stremio::MediaType =
+                serde_json::from_value(serde_json::Value::String(t.into())).unwrap();
+            assert_eq!(
+                MediaKind::try_from(media_type).ok(),
+                Some(MediaKind::TvChannel),
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn stremio_live_listing_program_kind_comes_from_type_or_genres() {
+        let kind = |json: &str| -> Option<ProgramKind> {
+            let meta: sdks::stremio::Meta = serde_json::from_str(json).unwrap();
+            Media::try_from(meta)
+                .unwrap()
+                .program_kind
+        };
+        assert_eq!(
+            kind(r#"{"id":"a","type":"sport","name":"A"}"#),
+            Some(ProgramKind::Sports)
+        );
+        assert_eq!(
+            kind(r#"{"id":"b","type":"tv","name":"B","genres":["Ukraine","News"]}"#),
+            Some(ProgramKind::News)
+        );
+        assert_eq!(kind(r#"{"id":"c","type":"tv","name":"C"}"#), None);
     }
 
     #[test]
