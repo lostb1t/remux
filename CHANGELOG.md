@@ -1,3 +1,28 @@
+# [0.36.0](https://github.com/lostb1t/remux/compare/v0.35.1...v0.36.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* chunk get_by_filter's per-record lookups under SQLite's variable limit ([#570](https://github.com/lostb1t/remux/issues/570)) ([d79d6f8](https://github.com/lostb1t/remux/commit/d79d6f8a6661345e2085f5fb0df1ffbeba5a260b))
+* constrain NVENC H.264 output to 8-bit pixels ([#581](https://github.com/lostb1t/remux/issues/581)) ([f34c8d8](https://github.com/lostb1t/remux/commit/f34c8d84f835c41d847ebee11b374b860fd5d64a))
+* detect extensionless HLS relay playlists again ([eb96fec](https://github.com/lostb1t/remux/commit/eb96fec50e5529687208c9e3f073adecb40f4785))
+* honor transcoding and remuxing settings during playback ([#578](https://github.com/lostb1t/remux/issues/578)) ([a024179](https://github.com/lostb1t/remux/commit/a02417969100fecbefa5df6cda1d282d2b4a0986))
+* keep addon settings available when manifests stall ([#540](https://github.com/lostb1t/remux/issues/540)) ([a392ccc](https://github.com/lostb1t/remux/commit/a392ccc8a7120becdc422c9edc0fb1a086998aa1))
+* keep drag-and-drop order stable and add new items at the top ([#583](https://github.com/lostb1t/remux/issues/583)) ([576c3a0](https://github.com/lostb1t/remux/commit/576c3a06c90dd32b9fa6909f097018d8dbce3540))
+* only extract subtitles from remote sources when allowed ([#565](https://github.com/lostb1t/remux/issues/565)) ([7c2fe31](https://github.com/lostb1t/remux/commit/7c2fe31f182137ea68bc06ebe6113bf9eff9e9a1))
+* pin the right addon video when TMDB and IMDb number episodes differently ([#576](https://github.com/lostb1t/remux/issues/576)) ([2ad6675](https://github.com/lostb1t/remux/commit/2ad6675f12090b771c57e65692a268bc32a2eef7))
+* put the 'No streams available' text back in the no-streams video ([888a18d](https://github.com/lostb1t/remux/commit/888a18db504f670fec119ec6941dfbf68477c406))
+* stop sending addons requests their manifest rules out (fixes [#575](https://github.com/lostb1t/remux/issues/575)) ([#582](https://github.com/lostb1t/remux/issues/582)) ([78525e4](https://github.com/lostb1t/remux/commit/78525e4c59c70145c0fa1499197b0141e88f8a8c))
+* use a library's default sort for recently added rows ([#585](https://github.com/lostb1t/remux/issues/585)) ([9f34d07](https://github.com/lostb1t/remux/commit/9f34d07ed1361d0f42b78dec5ecabc0996c60db0))
+
+
+### Features
+
+* add a per-addon setting to enable subtitle extraction for OpenDAL sources ([#580](https://github.com/lostb1t/remux/issues/580)) ([fee7275](https://github.com/lostb1t/remux/commit/fee7275e5610a0e1df5926f449aa9d7f42758b58))
+* confirm before deleting a user in the dashboard ([a4e8d51](https://github.com/lostb1t/remux/commit/a4e8d51696ed50eaecce284e95329ebae9894589))
+* probe local and WebDAV files when scanning ([#584](https://github.com/lostb1t/remux/issues/584)) ([fa1c4d9](https://github.com/lostb1t/remux/commit/fa1c4d917c11deae8edf516284242ca568bdbb85))
+* support Stremio live TV catalogs ([#494](https://github.com/lostb1t/remux/issues/494)) ([81cb27a](https://github.com/lostb1t/remux/commit/81cb27a6b3fced00f83cb5eb800c12ef0795fb31))
+
 ## [0.35.1](https://github.com/lostb1t/remux/compare/v0.35.0...v0.35.1) (2026-09-30)
 
 
