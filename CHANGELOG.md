@@ -1,3 +1,11 @@
+## [0.36.1](https://github.com/lostb1t/remux/compare/v0.36.0...v0.36.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* stop collection policy filter from emptying content and library views ([740c1e1](https://github.com/lostb1t/remux/commit/740c1e195e779bac112ed759802bfd6c2d58d357))
+* stop passing an HLS-only option to progressive HTTP inputs ([192ba70](https://github.com/lostb1t/remux/commit/192ba70c5e2ac5162e35083b4f08153c156cb0e3))
+
 # [0.36.0](https://github.com/lostb1t/remux/compare/v0.35.1...v0.36.0) (2026-10-06)
 
 
