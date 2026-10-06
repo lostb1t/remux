@@ -25,9 +25,9 @@ pub(super) async fn purge_by_kinds(ctx: &AppContext, kinds: &[&str]) -> Result<(
             .execute(&mut *conn)
             .await?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TEMP TABLE _purge_batch AS SELECT id FROM media WHERE kind IN ({kinds_sql})"
-        ))
+        )))
         .execute(&mut *conn)
         .await?;
         sqlx::query("CREATE INDEX _purge_batch_id ON _purge_batch(id)")
@@ -51,7 +51,7 @@ pub(super) async fn purge_by_kinds(ctx: &AppContext, kinds: &[&str]) -> Result<(
             .execute(&mut *conn)
             .await?;
 
-        sqlx::query(&format!("DELETE FROM media WHERE kind IN ({kinds_sql})"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM media WHERE kind IN ({kinds_sql})")))
             .execute(&mut *conn)
             .await?;
 

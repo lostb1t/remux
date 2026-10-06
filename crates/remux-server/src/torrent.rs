@@ -2,10 +2,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
-    SessionPersistenceConfig, TorrentStatsState,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig,
+    ListenerOptions, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState,
     api::{Api, TorrentIdOrHash},
-    dht::PersistentDhtConfig,
+    dht::DhtPersistenceConfig,
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
@@ -74,15 +75,19 @@ impl TorrentManager {
         let session = Session::new_with_opts(
             data_dir,
             SessionOptions {
-                disable_dht,
-                disable_dht_persistence: disable_dht,
-                listen_port_range: peer_port.map(|p| p..p + 10),
+                dht: (!disable_dht).then(|| DhtSessionConfig {
+                    persistence: Some(DhtPersistenceConfig {
+                        config_filename: Some(cache_dir.join("dht.json")),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                listen: peer_port.map(|p| ListenerOptions {
+                    listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, p).into(),
+                    ..Default::default()
+                }),
                 persistence: Some(SessionPersistenceConfig::Json {
                     folder: Some(cache_dir.join("rqbit")),
-                }),
-                dht_config: Some(PersistentDhtConfig {
-                    config_filename: Some(cache_dir.join("dht.json")),
-                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -91,11 +96,16 @@ impl TorrentManager {
 
         // None → let the OS pick a free ephemeral port.
         let bind_port = http_port.unwrap_or(0);
-        let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).await?;
+        let listener = librqbit_dualstack_sockets::TcpListener::bind_tcp(
+            std::net::SocketAddr::from(([127, 0, 0, 1], bind_port)),
+            librqbit_dualstack_sockets::BindOpts {
+                request_dualstack: false,
+                ..Default::default()
+            },
+        )?;
 
         let bound_port = listener
-            .local_addr()?
+            .bind_addr()
             .port();
 
         let api = Api::new(session.clone(), None, None);

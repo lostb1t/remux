@@ -6071,12 +6071,13 @@ impl Media {
           )"#;
 
         let total = if total_count {
-            let row: (i64,) =
-                sqlx::query_as(&format!("SELECT COUNT(*) FROM media {WHERE}"))
-                    .bind(MediaKind::Movie)
-                    .bind(MediaKind::Series)
-                    .fetch_one(db)
-                    .await?;
+            let row: (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM media {WHERE}"
+            )))
+            .bind(MediaKind::Movie)
+            .bind(MediaKind::Series)
+            .fetch_one(db)
+            .await?;
             Some(row.0 as u32)
         } else {
             None
@@ -6085,9 +6086,9 @@ impl Media {
         // Cursor-based pagination: WHERE id > after_id avoids the OFFSET bug where
         // processed items shift out of the ORDER BY position causing skips/re-reads.
         let rows = if let Some(cursor) = after_id {
-            sqlx::query_as::<_, Self>(&format!(
+            sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
                 "SELECT * FROM media {WHERE} AND id > ? ORDER BY id LIMIT ?"
-            ))
+            )))
             .bind(MediaKind::Movie)
             .bind(MediaKind::Series)
             .bind(cursor)
@@ -6095,9 +6096,9 @@ impl Media {
             .fetch_all(db)
             .await?
         } else {
-            sqlx::query_as::<_, Self>(&format!(
+            sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
                 "SELECT * FROM media {WHERE} ORDER BY id LIMIT ?"
-            ))
+            )))
             .bind(MediaKind::Movie)
             .bind(MediaKind::Series)
             .bind(limit)
@@ -8231,7 +8232,7 @@ fn collection_visibility_filters(
 /// for a recursive (folder/library) parent — must run first, since a CTE has
 /// to lead the statement. No-op otherwise.
 fn push_genre_count_recursive_prefix<'a>(
-    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     filter: &'a MediaFilter,
     use_recursive: bool,
 ) {
@@ -8258,7 +8259,7 @@ fn push_genre_count_recursive_prefix<'a>(
 /// database. Call `push_genre_count_recursive_prefix` first when
 /// `use_recursive` is set.
 fn push_genre_count_scope<'a>(
-    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     filter: &'a MediaFilter,
     is_manual_collection: bool,
     use_recursive: bool,
@@ -8316,7 +8317,7 @@ async fn fetch_all_chunked<'a, F>(
     build: F,
 ) -> std::result::Result<Vec<sqlx::sqlite::SqliteRow>, sqlx::Error>
 where
-    F: Fn(&'a [Uuid]) -> sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    F: Fn(&'a [Uuid]) -> sqlx::QueryBuilder<sqlx::Sqlite>,
 {
     let mut rows = Vec::new();
     for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
