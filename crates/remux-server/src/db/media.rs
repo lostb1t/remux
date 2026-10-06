@@ -10680,7 +10680,7 @@ mod tests {
             "EXPLAIN QUERY PLAN SELECT * FROM media WHERE 1=1 \
              ORDER BY {DATE_CREATED_ORDER_EXPR} DESC LIMIT 16"
         );
-        let plan = sqlx::query(&sql)
+        let plan = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .fetch_all(&db)
             .await
             .unwrap()

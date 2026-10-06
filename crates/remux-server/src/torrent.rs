@@ -72,9 +72,18 @@ impl TorrentManager {
         disable_dht: bool,
         peer_port: Option<u16>,
     ) -> Result<Self> {
-        let session = Session::new_with_opts(
-            data_dir,
-            SessionOptions {
+        // librqbit 9 binds exactly one peer port, so walk the old `port..port+10`
+        // range ourselves, moving on whenever the listener can't bind.
+        let candidates: Vec<Option<u16>> = match peer_port {
+            Some(p) => (p..=p.saturating_add(9))
+                .map(Some)
+                .collect(),
+            None => vec![None],
+        };
+        let mut session = None;
+        let mut last_error = None;
+        for port in candidates {
+            let opts = SessionOptions {
                 dht: (!disable_dht).then(|| DhtSessionConfig {
                     persistence: Some(DhtPersistenceConfig {
                         config_filename: Some(cache_dir.join("dht.json")),
@@ -82,7 +91,7 @@ impl TorrentManager {
                     }),
                     ..Default::default()
                 }),
-                listen: peer_port.map(|p| ListenerOptions {
+                listen: port.map(|p| ListenerOptions {
                     listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, p).into(),
                     ..Default::default()
                 }),
@@ -90,9 +99,26 @@ impl TorrentManager {
                     folder: Some(cache_dir.join("rqbit")),
                 }),
                 ..Default::default()
-            },
-        )
-        .await?;
+            };
+            match Session::new_with_opts(data_dir.clone(), opts).await {
+                Ok(s) => {
+                    session = Some(s);
+                    break;
+                }
+                Err(error) => {
+                    debug!(?port, "torrent session failed to start: {error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        let session = match session {
+            Some(session) => session,
+            None => {
+                return Err(last_error.unwrap_or_else(|| {
+                    anyhow::anyhow!("no torrent session candidates")
+                }));
+            }
+        };
 
         // None → let the OS pick a free ephemeral port.
         let bind_port = http_port.unwrap_or(0);

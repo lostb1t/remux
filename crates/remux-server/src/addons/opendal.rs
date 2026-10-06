@@ -4430,14 +4430,16 @@ mod tests {
 
     #[test]
     fn probe_version_changes_with_strm_target_even_at_same_size() {
-        let meta = opendal::Metadata::new(EntryMode::FILE).with_content_length(24);
+        let meta = opendal::MetadataBuilder::file(24).build();
         let a = probe_version_of("http://host/aaaaaaaaa.mkv", &meta);
         let b = probe_version_of("http://host/bbbbbbbbb.mkv", &meta);
         assert_ne!(a, b);
         assert_eq!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &meta));
-        let tagged = meta
+        let mut builder = meta
             .clone()
-            .with_etag("\"v2\"".to_string());
+            .into_builder();
+        builder.etag("\"v2\"");
+        let tagged = builder.build();
         assert_ne!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &tagged));
     }
 
