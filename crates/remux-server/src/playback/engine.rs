@@ -673,9 +673,12 @@ fn is_hls_input_url(input_url: &str) -> bool {
 /// FFmpeg HTTP input options, checked against the resolved input string (what
 /// FFmpeg actually opens), not the originating `StreamDescriptor`.
 ///
-/// HTTP persistence is disabled because some stream proxies redirect an HLS
+/// HTTP persistence is disabled for HLS because some stream proxies redirect a
 /// manifest to a different host. FFmpeg otherwise tries to reuse the proxy
 /// connection for the redirected host and aborts the input.
+/// `-http_persistent` is an option of FFmpeg's HLS demuxer only; passing it for
+/// any other input makes FFmpeg abort with "Option http_persistent not found".
+/// Plain HTTP inputs are already non-persistent by default.
 ///
 /// The reconnect options are intentionally omitted for HLS: FFmpeg's HLS
 /// demuxer opens the playlists and segments itself, while `-reconnect_streamed`
@@ -696,8 +699,6 @@ pub(crate) fn ffmpeg_http_input_args(input_url: &str) -> &'static [&'static str]
             "1",
             "-reconnect_delay_max",
             "5",
-            "-http_persistent",
-            "0",
         ],
         _ => &[],
     }
@@ -4557,8 +4558,8 @@ mod tests {
                 "expected reconnect args for {url}"
             );
             assert!(
-                ffmpeg_http_input_args(url).contains(&"-http_persistent"),
-                "expected HTTP persistence setting for {url}"
+                !ffmpeg_http_input_args(url).contains(&"-http_persistent"),
+                "-http_persistent is an HLS-demuxer-only option, rejected for {url}"
             );
         }
         for url in [
