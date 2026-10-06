@@ -8794,15 +8794,11 @@ fn filter_rule_to_sql(
         // No-op regardless of content so any rule already saved in a user's
         // policy stops being applied rather than half-working.
         R::CollectionMember { .. } => None,
-        R::CollectionId { op, ids } if !ids.is_empty() => {
-            let in_clause = ids
-                .iter()
-                .map(|id| format!("X'{}'", id.simple()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
-            Some((format!("media.id IN ({in_clause})"), negated))
-        }
+        // No-op on content items: CollectionId in a policy filter hides the
+        // collection row itself from browse views (handled by
+        // collection_visibility_filters / container_only path), not content.
+        // Applying media.id IN (collection_ids) to content would always return
+        // empty because content item IDs never match collection UUIDs.
         R::CollectionId { .. } => None,
         R::Favorite { value } => {
             let user_clause = user_id
