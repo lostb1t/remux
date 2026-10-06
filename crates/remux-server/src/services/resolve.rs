@@ -2671,6 +2671,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_external_ids_fills_missing_episode_ids() {
+        // A previous test caches this same path on a pooled mock server.
+        crate::sdks::clear_http_cache();
         let tmdb = httpmock::MockServer::start();
         let request = tmdb.mock(|when, then| {
             when.path("/tv/1438/season/1/episode/1");
