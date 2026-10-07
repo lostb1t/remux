@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791109795431,
+  "lastUpdate": 1791336648104,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -8159,6 +8159,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 59116917,
             "range": "± 3854309",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "committer": {
+            "name": "semantic-release-bot",
+            "username": "semantic-release-bot",
+            "email": "semantic-release-bot@martynus.net"
+          },
+          "id": "85e5de9c8fc2cd6151c922d161355c59439f0fa1",
+          "message": "chore(release): 0.36.1 [skip ci]\n\n## [0.36.1](https://github.com/lostb1t/remux/compare/v0.36.0...v0.36.1) (2026-10-06)\n\n### Bug Fixes\n\n* stop collection policy filter from emptying content and library views ([740c1e1](https://github.com/lostb1t/remux/commit/740c1e195e779bac112ed759802bfd6c2d58d357))\n* stop passing an HLS-only option to progressive HTTP inputs ([192ba70](https://github.com/lostb1t/remux/commit/192ba70c5e2ac5162e35083b4f08153c156cb0e3))",
+          "timestamp": "2026-10-06T13:40:41Z",
+          "url": "https://github.com/lostb1t/remux/commit/85e5de9c8fc2cd6151c922d161355c59439f0fa1"
+        },
+        "date": 1791336645352,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 2759595,
+            "range": "± 1280355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 5618055,
+            "range": "± 1805678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 21756257,
+            "range": "± 2758799",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 500600,
+            "range": "± 406106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 44957125,
+            "range": "± 4233286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 105663282,
+            "range": "± 8456588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 123432682,
+            "range": "± 11183800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 140566483,
+            "range": "± 8649982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 674217,
+            "range": "± 464636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 128608100,
+            "range": "± 7699341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 73291687,
+            "range": "± 10344221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 19787681,
+            "range": "± 1759083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 242525539,
+            "range": "± 24778317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 241047096,
+            "range": "± 20091037",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 249564506,
+            "range": "± 30199307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 237058169,
+            "range": "± 15696231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 267676510,
+            "range": "± 24938544",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 252618404,
+            "range": "± 16408083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 60393502,
+            "range": "± 3905162",
             "unit": "ns/iter"
           }
         ]
