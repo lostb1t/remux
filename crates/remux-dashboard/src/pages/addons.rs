@@ -677,8 +677,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     }
                                     }
                                 }
-                                // Catalogs section (only shown for global addons with catalog resource active)
-                                if *edit_is_default.read() && edit_resources.read().contains("catalog") {
+                                // Catalogs section (shown whenever the catalog resource is active)
+                                if edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
                                         label { class: "form-label", "Catalogs" }
                                         if *edit_catalogs_loading.read() {
