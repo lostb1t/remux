@@ -75,9 +75,8 @@ async fn capability_snapshot(
 }
 
 /// A user-scoped (non-default) addon only serves the resources its preset offers
-/// per user. Catalogs are imported library-wide, so they can never be user-scoped;
-/// anything the dashboard can't offer for a user addon must not sit on the row
-/// either, or it lingers invisibly with no way to switch it off.
+/// per user. Anything the dashboard can't offer for a user addon must not sit on
+/// the row either, or it lingers invisibly with no way to switch it off.
 fn clamp_to_user_scope(addon: &mut Addon, preset: &dyn AddonPreset) {
     if addon.is_default || addon.system {
         return;
@@ -87,10 +86,7 @@ fn clamp_to_user_scope(addon: &mut Addon, preset: &dyn AddonPreset) {
         .supported_resources_user;
     addon
         .resources
-        .retain(|resource| {
-            *resource != remux_sdks::stremio::ResourceType::Catalog
-                && (allowed.is_empty() || allowed.contains(resource))
-        });
+        .retain(|resource| allowed.is_empty() || allowed.contains(resource));
 }
 
 fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
@@ -1029,7 +1025,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn user_scoped_addon_never_keeps_the_catalog_resource() {
+    async fn user_scoped_addon_is_limited_to_its_presets_user_resources() {
         let (server, _ctx, token) = authenticated_server().await;
         let dir = std::env::temp_dir()
             .to_string_lossy()
@@ -1054,7 +1050,7 @@ mod test {
             !created
                 .resources
                 .contains(&remux_sdks::stremio::ResourceType::Catalog),
-            "a user-scoped addon must not carry the library-wide catalog resource"
+            "opendal offers no catalog resource per user, so it must not be kept"
         );
         assert!(
             created
@@ -1062,7 +1058,8 @@ mod test {
                 .contains(&remux_sdks::stremio::ResourceType::Stream)
         );
 
-        // Moving a global addon with a catalog to the user tab drops it too.
+        // Moving a global addon to the user tab drops resources the preset does not
+        // offer per user.
         let (h, v) = auth(&token);
         let global: AddonDto = server
             .post("/addons")

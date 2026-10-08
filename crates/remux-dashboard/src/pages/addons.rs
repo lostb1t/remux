@@ -367,9 +367,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     }
                     div { class: "modal-body",
                         if *create_step.read() == 0 {
-                            if *active_tab.read() == "user" {
-                                span { class: "field-hint", "User addons only provide per-user resources. Catalogs and metadata apply to the whole library, so add those addons on the Global tab." }
-                            }
                             div { class: "addon-kind-list",
                                 for k in kinds.read().clone().into_iter().filter(|k| {
                                     if *active_tab.read() == "user" { !k.supported_resources_user.is_empty() } else { true }
@@ -565,9 +562,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 if !resource_options.is_empty() {
                                     div { class: "form-group",
                                         label { class: "form-label", "Resources" }
-                                        if is_user_addon {
-                                            span { class: "field-hint", "Catalogs and metadata are only available for global addons — they apply to the whole library, not a single user." }
-                                        }
                                         div { class: "check-row-group",
                                             for res in resource_options.iter().cloned() {
                                                 {
@@ -683,8 +677,8 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     }
                                     }
                                 }
-                                // Catalogs section (only shown for global addons with catalog resource active)
-                                if *edit_is_default.read() && edit_resources.read().contains("catalog") {
+                                // Catalogs section (shown whenever the catalog resource is active)
+                                if edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
                                         label { class: "form-label", "Catalogs" }
                                         if *edit_catalogs_loading.read() {

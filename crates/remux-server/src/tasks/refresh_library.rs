@@ -78,17 +78,10 @@ impl Task for RefreshLibraryTask {
             for cat_info in available {
                 domain_collection_ids.insert(cat_info.collection_id);
             }
-            // Catalogs are imported library-wide, so only global addons may
-            // provide them. A user-scoped addon that still carries the
-            // resource (saved before this was enforced) stays in the domain
-            // set above, so its old catalog collections get cleaned up.
             if !runtime
                 .row
-                .is_default
-                || !runtime
-                    .row
-                    .resources
-                    .contains(&ResourceType::Catalog)
+                .resources
+                .contains(&ResourceType::Catalog)
             {
                 continue;
             }
