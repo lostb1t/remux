@@ -875,6 +875,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 })
                 .unwrap_or_else(|| match media.kind {
                     db::MediaKind::Episode
+                    | db::MediaKind::TvChannel
+                    | db::MediaKind::TvProgram
                     | db::MediaKind::Collection
                     | db::MediaKind::Folder => 16.0 / 9.0,
                     _ => 0.6,
@@ -916,6 +918,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             image_config: media
                 .collection_image_config
                 .clone(),
+            sort_order: media.sort_order,
         }),
         enable_media_source_display: Some(true),
         date_created: Some(

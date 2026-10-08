@@ -35,6 +35,13 @@ pub enum SubtitleCodec {
 }
 
 impl SubtitleCodec {
+    /// Parses an ffmpeg/profile codec name. Never fails: an unrecognized
+    /// name becomes `Other` carrying the original string.
+    pub fn from_codec_name(name: &str) -> Self {
+        name.parse()
+            .unwrap_or_else(|_| Self::Other(name.to_string()))
+    }
+
     pub fn is_image(&self) -> bool {
         matches!(self, Self::Pgs | Self::DvdSub | Self::DvbSub)
     }

@@ -70,6 +70,7 @@ fn eclipse_from_cfg(
     let addon = Arc::new(EclipseAddon {
         manifest_url,
         client,
+        manifest: Default::default(),
     });
     Ok(AddonCapabilities {
         kind: Some(addon.clone()),
@@ -180,6 +181,7 @@ impl AddonPreset for SpotiFLACPreset {
 pub struct EclipseAddon {
     manifest_url: StremioManifestUrl,
     client: reqwest::Client,
+    manifest: super::ManifestCache,
 }
 
 impl EclipseAddon {
@@ -207,11 +209,17 @@ impl AddonKind for EclipseAddon {
             Vec<remux_sdks::stremio::MediaType>,
         )>,
     > {
-        let svc = self.service()?;
-        let manifest = svc
-            .get_manifest()
+        let info = self
+            .manifest
+            .get_or_fetch(|| async {
+                let manifest = self
+                    .service()?
+                    .get_manifest()
+                    .await?;
+                Ok(parse_manifest_info(&manifest))
+            })
             .await?;
-        Ok(Some(parse_manifest_info(&manifest)))
+        Ok(Some(info))
     }
 }
 

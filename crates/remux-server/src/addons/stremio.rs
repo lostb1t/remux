@@ -48,13 +48,24 @@ impl AddonPreset for StremioPreset {
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
                 AddonMetadata::simple_resource(ResourceType::Stream),
             ],
-            supported_types: vec![MediaKind::Movie, MediaKind::Series],
+            supported_types: vec![
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::TvChannel,
+                MediaKind::TvProgram,
+            ],
             supported_resources_user: vec![
+                ResourceType::Catalog,
                 ResourceType::Search,
                 ResourceType::Subtitles,
                 ResourceType::Stream,
             ],
-            supported_types_user: vec![MediaKind::Movie, MediaKind::Series],
+            supported_types_user: vec![
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::TvChannel,
+                MediaKind::TvProgram,
+            ],
             options: vec![AddonOption {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),
@@ -88,6 +99,7 @@ impl AddonPreset for StremioPreset {
                 std::collections::HashMap::new(),
             )),
             failed: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            manifest: Default::default(),
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -125,7 +137,20 @@ pub(super) fn parse_manifest_info(
             continue;
         }
         seen_names.push(name.clone());
-        resources.push(res.into_ref());
+        // A resource given as a plain string takes the manifest's top-level
+        // `types` and `idPrefixes` (Stremio addon SDK, manifest.md). An object
+        // resource without `idPrefixes` means all ids.
+        let inherit = matches!(res, remux_sdks::stremio::Resource::Simple(_));
+        let mut resource_ref = res.into_ref();
+        if inherit {
+            resource_ref.types = manifest
+                .types
+                .clone();
+            resource_ref.id_prefixes = manifest
+                .id_prefixes
+                .clone();
+        }
+        resources.push(resource_ref);
     }
 
     // Detect search support via catalog extras and synthesise a Search resource if needed.
@@ -208,6 +233,7 @@ pub struct StremioAddon {
     /// once for the series, then again for every child. Checked alongside
     /// `medias_cache` and evicted at the same point, by `on_series_done`.
     failed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    manifest: super::ManifestCache,
 }
 
 impl StremioAddon {
@@ -233,11 +259,17 @@ impl AddonKind for StremioAddon {
             Vec<remux_sdks::stremio::MediaType>,
         )>,
     > {
-        let svc = self.service()?;
-        let manifest = svc
-            .get_manifest()
+        let info = self
+            .manifest
+            .get_or_fetch(|| async {
+                let manifest = self
+                    .service()?
+                    .get_manifest()
+                    .await?;
+                Ok(parse_manifest_info(&manifest))
+            })
             .await?;
-        Ok(Some(parse_manifest_info(&manifest)))
+        Ok(Some(info))
     }
 }
 
@@ -381,11 +413,13 @@ impl CatalogAddon for StremioAddon {
                     }
                     match db::stremio_meta_to_medias(meta) {
                         Ok(mut items) => {
-                            // Only emit the top-level item (series/movie).
-                            // Seasons and episodes are populated by sync_tree
-                            // during RefreshLibrary, avoiding FK constraint
-                            // failures when chunks are split across parents.
-                            items.retain(|x| x.parent_id.is_none());
+                            // Only emit top-level content. Seasons and episodes
+                            // are populated by sync_tree during RefreshLibrary,
+                            // but a scheduled virtual channel's program must be
+                            // imported alongside its channel for the live guide.
+                            items.retain(|x| {
+                                x.parent_id.is_none() || x.kind == db::MediaKind::TvProgram
+                            });
                             if let Some(top) = items.first_mut() {
                                 top.parent_id = None;
                             }
@@ -661,6 +695,7 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
         db::MediaKind::Track => Some("track"),
         db::MediaKind::Album => Some("album"),
         db::MediaKind::Artist => Some("artist"),
+        db::MediaKind::TvChannel | db::MediaKind::TvProgram => Some("tv"),
         _ => None,
     }
 }
@@ -1989,6 +2024,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn string_resources_inherit_manifest_types_and_id_prefixes() {
+        let manifest: sdks::stremio::Manifest =
+            serde_json::from_value(serde_json::json!({
+                "id": "test", "name": "Test", "version": "1.0.0",
+                "resources": [
+                    "meta",
+                    { "name": "stream", "types": ["movie"] }
+                ],
+                "types": ["movie", "series"],
+                "idPrefixes": ["tt", "tmdb:"]
+            }))
+            .unwrap();
+
+        let (resources, _) = parse_manifest_info(&manifest);
+        let meta = resources
+            .iter()
+            .find(|r| r.name == ResourceType::Meta)
+            .unwrap();
+        assert_eq!(
+            meta.id_prefixes,
+            Some(vec!["tt".to_string(), "tmdb:".to_string()])
+        );
+        assert_eq!(meta.types, vec!["movie".to_string(), "series".to_string()]);
+
+        let stream = resources
+            .iter()
+            .find(|r| r.name == ResourceType::Stream)
+            .unwrap();
+        assert_eq!(stream.id_prefixes, None);
+    }
+
+    #[test]
     fn stremio_torrent_metadata_uses_nested_fallbacks() {
         let stream: sdks::stremio::Stream = serde_json::from_value(serde_json::json!({
             "infoHash": "0123456789abcdef0123456789abcdef01234567",
@@ -2092,6 +2159,18 @@ mod tests {
                 .unwrap();
         let url = "https://cdn.example.net/stream/foo.mkv";
         assert_eq!(rewrite_aio_url(url, &manifest_url), url);
+    }
+
+    #[test]
+    fn stremio_catalogs_can_be_provided_by_user_scoped_addons() {
+        // Imported catalogs and their items are library-wide, so a user-scoped
+        // Stremio addon may provide them like any other addon.
+        assert!(
+            StremioPreset
+                .metadata()
+                .supported_resources_user
+                .contains(&ResourceType::Catalog)
+        );
     }
 
     fn mock_manifest(server: &httpmock::MockServer) {

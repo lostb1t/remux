@@ -14,8 +14,9 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
     addons::{
         Addon, AddonCapabilities, AddonCatalogDto, AddonDto, AddonMetadata,
-        AddonPreset, CreateAddonRequest, UpdateAddonCatalogRequest, UpdateAddonRequest,
-        registered_presets, set_user_addon_override, user_addon_override,
+        AddonPreset, AddonService, CreateAddonRequest, UpdateAddonCatalogRequest,
+        UpdateAddonRequest, registered_presets, set_user_addon_override,
+        user_addon_override,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
@@ -73,7 +74,24 @@ async fn capability_snapshot(
     Ok((resources, types))
 }
 
-async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
+/// A user-scoped (non-default) addon only serves the resources its preset offers
+/// per user; a preset that offers none is unavailable to user addons altogether
+/// (the dashboard hides it), so it keeps no resources. Anything the dashboard
+/// can't offer for a user addon must not sit on the row either, or it lingers
+/// invisibly with no way to switch it off.
+fn clamp_to_user_scope(addon: &mut Addon, preset: &dyn AddonPreset) {
+    if addon.is_default || addon.system {
+        return;
+    }
+    let allowed = preset
+        .metadata()
+        .supported_resources_user;
+    addon
+        .resources
+        .retain(|resource| allowed.contains(resource));
+}
+
+fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
         .find(|p| {
@@ -83,77 +101,67 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     .kind
         });
 
+    let mut manifest_unreachable = false;
     let (
         supported_resources,
         supported_types,
         supported_resources_user,
         supported_types_user,
     ) = if let Some(ref p) = preset {
-        let meta = p.metadata();
+        // Runtime metadata was resolved when the addon was loaded. Listing
+        // addons must not make another remote manifest request: one stalled
+        // provider would otherwise hold the entire dashboard response open.
+        let loaded = addons.list();
+        let runtime = loaded
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == addon.id
+            });
+        manifest_unreachable = runtime.is_some_and(|r| {
+            r.caps
+                .manifest_unreachable
+        });
+        let meta = runtime
+            .map(|r| {
+                r.caps
+                    .metadata
+                    .clone()
+            })
+            .unwrap_or_else(|| p.metadata());
         let resources_user = meta
             .supported_resources_user
             .clone();
         let types_user = meta
             .supported_types_user
             .clone();
-        match p.from_cfg(
-            addon.id,
-            addon
-                .preset
-                .config
-                .expose(),
-            config,
-        ) {
-            Ok(caps) => {
-                let kind = caps
-                    .kind
-                    .as_ref()
-                    .map(|k| k.as_ref());
-                let info = if let Some(k) = kind {
-                    k.available_info()
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    None
-                };
-                match info {
-                    Some((resource_refs, raw_types)) => {
-                        let resources = resource_refs
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect();
-                        let types = raw_types
-                            .into_iter()
-                            .filter_map(|t| {
-                                DbMediaKind::try_from(t)
-                                    .ok()
-                                    .map(Into::into)
-                            })
-                            .collect();
-                        (resources, types, resources_user, types_user)
-                    }
-                    None => (
-                        meta.supported_resources
-                            .into_iter()
-                            .map(|r| r.name)
-                            .collect(),
-                        meta.supported_types,
-                        resources_user,
-                        types_user,
-                    ),
+        let mut resources: Vec<_> = meta
+            .supported_resources
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        let mut types = meta.supported_types;
+        // Disabled addons have no loaded runtime, so keep whatever was already
+        // enabled for them selectable instead of showing only the preset defaults.
+        if runtime.is_none() {
+            for r in &addon.resources {
+                if !resources.contains(r) {
+                    resources.push(r.clone());
                 }
             }
-            Err(_) => (
-                meta.supported_resources
-                    .into_iter()
-                    .map(|r| r.name)
-                    .collect(),
-                meta.supported_types,
-                resources_user,
-                types_user,
-            ),
+            for t in addon
+                .types
+                .iter()
+                .cloned()
+                .map(Into::into)
+            {
+                if !types.contains(&t) {
+                    types.push(t);
+                }
+            }
         }
+        (resources, types, resources_user, types_user)
     } else {
         (vec![], vec![], vec![], vec![])
     };
@@ -184,11 +192,14 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         system: addon.system,
         is_default: addon.is_default,
         http_redirect_stream: addon.http_redirect_stream,
+        subtitle_extraction: addon.subtitle_extraction,
+        probe_on_scan: addon.probe_on_scan,
         service_filter: addon.service_filter,
         description: preset.map(|p| {
             p.metadata()
                 .description
         }),
+        manifest_unreachable,
         created_at: addon.created_at,
         updated_at: addon.updated_at,
     }
@@ -221,19 +232,17 @@ pub async fn list_addons(
             .db,
     )
     .await?;
-    let dtos = futures::future::join_all(
-        addons
-            .into_iter()
-            .map(|a| {
-                addon_to_dto(
-                    a,
-                    &state
-                        .ctx
-                        .config,
-                )
-            }),
-    )
-    .await;
+    let dtos = addons
+        .into_iter()
+        .map(|addon| {
+            addon_to_dto(
+                addon,
+                &state
+                    .ctx
+                    .addons,
+            )
+        })
+        .collect();
     Ok(Json(dtos))
 }
 
@@ -252,15 +261,12 @@ pub async fn get_addon(
     )
     .await?
     .context_not_found("Addon not found")?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Create a new addon instance.
@@ -343,7 +349,7 @@ pub async fn create_addon(
     };
 
     let now = Utc::now().naive_utc();
-    let addon = Addon {
+    let mut addon = Addon {
         id: addon_id,
         preset: payload.preset,
         name: payload.name,
@@ -356,8 +362,11 @@ pub async fn create_addon(
         system: false,
         is_default: payload.is_default,
         http_redirect_stream: false,
+        subtitle_extraction: false,
+        probe_on_scan: false,
         service_filter: vec![],
     };
+    clamp_to_user_scope(&mut addon, preset.as_ref());
 
     addon
         .insert(
@@ -380,15 +389,12 @@ pub async fn create_addon(
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(
-            addon_to_dto(
-                addon,
-                &state
-                    .ctx
-                    .config,
-            )
-            .await,
-        ),
+        Json(addon_to_dto(
+            addon,
+            &state
+                .ctx
+                .addons,
+        )),
     ))
 }
 
@@ -409,6 +415,8 @@ pub async fn update_addon(
         priority,
         is_default,
         http_redirect_stream,
+        subtitle_extraction,
+        probe_on_scan,
         service_filter,
     } = payload;
     let mut addon = Addon::get(
@@ -459,6 +467,12 @@ pub async fn update_addon(
     }
     if let Some(http_redirect_stream) = http_redirect_stream {
         addon.http_redirect_stream = http_redirect_stream;
+    }
+    if let Some(probe_on_scan) = probe_on_scan {
+        addon.probe_on_scan = probe_on_scan;
+    }
+    if let Some(subtitle_extraction) = subtitle_extraction {
+        addon.subtitle_extraction = subtitle_extraction;
     }
     if let Some(service_filter) = service_filter {
         addon.service_filter = service_filter;
@@ -531,6 +545,8 @@ pub async fn update_addon(
         }
     }
 
+    clamp_to_user_scope(&mut addon, preset.as_ref());
+
     addon
         .update(
             &state
@@ -550,15 +566,12 @@ pub async fn update_addon(
                 .config,
         )
         .await?;
-    Ok(Json(
-        addon_to_dto(
-            addon,
-            &state
-                .ctx
-                .config,
-        )
-        .await,
-    ))
+    Ok(Json(addon_to_dto(
+        addon,
+        &state
+            .ctx
+            .addons,
+    )))
 }
 
 /// Delete an addon instance.
@@ -1013,6 +1026,130 @@ mod test {
         resp.assert_status(http::StatusCode::BAD_REQUEST);
     }
 
+    #[test]
+    fn clamp_to_user_scope_keeps_nothing_for_presets_without_user_resources() {
+        let now = Utc::now().naive_utc();
+        let preset = registered_presets()
+            .into_iter()
+            .find(|p| p.id() == "introdb")
+            .unwrap();
+        assert!(
+            preset
+                .metadata()
+                .supported_resources_user
+                .is_empty()
+        );
+        let mut addon = Addon {
+            id: Uuid::new_v4(),
+            name: "IntroDB".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "introdb".to_string(),
+                config: json!({}).into(),
+            },
+            resources: vec![
+                remux_sdks::stremio::ResourceType::Catalog,
+                remux_sdks::stremio::ResourceType::Stream,
+            ],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
+            service_filter: vec![],
+        };
+
+        clamp_to_user_scope(&mut addon, preset.as_ref());
+        assert!(
+            addon
+                .resources
+                .is_empty()
+        );
+
+        // Global addons are never clamped.
+        addon.is_default = true;
+        addon.resources = vec![remux_sdks::stremio::ResourceType::Catalog];
+        clamp_to_user_scope(&mut addon, preset.as_ref());
+        assert_eq!(
+            addon.resources,
+            vec![remux_sdks::stremio::ResourceType::Catalog]
+        );
+    }
+
+    #[tokio::test]
+    async fn user_scoped_addon_is_limited_to_its_presets_user_resources() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let dir = std::env::temp_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let (h, v) = auth(&token);
+        let created: AddonDto = server
+            .post("/addons")
+            .add_header(h, v)
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir.clone()], "media_kind": "movie" }
+                },
+                "name": "Personal files",
+                "isDefault": false,
+                "resources": ["catalog", "stream"]
+            }))
+            .await
+            .json();
+        assert!(
+            !created
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog),
+            "opendal offers no catalog resource per user, so it must not be kept"
+        );
+        assert!(
+            created
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Stream)
+        );
+
+        // Moving a global addon to the user tab drops resources the preset does not
+        // offer per user.
+        let (h, v) = auth(&token);
+        let global: AddonDto = server
+            .post("/addons")
+            .add_header(h, v)
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir], "media_kind": "movie" }
+                },
+                "name": "Library files",
+                "isDefault": true,
+                "resources": ["catalog", "stream"]
+            }))
+            .await
+            .json();
+        assert!(
+            global
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog)
+        );
+        let (h, v) = auth(&token);
+        let demoted: AddonDto = server
+            .post(&format!("/addons/{}", global.id))
+            .add_header(h, v)
+            .json(&json!({ "isDefault": false }))
+            .await
+            .json();
+        assert!(
+            !demoted
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog)
+        );
+    }
+
     #[tokio::test]
     async fn update_config_refreshes_derived_capabilities() {
         let (server, _ctx, token) = authenticated_server().await;
@@ -1121,6 +1258,8 @@ mod test {
             system: false,
             is_default: false,
             http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
             service_filter: vec![],
         };
         addon
@@ -1159,6 +1298,80 @@ mod test {
             !addon
                 .types
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_addons_does_not_refetch_unreachable_manifest() {
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let manifest = httpmock::MockServer::start();
+        let hits = manifest.mock(|when, then| {
+            when.path("/manifest.json");
+            then.status(404);
+        });
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "Unreachable manifest".to_string(),
+            preset: crate::addons::AddonPresetRef {
+                kind: "stremio".to_string(),
+                config: json!({ "manifest_url": manifest.url("/manifest.json") })
+                    .into(),
+            },
+            resources: vec![],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
+            service_filter: vec![],
+        };
+        addon
+            .insert(
+                &ctx.0
+                    .db,
+            )
+            .await
+            .unwrap();
+        ctx.0
+            .addons
+            .reload(
+                &ctx.0
+                    .db,
+                &ctx.0
+                    .config,
+            )
+            .await
+            .unwrap();
+        let hits_after_load = hits.hits();
+        assert!(hits_after_load >= 1, "load should have probed the manifest");
+
+        for _ in 0..2 {
+            let list: Vec<AddonDto> = server
+                .get("/addons")
+                .add_header(h.clone(), v.clone())
+                .await
+                .json();
+            let dto = list
+                .iter()
+                .find(|a| a.id == addon.id)
+                .expect("addon listed despite unreachable manifest");
+            assert!(dto.manifest_unreachable);
+            assert!(
+                !dto.supported_resources
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            hits.hits(),
+            hits_after_load,
+            "listing addons must not issue manifest requests"
         );
     }
 }

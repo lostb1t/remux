@@ -377,6 +377,8 @@ pub async fn register_media_tracker(
         system: false,
         is_default: true,
         http_redirect_stream: false,
+        subtitle_extraction: false,
+        probe_on_scan: false,
         service_filter: vec![],
     };
     row.insert(&ctx.db)

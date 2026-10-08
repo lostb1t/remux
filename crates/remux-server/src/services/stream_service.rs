@@ -61,6 +61,22 @@ fn quality_ordered_probe_pool(streams: &[db::Media]) -> Vec<db::Media> {
 }
 
 impl StreamService {
+    /// Capability-ranks `items` best-first. `describe` yields each item's
+    /// `MediaSourceInfo` and whether on-demand subtitle extraction is
+    /// feasible for it (only ever true for a local source) — the one place
+    /// that per-source flag is applied, so every caller ranks the same way.
+    /// Stable, so `SortMediaSourcesMode::Disabled` keeps the input order.
+    pub fn rank_sources<T>(
+        items: &mut [T],
+        ranking: crate::device_profile::SourceRankingContext<'_>,
+        describe: impl Fn(&T) -> (api::MediaSourceInfo, bool),
+    ) {
+        items.sort_by_cached_key(|item| {
+            let (info, allow_subtitle_extraction) = describe(item);
+            std::cmp::Reverse(ranking.sort_key(&info, allow_subtitle_extraction))
+        });
+    }
+
     pub fn new(cfg: StreamServiceConfig) -> Self {
         Self {
             ctx: cfg.ctx,
@@ -239,7 +255,11 @@ impl StreamService {
                 candidates.extend(cascade);
                 Ok(candidates.remove(0))
             }
-            db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track => {
+            db::MediaKind::Movie
+            | db::MediaKind::Episode
+            | db::MediaKind::Track
+            | db::MediaKind::TvChannel
+            | db::MediaKind::TvProgram => {
                 let mut media = media;
                 let media_id = media.id;
                 let _ = ctx
