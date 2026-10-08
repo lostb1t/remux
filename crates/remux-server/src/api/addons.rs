@@ -74,6 +74,25 @@ async fn capability_snapshot(
     Ok((resources, types))
 }
 
+/// A user-scoped (non-default) addon only serves the resources its preset offers
+/// per user. Catalogs are imported library-wide, so they can never be user-scoped;
+/// anything the dashboard can't offer for a user addon must not sit on the row
+/// either, or it lingers invisibly with no way to switch it off.
+fn clamp_to_user_scope(addon: &mut Addon, preset: &dyn AddonPreset) {
+    if addon.is_default || addon.system {
+        return;
+    }
+    let allowed = preset
+        .metadata()
+        .supported_resources_user;
+    addon
+        .resources
+        .retain(|resource| {
+            *resource != remux_sdks::stremio::ResourceType::Catalog
+                && (allowed.is_empty() || allowed.contains(resource))
+        });
+}
+
 fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
@@ -332,7 +351,7 @@ pub async fn create_addon(
     };
 
     let now = Utc::now().naive_utc();
-    let addon = Addon {
+    let mut addon = Addon {
         id: addon_id,
         preset: payload.preset,
         name: payload.name,
@@ -349,6 +368,7 @@ pub async fn create_addon(
         probe_on_scan: false,
         service_filter: vec![],
     };
+    clamp_to_user_scope(&mut addon, preset.as_ref());
 
     addon
         .insert(
@@ -526,6 +546,8 @@ pub async fn update_addon(
             addon.types = derived_types;
         }
     }
+
+    clamp_to_user_scope(&mut addon, preset.as_ref());
 
     addon
         .update(
@@ -1004,6 +1026,75 @@ mod test {
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn user_scoped_addon_never_keeps_the_catalog_resource() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let dir = std::env::temp_dir()
+            .to_string_lossy()
+            .to_string();
+
+        let (h, v) = auth(&token);
+        let created: AddonDto = server
+            .post("/addons")
+            .add_header(h, v)
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir.clone()], "media_kind": "movie" }
+                },
+                "name": "Personal files",
+                "isDefault": false,
+                "resources": ["catalog", "stream"]
+            }))
+            .await
+            .json();
+        assert!(
+            !created
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog),
+            "a user-scoped addon must not carry the library-wide catalog resource"
+        );
+        assert!(
+            created
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Stream)
+        );
+
+        // Moving a global addon with a catalog to the user tab drops it too.
+        let (h, v) = auth(&token);
+        let global: AddonDto = server
+            .post("/addons")
+            .add_header(h, v)
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir], "media_kind": "movie" }
+                },
+                "name": "Library files",
+                "isDefault": true,
+                "resources": ["catalog", "stream"]
+            }))
+            .await
+            .json();
+        assert!(
+            global
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog)
+        );
+        let (h, v) = auth(&token);
+        let demoted: AddonDto = server
+            .post(&format!("/addons/{}", global.id))
+            .add_header(h, v)
+            .json(&json!({ "isDefault": false }))
+            .await
+            .json();
+        assert!(
+            !demoted
+                .resources
+                .contains(&remux_sdks::stremio::ResourceType::Catalog)
+        );
     }
 
     #[tokio::test]
