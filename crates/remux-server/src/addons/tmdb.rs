@@ -116,7 +116,9 @@ impl MetaAddon for TmdbAddon {
         config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         match fetch_tmdb_meta(media, ctx, config).await {
-            Err(e) if is_404(&e) => Ok(None),
+            Err(e) if is_404(&e) => {
+                fetch_tmdb_meta_by_other_ids(media, ctx, config).await
+            }
             other => other,
         }
     }
@@ -1074,6 +1076,68 @@ fn build_location_relations(
             )
         })
         .collect()
+}
+
+/// The stored tmdb id 404s. That usually means TMDB merged the entry into
+/// another one or deleted it. `/find` by IMDb or TVDB id still points at the
+/// entry that is left, so look the id up again and fetch that one. The patch
+/// carries the new tmdb id. Returns `None` if nothing else resolves, so
+/// lower-priority meta addons can still fill the item.
+async fn fetch_tmdb_meta_by_other_ids(
+    media: &db::Media,
+    ctx: &AppContext,
+    config: &crate::api::ServerConfiguration,
+) -> Result<Option<db::Media>> {
+    let is_tv = match media.kind {
+        db::MediaKind::Movie => false,
+        db::MediaKind::Series => true,
+        _ => return Ok(None),
+    };
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
+    let ids = &media.external_ids;
+    let keys = [
+        ids.imdb
+            .clone()
+            .map(|imdb| (imdb.into(), "imdb_id")),
+        ids.tvdb
+            .map(|tvdb| (tvdb.to_string(), "tvdb_id")),
+    ];
+    for (external_id, external_source) in keys
+        .into_iter()
+        .flatten()
+    {
+        let found = MediaResolveService::find_tmdb_id_by(
+            external_id,
+            external_source,
+            is_tv,
+            &client,
+        )
+        .await
+        .ok()
+        .flatten();
+        let Some(tmdb_id) = found.filter(|id| Some(*id) != ids.tmdb) else {
+            continue;
+        };
+        debug!(
+            old = ?ids.tmdb,
+            new = tmdb_id,
+            title = %media.title,
+            "stored tmdb id is gone, re-resolved by {external_source}"
+        );
+        let mut moved = media.clone();
+        moved
+            .external_ids
+            .tmdb = Some(tmdb_id);
+        return match fetch_tmdb_meta(&moved, ctx, config).await {
+            Err(e) if is_404(&e) => Ok(None),
+            other => other,
+        };
+    }
+    Ok(None)
 }
 
 fn is_404(e: &anyhow::Error) -> bool {
@@ -2439,5 +2503,197 @@ mod tests {
         assert_eq!(thumb_and_logo_languages(Some("en")), "en,null");
         assert_eq!(thumb_and_logo_languages(Some("nl")), "nl,en,null");
         assert_eq!(thumb_and_logo_languages(Some("nl-NL")), "nl,en,null");
+    }
+
+    /// A server whose TMDB calls go to `mock`.
+    async fn ctx_with_tmdb(
+        mock: &httpmock::MockServer,
+    ) -> crate::integration_test::TestGuard {
+        crate::integration_test::new_test_server_with_config(crate::Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            disable_dht: true,
+            tmdb_base_url: mock.base_url(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .1
+    }
+
+    fn tmdb_not_found(mock: &httpmock::MockServer, path: &str) {
+        mock.mock(|when, then| {
+            when.path(path);
+            then.status(404)
+                .json_body(serde_json::json!({
+                    "success": false,
+                    "status_code": 34,
+                    "status_message": "The resource you requested could not be found."
+                }));
+        });
+    }
+
+    /// TMDB answers 404 for an entry it merged into another one, but `/find`
+    /// by IMDb id already points at the surviving entry.
+    #[tokio::test]
+    async fn meta_fetch_follows_imdb_id_when_stored_series_tmdb_id_is_gone() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb_not_found(&tmdb, "/tv/1001");
+        tmdb.mock(|when, then| {
+            when.path("/find/tt7770010")
+                .query_param("external_source", "imdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{ "id": 2002, "name": "Show" }],
+                    "movie_results": []
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/2002");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 2002,
+                    "name": "Show",
+                    "overview": "From the surviving entry.",
+                    "external_ids": { "imdb_id": "tt7770010", "tvdb_id": 3003 }
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let media = db::Media {
+            kind: db::MediaKind::Series,
+            title: "Show".to_string(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(1001),
+                imdb: db::NonEmptyString::try_new("tt7770010").ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let patch = TmdbAddon
+            .meta_fetch(&media, &guard.0, &Default::default())
+            .await
+            .unwrap()
+            .expect("re-resolved patch");
+
+        assert_eq!(
+            patch
+                .external_ids
+                .tmdb,
+            Some(2002)
+        );
+        assert_eq!(
+            patch
+                .description
+                .as_deref(),
+            Some("From the surviving entry.")
+        );
+
+        // A full refresh stores the new id in place of the dead one.
+        let mut stored = media.clone();
+        crate::addons::apply_meta(&mut stored, patch, true);
+        assert_eq!(
+            stored
+                .external_ids
+                .tmdb,
+            Some(2002)
+        );
+    }
+
+    /// Without an IMDb match the TVDB id is tried next; a movie goes through
+    /// the same path as a series.
+    #[tokio::test]
+    async fn meta_fetch_falls_back_to_tvdb_id_when_stored_movie_tmdb_id_is_gone() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb_not_found(&tmdb, "/movie/1001");
+        tmdb.mock(|when, then| {
+            when.path("/find/tt7770011");
+            then.status(200)
+                .json_body(
+                    serde_json::json!({ "tv_results": [], "movie_results": [] }),
+                );
+        });
+        tmdb.mock(|when, then| {
+            when.path("/find/3004")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [],
+                    "movie_results": [{
+                        "id": 2004,
+                        "title": "Film",
+                        "adult": false,
+                        "original_language": "en"
+                    }]
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/movie/2004");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 2004,
+                    "title": "Film",
+                    "adult": false,
+                    "original_language": "en"
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let media = db::Media {
+            kind: db::MediaKind::Movie,
+            title: "Film".to_string(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(1001),
+                imdb: db::NonEmptyString::try_new("tt7770011").ok(),
+                tvdb: Some(3004),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let patch = TmdbAddon
+            .meta_fetch(&media, &guard.0, &Default::default())
+            .await
+            .unwrap()
+            .expect("re-resolved patch");
+
+        assert_eq!(
+            patch
+                .external_ids
+                .tmdb,
+            Some(2004)
+        );
+    }
+
+    /// Nothing else resolves: keep returning no patch so lower-priority meta
+    /// addons can still fill the item.
+    #[tokio::test]
+    async fn meta_fetch_returns_none_when_gone_tmdb_id_cannot_be_re_resolved() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb_not_found(&tmdb, "/tv/1001");
+        tmdb.mock(|when, then| {
+            when.path("/find/tt7770012");
+            then.status(200)
+                .json_body(
+                    serde_json::json!({ "tv_results": [], "movie_results": [] }),
+                );
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let media = db::Media {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                tmdb: Some(1001),
+                imdb: db::NonEmptyString::try_new("tt7770012").ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(
+            TmdbAddon
+                .meta_fetch(&media, &guard.0, &Default::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
