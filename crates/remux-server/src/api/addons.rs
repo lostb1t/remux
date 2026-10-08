@@ -1306,8 +1306,11 @@ mod test {
         let (server, ctx, token) = authenticated_server().await;
         let (h, v) = auth(&token);
         let manifest = httpmock::MockServer::start();
+        // The SDK response cache is process-wide and keyed by URL, and httpmock
+        // reuses pooled servers, so this test needs a path no other test uses;
+        // otherwise a manifest another test cached would answer the probe.
         let hits = manifest.mock(|when, then| {
-            when.path("/manifest.json");
+            when.path("/unreachable-manifest/manifest.json");
             then.status(404);
         });
         let now = Utc::now().naive_utc();
@@ -1316,7 +1319,7 @@ mod test {
             name: "Unreachable manifest".to_string(),
             preset: crate::addons::AddonPresetRef {
                 kind: "stremio".to_string(),
-                config: json!({ "manifest_url": manifest.url("/manifest.json") })
+                config: json!({ "manifest_url": manifest.url("/unreachable-manifest/manifest.json") })
                     .into(),
             },
             resources: vec![],
