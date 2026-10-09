@@ -78,10 +78,17 @@ impl Task for RefreshLibraryTask {
             for cat_info in available {
                 domain_collection_ids.insert(cat_info.collection_id);
             }
+            // Catalogs are only offered for global addons (the dashboard hides
+            // the switches on user addons). An addon moved to the user tab
+            // keeps its catalog settings, so check here too; it stays in the
+            // domain set above, so its old catalog collections get cleaned up.
             if !runtime
                 .row
-                .resources
-                .contains(&ResourceType::Catalog)
+                .is_default
+                || !runtime
+                    .row
+                    .resources
+                    .contains(&ResourceType::Catalog)
             {
                 continue;
             }

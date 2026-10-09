@@ -367,6 +367,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                     }
                     div { class: "modal-body",
                         if *create_step.read() == 0 {
+                            if *active_tab.read() == "user" {
+                                span { class: "field-hint", "User addons only provide per-user resources. Catalogs and metadata apply to the whole library, so add those addons on the Global tab." }
+                            }
                             div { class: "addon-kind-list",
                                 for k in kinds.read().clone().into_iter().filter(|k| {
                                     if *active_tab.read() == "user" { !k.supported_resources_user.is_empty() } else { true }
