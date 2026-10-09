@@ -366,12 +366,15 @@ fn effective_bitrate(
         .size
         .or_else(|| probe_data.and_then(|p| p.size))
         .filter(|s| *s > 0)?;
+    // Fractional seconds matter for short media; don't truncate them.
     let secs = probe_data
         .and_then(|p| p.run_time_ticks)
-        .map(|ticks| ticks / 10_000_000)
-        .filter(|s| *s > 0)
-        .or(runtime_secs.filter(|s| *s > 0))?;
-    Some(((size as f64 * 8.0) / secs as f64).round() as i64)
+        .map(|ticks| ticks as f64 / 10_000_000.0)
+        .filter(|s| *s > 0.0)
+        .or(runtime_secs
+            .filter(|s| *s > 0)
+            .map(|s| s as f64))?;
+    Some(((size as f64 * 8.0) / secs).round() as i64)
 }
 
 impl StreamGroup {
@@ -399,37 +402,46 @@ impl StreamGroup {
             return MatchOutcome::Match;
         }
 
-        let Some((resolution, source, codec)) = detect_stream_quality(info) else {
-            return MatchOutcome::PassThrough;
-        };
+        // Only the name-based rules need a release name; the others (size,
+        // bitrate, cache state, languages, addon) can be judged without one.
+        let quality = detect_stream_quality(info);
 
         let eval = |rule: &StreamRule| -> MatchOutcome {
             match rule {
                 StreamRule::Resolution { op, values } => {
-                    if resolution == StreamResolution::Other
+                    let Some((resolution, _, _)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *resolution == StreamResolution::Other
                         && !values.contains(&StreamResolution::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&resolution);
+                    let hit = values.contains(resolution);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Quality { op, values } => {
-                    if source == StreamQuality::Other
+                    let Some((_, source, _)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *source == StreamQuality::Other
                         && !values.contains(&StreamQuality::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&source);
+                    let hit = values.contains(source);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Codec { op, values } => {
-                    if codec == StreamCodec::Other
+                    let Some((_, _, codec)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *codec == StreamCodec::Other
                         && !values.contains(&StreamCodec::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&codec);
+                    let hit = values.contains(codec);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 // No probe data → PassThrough: we can't confirm or deny the
@@ -1652,5 +1664,105 @@ mod tests {
             rules: vec![StreamRule::Cached { value: false }],
         };
         assert_eq!(auto_name(&uncached), "Uncached");
+    }
+
+    #[test]
+    fn bitrate_keeps_fractional_seconds_of_the_probed_runtime() {
+        // 5 MB over 3.5 s is 11.43 Mbps; truncating to 3 s would say 13.33.
+        let stream = info_with_size("a.mkv", Some(5_000_000));
+        let probe = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(35_000_000),
+            ..Default::default()
+        };
+        let group = bitrate_group(NumericOp::Lt, 12_000_000);
+        assert_eq!(
+            group.match_outcome(&stream, Some(&probe)),
+            MatchOutcome::Match
+        );
+    }
+
+    fn nameless_info() -> StreamInfo {
+        StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn metadata_rules_are_evaluated_for_streams_without_a_parseable_name() {
+        // Cache state, bitrate, size, subtitles and addon don't depend on a
+        // release name, so a nameless stream must still be judged by them.
+        let cached = StreamInfo {
+            service_cached: Some(false),
+            ..nameless_info()
+        };
+        let only_cached = group_with(
+            vec![StreamRule::Cached { value: true }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            only_cached.match_outcome(&cached, None),
+            MatchOutcome::NoMatch
+        );
+        let not_cached = group_with(
+            vec![StreamRule::Cached { value: false }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(not_cached.match_outcome(&cached, None), MatchOutcome::Match);
+
+        let sized = StreamInfo {
+            size: Some(35_000_000_000),
+            ..nameless_info()
+        };
+        assert_eq!(
+            group_size(NumericOp::Gt, 20_000_000_000).match_outcome(&sized, None),
+            MatchOutcome::Match
+        );
+
+        let subs = group_with(
+            vec![subtitle_rule(SetOp::In, &["por"])],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            subs.match_outcome(
+                &nameless_info(),
+                Some(&probe_with_tracks(&[], &["por"]))
+            ),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn name_based_rules_still_pass_through_for_streams_without_a_name() {
+        let group = group_1080p_bluray();
+        assert_eq!(
+            group.match_outcome(&nameless_info(), None),
+            MatchOutcome::PassThrough
+        );
+        // A name-based rule can't veto what a metadata rule already settled
+        // in `any` mode, but it also can't make an `all` group match.
+        let mixed = group_with(
+            vec![
+                StreamRule::Resolution {
+                    op: SetOp::In,
+                    values: vec![StreamResolution::R1080p],
+                },
+                StreamRule::Cached { value: true },
+            ],
+            FilterMatchMode::All,
+        );
+        let cached = StreamInfo {
+            service_cached: Some(true),
+            ..nameless_info()
+        };
+        assert_eq!(
+            mixed.match_outcome(&cached, None),
+            MatchOutcome::PassThrough
+        );
+        let uncached = StreamInfo {
+            service_cached: Some(false),
+            ..nameless_info()
+        };
+        assert_eq!(mixed.match_outcome(&uncached, None), MatchOutcome::NoMatch);
     }
 }
