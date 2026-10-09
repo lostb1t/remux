@@ -870,7 +870,7 @@ async fn items_playbackinfo_inner(
         0
     };
     if let Some(extras) = source_extras.get(selected_idx) {
-        service.save_probe_fallback(
+        service.save_selected_stream(
             &play_session_id,
             &session
                 .device
@@ -1128,7 +1128,7 @@ pub async fn items_file(
 /// without a `PlaySessionId`/`DeviceId`, and must still work with no token at
 /// all. Resolve the caller's user and device best-effort from whatever
 /// `ApiKey`/`Token` is present (never rejecting the request) so per-device
-/// cache scoping (e.g. `recent_probe_fallback_for`) still works when a valid
+/// cache scoping (e.g. `recent_selected_stream_for`) still works when a valid
 /// token happens to be there. An API key has a user but no device.
 async fn best_effort_caller(
     state: &AppState,
@@ -1296,7 +1296,7 @@ async fn videos_stream_inner(
     // ID, group ID, or original stream ID even after probe fallback;
     // resolving that ID directly would serve a different stream than the
     // one whose media info the client was given.
-    let selected = StreamService::probe_fallback_stream_id(
+    let selected = StreamService::selected_stream_id(
         &state.ctx,
         device_id.as_deref(),
         id,

@@ -467,7 +467,7 @@ pub async fn seed_probe_fallback(
         stream_filter: None,
         user_id: Some(device.user_id),
     })
-    .save_probe_fallback(
+    .save_selected_stream(
         play_session_id,
         &device.id,
         true,

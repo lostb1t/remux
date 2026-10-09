@@ -155,7 +155,7 @@ async fn create_hls_session(
         // like the static stream endpoint, so the session runs on the stream
         // whose probe data the client was given.
         let selected =
-            crate::services::stream_service::StreamService::probe_fallback_stream_id(
+            crate::services::stream_service::StreamService::selected_stream_id(
                 &state.ctx,
                 Some(
                     &auth

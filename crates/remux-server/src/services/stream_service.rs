@@ -758,7 +758,7 @@ impl StreamService {
     ///
     /// `stream_id` is the candidate as listed; `effective_stream_id` is the
     /// stream probed for it (they differ after a probe fallback).
-    pub fn save_probe_fallback(
+    pub fn save_selected_stream(
         &self,
         play_session_id: &str,
         device_id: &str,
@@ -773,10 +773,18 @@ impl StreamService {
                 .unwrap_or(self.item_id),
             None => self.item_id,
         };
+        self.ctx
+            .store
+            .save(
+                Self::selected_stream_key(play_session_id, source_id),
+                effective_stream_id,
+                std::time::Duration::from_secs(24 * 3600),
+            );
         // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
-        // DeviceId. Keep a brief mapping for that request too, keyed by the
-        // device its token belongs to. Deduped: for a specific-stream request,
-        // source_id and the listed candidate's own id are frequently identical.
+        // DeviceId query parameter. Keep a brief mapping for that request too,
+        // keyed by the device its access token belongs to. Deduped: for a
+        // specific-stream request, source_id and the listed candidate's own id
+        // are frequently identical.
         let recent_ids: std::collections::HashSet<Uuid> = [source_id, stream_id]
             .into_iter()
             .collect();
@@ -784,29 +792,26 @@ impl StreamService {
             self.ctx
                 .store
                 .save(
-                    Self::recent_probe_fallback_key(device_id, self.item_id, recent_id),
+                    Self::recent_selected_stream_key(
+                        device_id,
+                        self.item_id,
+                        recent_id,
+                    ),
                     effective_stream_id,
                     std::time::Duration::from_secs(5 * 60),
                 );
         }
-        self.ctx
-            .store
-            .save(
-                Self::probe_fallback_key(play_session_id, source_id),
-                effective_stream_id,
-                std::time::Duration::from_secs(24 * 3600),
-            );
     }
 
     /// The stream PlaybackInfo selected when it answered `play_session_id`
     /// with `source_id` (item, group, or stream ID), if any.
-    pub fn probe_fallback_for(
+    pub fn selected_stream_for(
         ctx: &AppContext,
         play_session_id: &str,
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::probe_fallback_key(play_session_id, source_id))
+            .get::<Uuid>(Self::selected_stream_key(play_session_id, source_id))
             .map(|id| *id)
     }
 
@@ -815,14 +820,14 @@ impl StreamService {
     /// PlaybackInfo for the same item with different capabilities, and each
     /// must get its own selection. A device belongs to one user, so this
     /// also never answers another user's request.
-    pub fn recent_probe_fallback_for(
+    pub fn recent_selected_stream_for(
         ctx: &AppContext,
         device_id: &str,
         item_id: Uuid,
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::recent_probe_fallback_key(
+            .get::<Uuid>(Self::recent_selected_stream_key(
                 device_id, item_id, source_id,
             ))
             .map(|id| *id)
@@ -831,7 +836,7 @@ impl StreamService {
     /// The stream a playback request for `item_id` / `media_source_id` must
     /// serve, as selected by the PlaybackInfo that answered it: looked up by
     /// play session first, then by the requesting device's recent request.
-    pub fn probe_fallback_stream_id(
+    pub fn selected_stream_id(
         ctx: &AppContext,
         device_id: Option<&str>,
         item_id: Uuid,
@@ -840,15 +845,15 @@ impl StreamService {
     ) -> Option<Uuid> {
         let source_id = media_source_id.unwrap_or(item_id);
         play_session_id
-            .and_then(|psid| Self::probe_fallback_for(ctx, psid, source_id))
+            .and_then(|psid| Self::selected_stream_for(ctx, psid, source_id))
             .or_else(|| {
                 device_id.and_then(|device_id| {
-                    Self::recent_probe_fallback_for(ctx, device_id, item_id, source_id)
+                    Self::recent_selected_stream_for(ctx, device_id, item_id, source_id)
                 })
             })
     }
 
-    fn recent_probe_fallback_key(
+    fn recent_selected_stream_key(
         device_id: &str,
         item_id: Uuid,
         source_id: Uuid,
@@ -856,7 +861,7 @@ impl StreamService {
         format!("pstream:recent:{device_id}:{item_id}:{source_id}")
     }
 
-    fn probe_fallback_key(play_session_id: &str, source_id: Uuid) -> String {
+    fn selected_stream_key(play_session_id: &str, source_id: Uuid) -> String {
         format!("pstream:psid:{play_session_id}:{source_id}")
     }
 
@@ -1448,7 +1453,7 @@ mod tests {
     /// serves the first source — the one that just failed — and playback hangs
     /// until the upstream timeout while the second source, picked by hand, plays.
     #[tokio::test]
-    async fn probe_fallback_is_remembered_per_play_session() {
+    async fn selected_stream_is_remembered_per_play_session() {
         use crate::integration_test::{
             authenticated_server, insert_test_source, seed_movie,
         };
@@ -1467,7 +1472,7 @@ mod tests {
             user_id: None,
         });
         // Fell over to `alive`: remembered under the play session.
-        service.save_probe_fallback(
+        service.save_selected_stream(
             "psid-fallback",
             "device-a",
             false,
@@ -1475,21 +1480,21 @@ mod tests {
             alive.id,
         );
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-fallback", owner.id),
+            StreamService::selected_stream_for(ctx, "psid-fallback", owner.id),
             Some(alive.id)
         );
         // First source probed fine: the item id still maps to it, so the
         // stream request can't drift to a different (unprobed) source.
-        service.save_probe_fallback("psid-clean", "device-a", false, dead.id, dead.id);
+        service.save_selected_stream("psid-clean", "device-a", false, dead.id, dead.id);
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-clean", owner.id),
+            StreamService::selected_stream_for(ctx, "psid-clean", owner.id),
             Some(dead.id)
         );
         // Two devices of one user auto-playing the same item can be given
         // different versions; a session-less request from each must get its
         // own, not whichever PlaybackInfo answered last.
-        service.save_probe_fallback("psid-tv", "device-tv", false, dead.id, dead.id);
-        service.save_probe_fallback(
+        service.save_selected_stream("psid-tv", "device-tv", false, dead.id, dead.id);
+        service.save_selected_stream(
             "psid-phone",
             "device-phone",
             false,
@@ -1497,7 +1502,7 @@ mod tests {
             alive.id,
         );
         assert_eq!(
-            StreamService::probe_fallback_stream_id(
+            StreamService::selected_stream_id(
                 ctx,
                 Some("device-tv"),
                 owner.id,
@@ -1507,7 +1512,7 @@ mod tests {
             Some(dead.id)
         );
         assert_eq!(
-            StreamService::probe_fallback_stream_id(
+            StreamService::selected_stream_id(
                 ctx,
                 Some("device-phone"),
                 owner.id,
@@ -1517,7 +1522,7 @@ mod tests {
             Some(alive.id)
         );
         assert_eq!(
-            StreamService::probe_fallback_stream_id(ctx, None, owner.id, None, None),
+            StreamService::selected_stream_id(ctx, None, owner.id, None, None),
             None,
             "a request without a device token never matches"
         );
@@ -1537,7 +1542,7 @@ mod tests {
                 .select_streams()
                 .specific_requested
         );
-        specific_service.save_probe_fallback(
+        specific_service.save_selected_stream(
             "psid-specific",
             "device-a",
             true,
@@ -1545,31 +1550,31 @@ mod tests {
             alive.id,
         );
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-specific", dead.id),
+            StreamService::selected_stream_for(ctx, "psid-specific", dead.id),
             Some(alive.id)
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(
+            StreamService::recent_selected_stream_for(
                 ctx, "device-a", owner.id, dead.id
             ),
             Some(alive.id),
             "Infuse's sessionless direct request must resolve to the probed stream"
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(
+            StreamService::recent_selected_stream_for(
                 ctx, "device-a", alive.id, dead.id
             ),
             None,
             "recent fallback must not leak to another item"
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(
+            StreamService::recent_selected_stream_for(
                 ctx, "device-b", owner.id, dead.id
             ),
             None,
             "recent fallback must not leak to another device's session-less request"
         );
-        specific_service.save_probe_fallback(
+        specific_service.save_selected_stream(
             "psid-recovered",
             "device-a",
             true,
@@ -1577,7 +1582,7 @@ mod tests {
             dead.id,
         );
         assert_eq!(
-            StreamService::recent_probe_fallback_for(
+            StreamService::recent_selected_stream_for(
                 ctx, "device-a", owner.id, dead.id
             ),
             Some(dead.id),
@@ -1585,7 +1590,7 @@ mod tests {
         );
         // Unknown session: nothing.
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-unknown", owner.id),
+            StreamService::selected_stream_for(ctx, "psid-unknown", owner.id),
             None
         );
     }
@@ -1678,7 +1683,7 @@ mod tests {
         service.streams = vec![dead.clone(), alive.clone()];
         let selection = service.select_streams();
         assert!(!selection.specific_requested);
-        service.save_probe_fallback(
+        service.save_selected_stream(
             "psid-grouped",
             "device-a",
             selection.specific_requested,
@@ -1686,7 +1691,7 @@ mod tests {
             alive.id,
         );
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-grouped", owner.id),
+            StreamService::selected_stream_for(ctx, "psid-grouped", owner.id),
             Some(alive.id)
         );
 
@@ -1708,7 +1713,7 @@ mod tests {
         service.streams = vec![dead.clone(), alive.clone()];
         let selection = service.select_streams();
         assert!(selection.specific_requested);
-        service.save_probe_fallback(
+        service.save_selected_stream(
             "psid-group-request",
             "device-a",
             selection.specific_requested,
@@ -1716,7 +1721,7 @@ mod tests {
             alive.id,
         );
         assert_eq!(
-            StreamService::probe_fallback_for(ctx, "psid-group-request", group_a),
+            StreamService::selected_stream_for(ctx, "psid-group-request", group_a),
             Some(alive.id)
         );
     }
