@@ -74,23 +74,6 @@ async fn capability_snapshot(
     Ok((resources, types))
 }
 
-/// A user-scoped (non-default) addon only serves the resources its preset offers
-/// per user; a preset that offers none is unavailable to user addons altogether
-/// (the dashboard hides it), so it keeps no resources. Anything the dashboard
-/// can't offer for a user addon must not sit on the row either, or it lingers
-/// invisibly with no way to switch it off.
-fn clamp_to_user_scope(addon: &mut Addon, preset: &dyn AddonPreset) {
-    if addon.is_default || addon.system {
-        return;
-    }
-    let allowed = preset
-        .metadata()
-        .supported_resources_user;
-    addon
-        .resources
-        .retain(|resource| allowed.contains(resource));
-}
-
 fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
@@ -349,7 +332,7 @@ pub async fn create_addon(
     };
 
     let now = Utc::now().naive_utc();
-    let mut addon = Addon {
+    let addon = Addon {
         id: addon_id,
         preset: payload.preset,
         name: payload.name,
@@ -366,7 +349,6 @@ pub async fn create_addon(
         probe_on_scan: false,
         service_filter: vec![],
     };
-    clamp_to_user_scope(&mut addon, preset.as_ref());
 
     addon
         .insert(
@@ -544,8 +526,6 @@ pub async fn update_addon(
             addon.types = derived_types;
         }
     }
-
-    clamp_to_user_scope(&mut addon, preset.as_ref());
 
     addon
         .update(
@@ -1024,130 +1004,6 @@ mod test {
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn clamp_to_user_scope_keeps_nothing_for_presets_without_user_resources() {
-        let now = Utc::now().naive_utc();
-        let preset = registered_presets()
-            .into_iter()
-            .find(|p| p.id() == "introdb")
-            .unwrap();
-        assert!(
-            preset
-                .metadata()
-                .supported_resources_user
-                .is_empty()
-        );
-        let mut addon = Addon {
-            id: Uuid::new_v4(),
-            name: "IntroDB".to_string(),
-            preset: crate::addons::AddonPresetRef {
-                kind: "introdb".to_string(),
-                config: json!({}).into(),
-            },
-            resources: vec![
-                remux_sdks::stremio::ResourceType::Catalog,
-                remux_sdks::stremio::ResourceType::Stream,
-            ],
-            types: vec![],
-            enabled: true,
-            priority: 0,
-            created_at: now,
-            updated_at: now,
-            system: false,
-            is_default: false,
-            http_redirect_stream: false,
-            subtitle_extraction: false,
-            probe_on_scan: false,
-            service_filter: vec![],
-        };
-
-        clamp_to_user_scope(&mut addon, preset.as_ref());
-        assert!(
-            addon
-                .resources
-                .is_empty()
-        );
-
-        // Global addons are never clamped.
-        addon.is_default = true;
-        addon.resources = vec![remux_sdks::stremio::ResourceType::Catalog];
-        clamp_to_user_scope(&mut addon, preset.as_ref());
-        assert_eq!(
-            addon.resources,
-            vec![remux_sdks::stremio::ResourceType::Catalog]
-        );
-    }
-
-    #[tokio::test]
-    async fn user_scoped_addon_is_limited_to_its_presets_user_resources() {
-        let (server, _ctx, token) = authenticated_server().await;
-        let dir = std::env::temp_dir()
-            .to_string_lossy()
-            .to_string();
-
-        let (h, v) = auth(&token);
-        let created: AddonDto = server
-            .post("/addons")
-            .add_header(h, v)
-            .json(&json!({
-                "preset": {
-                    "kind": "opendal-local",
-                    "config": { "paths": [dir.clone()], "media_kind": "movie" }
-                },
-                "name": "Personal files",
-                "isDefault": false,
-                "resources": ["catalog", "stream"]
-            }))
-            .await
-            .json();
-        assert!(
-            !created
-                .resources
-                .contains(&remux_sdks::stremio::ResourceType::Catalog),
-            "opendal offers no catalog resource per user, so it must not be kept"
-        );
-        assert!(
-            created
-                .resources
-                .contains(&remux_sdks::stremio::ResourceType::Stream)
-        );
-
-        // Moving a global addon to the user tab drops resources the preset does not
-        // offer per user.
-        let (h, v) = auth(&token);
-        let global: AddonDto = server
-            .post("/addons")
-            .add_header(h, v)
-            .json(&json!({
-                "preset": {
-                    "kind": "opendal-local",
-                    "config": { "paths": [dir], "media_kind": "movie" }
-                },
-                "name": "Library files",
-                "isDefault": true,
-                "resources": ["catalog", "stream"]
-            }))
-            .await
-            .json();
-        assert!(
-            global
-                .resources
-                .contains(&remux_sdks::stremio::ResourceType::Catalog)
-        );
-        let (h, v) = auth(&token);
-        let demoted: AddonDto = server
-            .post(&format!("/addons/{}", global.id))
-            .add_header(h, v)
-            .json(&json!({ "isDefault": false }))
-            .await
-            .json();
-        assert!(
-            !demoted
-                .resources
-                .contains(&remux_sdks::stremio::ResourceType::Catalog)
-        );
     }
 
     #[tokio::test]

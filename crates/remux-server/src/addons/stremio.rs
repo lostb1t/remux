@@ -55,7 +55,6 @@ impl AddonPreset for StremioPreset {
                 MediaKind::TvProgram,
             ],
             supported_resources_user: vec![
-                ResourceType::Catalog,
                 ResourceType::Search,
                 ResourceType::Subtitles,
                 ResourceType::Stream,
@@ -2159,18 +2158,6 @@ mod tests {
                 .unwrap();
         let url = "https://cdn.example.net/stream/foo.mkv";
         assert_eq!(rewrite_aio_url(url, &manifest_url), url);
-    }
-
-    #[test]
-    fn stremio_catalogs_can_be_provided_by_user_scoped_addons() {
-        // Imported catalogs and their items are library-wide, so a user-scoped
-        // Stremio addon may provide them like any other addon.
-        assert!(
-            StremioPreset
-                .metadata()
-                .supported_resources_user
-                .contains(&ResourceType::Catalog)
-        );
     }
 
     fn mock_manifest(server: &httpmock::MockServer) {
