@@ -2,8 +2,8 @@ use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
     FilterMatchMode, NumericOp, SetOp, StreamCodec, StreamFilter, StreamQuality,
-    StreamResolution, StreamRule, format_size_rule, language_label,
-    normalize_lang_code,
+    StreamResolution, StreamRule, format_bitrate_rule, format_size_rule,
+    language_label, normalize_lang_code,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -267,10 +267,11 @@ impl StreamGroup {
                     s.stream_info
                         .as_ref()
                         .map_or(false, |info| {
-                            group.match_outcome(
+                            group.match_outcome_with_runtime(
                                 info,
                                 s.probe_data
                                     .as_ref(),
+                                s.runtime,
                             ) == MatchOutcome::Match
                         })
                 })
@@ -332,14 +333,48 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
             s.stream_info
                 .as_ref()
                 .map_or(true, |info| {
-                    temp.match_outcome(
+                    temp.match_outcome_with_runtime(
                         info,
                         s.probe_data
                             .as_ref(),
+                        s.runtime,
                     ) != MatchOutcome::NoMatch
                 })
         })
         .collect()
+}
+
+/// Language codes that say nothing about the track's actual language.
+fn is_unspecified_language(code: &str) -> bool {
+    matches!(code, "und" | "mis" | "zxx" | "mul")
+}
+
+/// Overall bitrate in bits per second: the probed one, else the stream's size
+/// over its runtime (the probed runtime, else the item's `runtime_secs`).
+fn effective_bitrate(
+    info: &StreamInfo,
+    probe_data: Option<&crate::api::MediaSourceInfo>,
+    runtime_secs: Option<i64>,
+) -> Option<i64> {
+    if let Some(bitrate) = probe_data
+        .and_then(|p| p.bitrate)
+        .filter(|b| *b > 0)
+    {
+        return Some(bitrate);
+    }
+    let size = info
+        .size
+        .or_else(|| probe_data.and_then(|p| p.size))
+        .filter(|s| *s > 0)?;
+    // Fractional seconds matter for short media; don't truncate them.
+    let secs = probe_data
+        .and_then(|p| p.run_time_ticks)
+        .map(|ticks| ticks as f64 / 10_000_000.0)
+        .filter(|s| *s > 0.0)
+        .or(runtime_secs
+            .filter(|s| *s > 0)
+            .map(|s| s as f64))?;
+    Some(((size as f64 * 8.0) / secs).round() as i64)
 }
 
 impl StreamGroup {
@@ -347,6 +382,17 @@ impl StreamGroup {
         &self,
         info: &StreamInfo,
         probe_data: Option<&crate::api::MediaSourceInfo>,
+    ) -> MatchOutcome {
+        self.match_outcome_with_runtime(info, probe_data, None)
+    }
+
+    /// [`Self::match_outcome`] with the item's runtime in seconds, which lets
+    /// the bitrate rule work out a bitrate for streams that were never probed.
+    pub fn match_outcome_with_runtime(
+        &self,
+        info: &StreamInfo,
+        probe_data: Option<&crate::api::MediaSourceInfo>,
+        runtime_secs: Option<i64>,
     ) -> MatchOutcome {
         let filter = &self.filter;
         if filter
@@ -356,37 +402,46 @@ impl StreamGroup {
             return MatchOutcome::Match;
         }
 
-        let Some((resolution, source, codec)) = detect_stream_quality(info) else {
-            return MatchOutcome::PassThrough;
-        };
+        // Only the name-based rules need a release name; the others (size,
+        // bitrate, cache state, languages, addon) can be judged without one.
+        let quality = detect_stream_quality(info);
 
         let eval = |rule: &StreamRule| -> MatchOutcome {
             match rule {
                 StreamRule::Resolution { op, values } => {
-                    if resolution == StreamResolution::Other
+                    let Some((resolution, _, _)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *resolution == StreamResolution::Other
                         && !values.contains(&StreamResolution::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&resolution);
+                    let hit = values.contains(resolution);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Quality { op, values } => {
-                    if source == StreamQuality::Other
+                    let Some((_, source, _)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *source == StreamQuality::Other
                         && !values.contains(&StreamQuality::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&source);
+                    let hit = values.contains(source);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 StreamRule::Codec { op, values } => {
-                    if codec == StreamCodec::Other
+                    let Some((_, _, codec)) = &quality else {
+                        return MatchOutcome::PassThrough;
+                    };
+                    if *codec == StreamCodec::Other
                         && !values.contains(&StreamCodec::Other)
                     {
                         return MatchOutcome::PassThrough;
                     }
-                    let hit = values.contains(&codec);
+                    let hit = values.contains(codec);
                     bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                 }
                 // No probe data → PassThrough: we can't confirm or deny the
@@ -438,6 +493,62 @@ impl StreamGroup {
                         bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
                     }
                 },
+                // A language is "present" if an embedded track in the probe
+                // data or a subtitle the stream advertises has it. Without
+                // probe data a miss proves nothing (the embedded tracks are
+                // unknown), so it passes through like AudioLanguage.
+                StreamRule::SubtitleLanguage { op, values } => {
+                    let wanted: Vec<String> = values
+                        .iter()
+                        .map(|v| normalize_lang_code(v))
+                        .collect();
+                    let is_wanted = |code: &str| {
+                        let code = normalize_lang_code(code);
+                        !is_unspecified_language(&code) && wanted.contains(&code)
+                    };
+                    let embedded_hit = probe_data.is_some_and(|pd| {
+                        pd.media_streams
+                            .iter()
+                            .any(|s| {
+                                s.type_ == Some(MediaStreamType::Subtitle)
+                                    && s.language
+                                        .as_deref()
+                                        .is_some_and(&is_wanted)
+                            })
+                    });
+                    let advertised_hit = info
+                        .subtitles
+                        .iter()
+                        .any(|s| {
+                            s.lang
+                                .as_deref()
+                                .is_some_and(&is_wanted)
+                        });
+                    let hit = embedded_hit || advertised_hit;
+                    if !hit && probe_data.is_none() {
+                        MatchOutcome::PassThrough
+                    } else {
+                        bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                    }
+                }
+                // Unknown bitrate passes through, like Size and AudioLanguage.
+                StreamRule::Bitrate { op, value } => {
+                    match effective_bitrate(info, probe_data, runtime_secs) {
+                        None => MatchOutcome::PassThrough,
+                        Some(b) => bool_to_outcome(match op {
+                            NumericOp::Eq => b == *value,
+                            NumericOp::NotEq => b != *value,
+                            NumericOp::Gt => b > *value,
+                            NumericOp::Lt => b < *value,
+                        }),
+                    }
+                }
+                // No cache information (HTTP, IPTV, ...) passes through
+                // rather than counting as "not cached".
+                StreamRule::Cached { value } => match info.service_cached {
+                    None => MatchOutcome::PassThrough,
+                    Some(cached) => bool_to_outcome(cached == *value),
+                },
             }
         };
 
@@ -482,10 +593,11 @@ impl StreamGroup {
                 s.stream_info
                     .as_ref()
                     .map_or(false, |info| {
-                        group.match_outcome(
+                        group.match_outcome_with_runtime(
                             info,
                             s.probe_data
                                 .as_ref(),
+                            s.runtime,
                         ) == MatchOutcome::Match
                     })
             })
@@ -717,6 +829,16 @@ fn auto_name(filter: &StreamFilter) -> String {
                     } else {
                         vec![format!("{} addons", values.len())]
                     }
+                }
+                StreamRule::SubtitleLanguage { values, .. } => values
+                    .iter()
+                    .map(|c| format!("{} subs", language_label(c)))
+                    .collect(),
+                StreamRule::Bitrate { op, value } => {
+                    vec![format_bitrate_rule(*op, *value)]
+                }
+                StreamRule::Cached { value } => {
+                    vec![if *value { "Cached" } else { "Uncached" }.to_string()]
                 }
             };
             if labels.is_empty() {
@@ -1257,5 +1379,390 @@ mod tests {
         let unknown = stream_media(None);
         let known = stream_media(Some("Movie.2024.1080p.WEBRip.mkv"));
         assert!(known.quality_weight() > unknown.quality_weight());
+    }
+
+    fn group_with(rules: Vec<StreamRule>, match_mode: FilterMatchMode) -> StreamGroup {
+        StreamGroup {
+            id: Uuid::nil(),
+            name: "new rules".to_string(),
+            filter: StreamFilter { match_mode, rules },
+            priority: 0,
+            enabled: true,
+            hidden: false,
+            created_at: String::new(),
+        }
+    }
+
+    fn subtitle_rule(op: SetOp, langs: &[&str]) -> StreamRule {
+        StreamRule::SubtitleLanguage {
+            op,
+            values: langs
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+        }
+    }
+
+    fn probe_with_tracks(audio: &[&str], subs: &[&str]) -> crate::api::MediaSourceInfo {
+        use crate::api::MediaStream;
+        let track = |type_, lang: &&str| MediaStream {
+            type_: Some(type_),
+            language: Some(lang.to_string()),
+            ..Default::default()
+        };
+        crate::api::MediaSourceInfo {
+            media_streams: audio
+                .iter()
+                .map(|l| track(MediaStreamType::Audio, l))
+                .chain(
+                    subs.iter()
+                        .map(|l| track(MediaStreamType::Subtitle, l)),
+                )
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn subtitle_language_matches_an_embedded_subtitle_track() {
+        let group = group_with(
+            vec![subtitle_rule(SetOp::In, &["por"])],
+            FilterMatchMode::All,
+        );
+        let outcome = |probe| group.match_outcome(&info("a.mkv"), Some(&probe));
+        assert_eq!(
+            outcome(probe_with_tracks(&["eng"], &["por", "eng"])),
+            MatchOutcome::Match
+        );
+        // An audio track in the language is not a subtitle track.
+        assert_eq!(
+            outcome(probe_with_tracks(&["por"], &["eng"])),
+            MatchOutcome::NoMatch
+        );
+        // Unspecified languages never count.
+        assert_eq!(
+            outcome(probe_with_tracks(&[], &["und", "mul"])),
+            MatchOutcome::NoMatch
+        );
+        // Terminologic codes are normalised like audio languages.
+        let french = group_with(
+            vec![subtitle_rule(SetOp::In, &["fra"])],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            french
+                .match_outcome(&info("a.mkv"), Some(&probe_with_tracks(&[], &["fre"]))),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn subtitle_language_not_in_excludes_streams_that_have_it() {
+        let group = group_with(
+            vec![subtitle_rule(SetOp::NotIn, &["por"])],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            group
+                .match_outcome(&info("a.mkv"), Some(&probe_with_tracks(&[], &["por"]))),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            group
+                .match_outcome(&info("a.mkv"), Some(&probe_with_tracks(&[], &["eng"]))),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn subtitle_language_without_probe_data_passes_through_unless_advertised() {
+        let group = group_with(
+            vec![subtitle_rule(SetOp::In, &["por"])],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            group.match_outcome(&info("a.mkv"), None),
+            MatchOutcome::PassThrough
+        );
+
+        let mut advertised = info("a.mkv");
+        advertised
+            .subtitles
+            .push(crate::sdks::stremio::Subtitle {
+                id: "1".to_string(),
+                url: "https://example.test/pt.srt".to_string(),
+                lang: Some("por".to_string()),
+                ..Default::default()
+            });
+        assert_eq!(group.match_outcome(&advertised, None), MatchOutcome::Match);
+    }
+
+    #[test]
+    fn audio_and_subtitle_rules_combine() {
+        let group = group_with(
+            vec![
+                StreamRule::AudioLanguage {
+                    op: SetOp::In,
+                    values: vec!["eng".to_string()],
+                },
+                subtitle_rule(SetOp::In, &["por"]),
+            ],
+            FilterMatchMode::All,
+        );
+        let outcome = |probe| group.match_outcome(&info("a.mkv"), Some(&probe));
+        assert_eq!(
+            outcome(probe_with_tracks(&["eng"], &["por"])),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            outcome(probe_with_tracks(&["eng"], &["eng"])),
+            MatchOutcome::NoMatch
+        );
+        assert_eq!(
+            outcome(probe_with_tracks(&["por"], &["por"])),
+            MatchOutcome::NoMatch
+        );
+    }
+
+    fn bitrate_group(op: NumericOp, value: i64) -> StreamGroup {
+        group_with(
+            vec![StreamRule::Bitrate { op, value }],
+            FilterMatchMode::All,
+        )
+    }
+
+    #[test]
+    fn bitrate_uses_the_probed_bitrate() {
+        let probe = crate::api::MediaSourceInfo {
+            bitrate: Some(8_000_000),
+            ..Default::default()
+        };
+        let outcome = |op, value| {
+            bitrate_group(op, value).match_outcome(&info("a.mkv"), Some(&probe))
+        };
+        assert_eq!(outcome(NumericOp::Gt, 5_000_000), MatchOutcome::Match);
+        assert_eq!(outcome(NumericOp::Lt, 5_000_000), MatchOutcome::NoMatch);
+        assert_eq!(outcome(NumericOp::Eq, 8_000_000), MatchOutcome::Match);
+        assert_eq!(outcome(NumericOp::NotEq, 8_000_000), MatchOutcome::NoMatch);
+    }
+
+    #[test]
+    fn bitrate_is_estimated_from_size_and_runtime_for_unprobed_streams() {
+        // 4 GB over one hour is about 8.9 Mbps.
+        let stream = info_with_size("a.mkv", Some(4_000_000_000));
+        let group = bitrate_group(NumericOp::Lt, 5_000_000);
+        assert_eq!(
+            group.match_outcome_with_runtime(&stream, None, Some(3600)),
+            MatchOutcome::NoMatch
+        );
+        let group = bitrate_group(NumericOp::Gt, 5_000_000);
+        assert_eq!(
+            group.match_outcome_with_runtime(&stream, None, Some(3600)),
+            MatchOutcome::Match
+        );
+
+        // The probed runtime wins over the item's.
+        let probe = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(7200 * 10_000_000),
+            ..Default::default()
+        };
+        let low = bitrate_group(NumericOp::Lt, 5_000_000);
+        assert_eq!(
+            low.match_outcome_with_runtime(&stream, Some(&probe), Some(3600)),
+            MatchOutcome::Match,
+            "4 GB over the probed two hours is about 4.4 Mbps"
+        );
+    }
+
+    #[test]
+    fn bitrate_that_cannot_be_worked_out_passes_through() {
+        let group = bitrate_group(NumericOp::Lt, 5_000_000);
+        // No size, no probe.
+        assert_eq!(
+            group.match_outcome_with_runtime(&info("a.mkv"), None, Some(3600)),
+            MatchOutcome::PassThrough
+        );
+        // Size but no runtime anywhere.
+        assert_eq!(
+            group.match_outcome(&info_with_size("a.mkv", Some(4_000_000_000)), None),
+            MatchOutcome::PassThrough
+        );
+        // A zero runtime must not divide by zero.
+        assert_eq!(
+            group.match_outcome_with_runtime(
+                &info_with_size("a.mkv", Some(4_000_000_000)),
+                None,
+                Some(0)
+            ),
+            MatchOutcome::PassThrough
+        );
+    }
+
+    fn info_cached(cached: Option<bool>) -> StreamInfo {
+        StreamInfo {
+            service_cached: cached,
+            ..info("a.mkv")
+        }
+    }
+
+    #[test]
+    fn cached_rule_matches_only_confirmed_cache_state() {
+        let only_cached = group_with(
+            vec![StreamRule::Cached { value: true }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            only_cached.match_outcome(&info_cached(Some(true)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            only_cached.match_outcome(&info_cached(Some(false)), None),
+            MatchOutcome::NoMatch
+        );
+        let only_uncached = group_with(
+            vec![StreamRule::Cached { value: false }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            only_uncached.match_outcome(&info_cached(Some(false)), None),
+            MatchOutcome::Match
+        );
+        assert_eq!(
+            only_uncached.match_outcome(&info_cached(Some(true)), None),
+            MatchOutcome::NoMatch
+        );
+    }
+
+    #[test]
+    fn cached_rule_passes_through_when_cache_state_is_unknown() {
+        for value in [true, false] {
+            let group =
+                group_with(vec![StreamRule::Cached { value }], FilterMatchMode::All);
+            assert_eq!(
+                group.match_outcome(&info_cached(None), None),
+                MatchOutcome::PassThrough
+            );
+        }
+    }
+
+    #[test]
+    fn auto_name_describes_the_new_rules() {
+        let filter = StreamFilter {
+            match_mode: FilterMatchMode::All,
+            rules: vec![
+                subtitle_rule(SetOp::In, &["por"]),
+                StreamRule::Bitrate {
+                    op: NumericOp::Lt,
+                    value: 8_000_000,
+                },
+                StreamRule::Cached { value: true },
+            ],
+        };
+        assert_eq!(auto_name(&filter), "Portuguese subs · < 8.00 Mbps · Cached");
+        let uncached = StreamFilter {
+            match_mode: FilterMatchMode::All,
+            rules: vec![StreamRule::Cached { value: false }],
+        };
+        assert_eq!(auto_name(&uncached), "Uncached");
+    }
+
+    #[test]
+    fn bitrate_keeps_fractional_seconds_of_the_probed_runtime() {
+        // 5 MB over 3.5 s is 11.43 Mbps; truncating to 3 s would say 13.33.
+        let stream = info_with_size("a.mkv", Some(5_000_000));
+        let probe = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(35_000_000),
+            ..Default::default()
+        };
+        let group = bitrate_group(NumericOp::Lt, 12_000_000);
+        assert_eq!(
+            group.match_outcome(&stream, Some(&probe)),
+            MatchOutcome::Match
+        );
+    }
+
+    fn nameless_info() -> StreamInfo {
+        StreamInfo {
+            descriptor: StreamDescriptor::default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn metadata_rules_are_evaluated_for_streams_without_a_parseable_name() {
+        // Cache state, bitrate, size, subtitles and addon don't depend on a
+        // release name, so a nameless stream must still be judged by them.
+        let cached = StreamInfo {
+            service_cached: Some(false),
+            ..nameless_info()
+        };
+        let only_cached = group_with(
+            vec![StreamRule::Cached { value: true }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            only_cached.match_outcome(&cached, None),
+            MatchOutcome::NoMatch
+        );
+        let not_cached = group_with(
+            vec![StreamRule::Cached { value: false }],
+            FilterMatchMode::All,
+        );
+        assert_eq!(not_cached.match_outcome(&cached, None), MatchOutcome::Match);
+
+        let sized = StreamInfo {
+            size: Some(35_000_000_000),
+            ..nameless_info()
+        };
+        assert_eq!(
+            group_size(NumericOp::Gt, 20_000_000_000).match_outcome(&sized, None),
+            MatchOutcome::Match
+        );
+
+        let subs = group_with(
+            vec![subtitle_rule(SetOp::In, &["por"])],
+            FilterMatchMode::All,
+        );
+        assert_eq!(
+            subs.match_outcome(
+                &nameless_info(),
+                Some(&probe_with_tracks(&[], &["por"]))
+            ),
+            MatchOutcome::Match
+        );
+    }
+
+    #[test]
+    fn name_based_rules_still_pass_through_for_streams_without_a_name() {
+        let group = group_1080p_bluray();
+        assert_eq!(
+            group.match_outcome(&nameless_info(), None),
+            MatchOutcome::PassThrough
+        );
+        // A name-based rule can't veto what a metadata rule already settled
+        // in `any` mode, but it also can't make an `all` group match.
+        let mixed = group_with(
+            vec![
+                StreamRule::Resolution {
+                    op: SetOp::In,
+                    values: vec![StreamResolution::R1080p],
+                },
+                StreamRule::Cached { value: true },
+            ],
+            FilterMatchMode::All,
+        );
+        let cached = StreamInfo {
+            service_cached: Some(true),
+            ..nameless_info()
+        };
+        assert_eq!(
+            mixed.match_outcome(&cached, None),
+            MatchOutcome::PassThrough
+        );
+        let uncached = StreamInfo {
+            service_cached: Some(false),
+            ..nameless_info()
+        };
+        assert_eq!(mixed.match_outcome(&uncached, None), MatchOutcome::NoMatch);
     }
 }

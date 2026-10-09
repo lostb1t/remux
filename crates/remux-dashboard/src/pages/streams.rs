@@ -6,11 +6,11 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    common_audio_languages, format_size_rule, language_label, AddonDto,
-    CreateStreamGroup, CreateStreamGroupRequest, DeleteStreamGroup, FilterMatchMode,
-    GetStreamGroupPreview, GetSystemConfiguration, ListAddons, ListStreamGroups,
-    NumericOp, ServerConfiguration, SetOp, StreamCodec, StreamFilter, StreamGroupDto,
-    StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
+    common_audio_languages, format_bitrate_rule, format_size_rule, language_label,
+    AddonDto, CreateStreamGroup, CreateStreamGroupRequest, DeleteStreamGroup,
+    FilterMatchMode, GetStreamGroupPreview, GetSystemConfiguration, ListAddons,
+    ListStreamGroups, NumericOp, ServerConfiguration, SetOp, StreamCodec, StreamFilter,
+    StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     UpdateStreamGroup, UpdateStreamGroupRequest, UpdateSystemConfiguration,
 };
 use uuid::Uuid;
@@ -29,20 +29,29 @@ pub(crate) fn StreamRuleRow(
         StreamRule::Size { .. } => "size",
         StreamRule::AudioLanguage { .. } => "audio_language",
         StreamRule::Addon { .. } => "addon",
+        StreamRule::SubtitleLanguage { .. } => "subtitle_language",
+        StreamRule::Bitrate { .. } => "bitrate",
+        StreamRule::Cached { .. } => "cached",
     };
     let is_size = field_val == "size";
+    let is_numeric = is_size || field_val == "bitrate";
+    let is_cached = field_val == "cached";
     let op_not_in = match &rule {
         StreamRule::Resolution { op, .. }
         | StreamRule::Quality { op, .. }
         | StreamRule::Codec { op, .. }
         | StreamRule::AudioLanguage { op, .. }
+        | StreamRule::SubtitleLanguage { op, .. }
         | StreamRule::Addon { op, .. } => matches!(op, SetOp::NotIn),
-        StreamRule::Size { .. } => false,
+        StreamRule::Size { .. }
+        | StreamRule::Bitrate { .. }
+        | StreamRule::Cached { .. } => false,
     };
     let size_op = match &rule {
-        StreamRule::Size { op, .. } => Some(*op),
+        StreamRule::Size { op, .. } | StreamRule::Bitrate { op, .. } => Some(*op),
         _ => None,
     };
+    let cached_value = matches!(&rule, StreamRule::Cached { value: true });
 
     rsx! {
         div { style: "display:flex;align-items:flex-start;gap:6px",
@@ -60,6 +69,11 @@ pub(crate) fn StreamRuleRow(
                                 StreamRule::AudioLanguage { op: SetOp::In, values: vec![] }
                             }
                             "addon" => StreamRule::Addon { op: SetOp::In, values: vec![] },
+                            "subtitle_language" => {
+                                StreamRule::SubtitleLanguage { op: SetOp::In, values: vec![] }
+                            }
+                            "bitrate" => StreamRule::Bitrate { op: NumericOp::Gt, value: 0 },
+                            "cached" => StreamRule::Cached { value: true },
                             "size"   => StreamRule::Size { op: NumericOp::Gt, value: 0 },
                             _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
                         };
@@ -69,7 +83,10 @@ pub(crate) fn StreamRuleRow(
                 option { value: "quality",     selected: field_val == "quality",     "Quality" }
                 option { value: "codec",      selected: field_val == "codec",      "Codec" }
                 option { value: "size",       selected: is_size,                   "Size" }
+                option { value: "bitrate",    selected: field_val == "bitrate",    "Bitrate" }
                 option { value: "audio_language", selected: field_val == "audio_language", "Audio Language" }
+                option { value: "subtitle_language", selected: field_val == "subtitle_language", "Subtitle Language" }
+                option { value: "cached",     selected: is_cached,                "Cached" }
                 option { value: "addon", selected: field_val == "addon", "Addon" }
             }
             // Operator selector
@@ -78,16 +95,24 @@ pub(crate) fn StreamRuleRow(
                 style: "flex:1",
                 onchange: move |e| {
                     if let Some(r) = rules.write().get_mut(idx) {
-                        if is_size {
+                        if is_numeric {
                             let new_op = match e.value().as_str() {
                                 "lt"     => NumericOp::Lt,
                                 "eq"     => NumericOp::Eq,
                                 "not_eq" => NumericOp::NotEq,
                                 _        => NumericOp::Gt,
                             };
-                            if let StreamRule::Size { value, .. } = r.clone() {
-                                *r = StreamRule::Size { op: new_op, value };
+                            match r.clone() {
+                                StreamRule::Size { value, .. } => {
+                                    *r = StreamRule::Size { op: new_op, value };
+                                }
+                                StreamRule::Bitrate { value, .. } => {
+                                    *r = StreamRule::Bitrate { op: new_op, value };
+                                }
+                                _ => {}
                             }
+                        } else if is_cached {
+                            *r = StreamRule::Cached { value: e.value() == "true" };
                         } else {
                             let new_op = if e.value() == "not_in" { SetOp::NotIn } else { SetOp::In };
                             *r = match r.clone() {
@@ -95,17 +120,23 @@ pub(crate) fn StreamRuleRow(
                                 StreamRule::Quality { values, .. }     => StreamRule::Quality { op: new_op, values },
                                 StreamRule::Codec { values, .. }      => StreamRule::Codec  { op: new_op, values },
                                 StreamRule::AudioLanguage { values, .. } => StreamRule::AudioLanguage { op: new_op, values },
+                                StreamRule::SubtitleLanguage { values, .. } => StreamRule::SubtitleLanguage { op: new_op, values },
                                 StreamRule::Addon { values, .. } => StreamRule::Addon { op: new_op, values },
-                                StreamRule::Size { .. } => unreachable!("is_size branch handles Size"),
+                                other @ (StreamRule::Size { .. }
+                                | StreamRule::Bitrate { .. }
+                                | StreamRule::Cached { .. }) => other,
                             };
                         }
                     }
                 },
-                if is_size {
+                if is_numeric {
                     option { value: "gt",     selected: size_op == Some(NumericOp::Gt),    ">" }
                     option { value: "lt",     selected: size_op == Some(NumericOp::Lt),    "<" }
                     option { value: "eq",     selected: size_op == Some(NumericOp::Eq),    "=" }
                     option { value: "not_eq", selected: size_op == Some(NumericOp::NotEq), "≠" }
+                } else if is_cached {
+                    option { value: "true",  selected: cached_value,  "Cached" }
+                    option { value: "false", selected: !cached_value, "Not cached" }
                 } else {
                     option { value: "in",     selected: !op_not_in, "In" }
                     option { value: "not_in", selected:  op_not_in, "Not in" }
@@ -142,6 +173,68 @@ pub(crate) fn StreamRuleRow(
                                     },
                                 }
                                 "GiB"
+                            }
+                        }
+                    }
+                } else if field_val == "bitrate" {
+                    {
+                        // Stored as bits per second; the field shows Mbps.
+                        let mbps = match &rule {
+                            StreamRule::Bitrate { value, .. } => *value as f64 / 1_000_000.0,
+                            _ => 0.0,
+                        };
+                        let mbps_str = format!("{mbps:.2}");
+                        rsx! {
+                            label { style: "display:flex;align-items:center;gap:4px;font-size:.82rem",
+                                input {
+                                    r#type: "number",
+                                    class: "select-input",
+                                    style: "width:90px",
+                                    step: "0.1",
+                                    min: "0",
+                                    value: "{mbps_str}",
+                                    onchange: move |e| {
+                                        let bps = (e.value().parse::<f64>().unwrap_or(0.0)
+                                            * 1_000_000.0)
+                                            .round() as i64;
+                                        if let Some(r) = rules.write().get_mut(idx) {
+                                            if let StreamRule::Bitrate { op, .. } = r.clone() {
+                                                *r = StreamRule::Bitrate { op, value: bps };
+                                            }
+                                        }
+                                    },
+                                }
+                                "Mbps"
+                            }
+                        }
+                    }
+                } else if is_cached {
+                    span { style: "font-size:.78rem;color:var(--text-muted)",
+                        "Streams whose cache state is unknown are left out of the group."
+                    }
+                } else if field_val == "subtitle_language" {
+                    div { style: "display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%",
+                        for (code, name) in common_audio_languages() {
+                            {
+                                let code = code.to_string();
+                                let checked = match &rule {
+                                    StreamRule::SubtitleLanguage { values, .. } => values.contains(&code),
+                                    _ => false,
+                                };
+                                rsx! {
+                                    label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                        Switch {
+                                            checked,
+                                            on_change: move |v| {
+                                                if let Some(StreamRule::SubtitleLanguage { values, .. }) = rules.write().get_mut(idx) {
+                                                    if v { if !values.contains(&code) { values.push(code.clone()); } }
+                                                    else { values.retain(|c| c != &code); }
+                                                }
+                                            },
+                                        }
+                                        "{name}"
+                                    }
+                                }
                             }
                         }
                     }
@@ -529,6 +622,16 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                                             }
                                                             StreamRule::Size { op, value } => {
                                                                 (format_size_rule(*op, *value), false, "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::SubtitleLanguage { op, values } => {
+                                                                let lbl = values.iter().map(|c| format!("{} subs", language_label(c))).collect::<Vec<_>>().join("/");
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Bitrate { op, value } => {
+                                                                (format_bitrate_rule(*op, *value), false, "background:rgba(245,158,11,.12);color:rgb(217,119,6);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Cached { value } => {
+                                                                ((if *value { "Cached" } else { "Not cached" }).to_string(), false, "background:rgba(16,185,129,.12);color:rgb(5,150,105);padding:1px 6px;border-radius:4px")
                                                             }
                                                             StreamRule::Addon { op, values } => {
                                                                 let known = addons.read();
