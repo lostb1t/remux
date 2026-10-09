@@ -4769,7 +4769,7 @@ impl Media {
                 }
 
                 if let Some(ref f) = filter.policy_filter {
-                    apply_filter_rules(
+                    apply_policy_filter_rules(
                         qb,
                         f,
                         filter
@@ -5440,7 +5440,7 @@ impl Media {
                     }
                     cc_qb.push(")");
                     if let Some(pf) = child_policy_filter {
-                        apply_filter_rules(
+                        apply_policy_filter_rules(
                             &mut cc_qb,
                             pf,
                             filter
@@ -5492,7 +5492,7 @@ impl Media {
                         pl_qb.push(
                             ") AND right_media_id IN (SELECT id FROM media WHERE 1=1",
                         );
-                        apply_filter_rules(
+                        apply_policy_filter_rules(
                             &mut pl_qb,
                             pf,
                             filter
@@ -5609,7 +5609,7 @@ impl Media {
                         );
                     }
                     if let Some(pf) = child_policy_filter {
-                        apply_filter_rules(
+                        apply_policy_filter_rules(
                             &mut qb,
                             pf,
                             filter
@@ -8293,7 +8293,7 @@ fn push_genre_count_scope<'a>(
     }
     if let Some(pf) = &filter.policy_filter {
         qb.push(" AND m.id IN (SELECT media.id FROM media WHERE 1=1");
-        apply_filter_rules(
+        apply_policy_filter_rules(
             qb,
             pf,
             filter
@@ -8452,6 +8452,41 @@ pub fn apply_filter_rules(
         qb.push(")");
     }
     qb.push(")");
+}
+
+/// [`apply_filter_rules`] for a user's *policy* filter. Policy `CollectionId`
+/// rules hide collection rows from browse views (`collection_visibility_filters`);
+/// they never describe media, whose ids are never collection ids, so applying
+/// them here would match nothing and empty every content query.
+fn apply_policy_filter_rules(
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    policy: &remux_sdks::remux::CollectionFilter,
+    user_id: Option<&Uuid>,
+    skip_watched_true: bool,
+) {
+    use remux_sdks::remux::FilterRule;
+
+    let media_rules = remux_sdks::remux::CollectionFilter {
+        match_mode: policy
+            .match_mode
+            .clone(),
+        groups: policy
+            .groups
+            .iter()
+            .map(|g| remux_sdks::remux::FilterGroup {
+                match_mode: g
+                    .match_mode
+                    .clone(),
+                rules: g
+                    .rules
+                    .iter()
+                    .filter(|r| !matches!(r, FilterRule::CollectionId { .. }))
+                    .cloned()
+                    .collect(),
+            })
+            .collect(),
+    };
+    apply_filter_rules(qb, &media_rules, user_id, skip_watched_true);
 }
 
 /// Build a self-contained SQL fragment string from a `CollectionFilter`.
@@ -8794,11 +8829,19 @@ fn filter_rule_to_sql(
         // No-op regardless of content so any rule already saved in a user's
         // policy stops being applied rather than half-working.
         R::CollectionMember { .. } => None,
-        // No-op on content items: CollectionId in a policy filter hides the
-        // collection row itself from browse views (handled by
-        // collection_visibility_filters / container_only path), not content.
-        // Applying media.id IN (collection_ids) to content would always return
-        // empty because content item IDs never match collection UUIDs.
+        // Matches a collection row by its own id: how a smart collection of
+        // collections picks its members. A user *policy* uses the same rule to
+        // hide collections, but never through here — see
+        // `apply_policy_filter_rules` and `collection_visibility_filters`.
+        R::CollectionId { op, ids } if !ids.is_empty() => {
+            let in_clause = ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((format!("media.id IN ({in_clause})"), negated))
+        }
         R::CollectionId { .. } => None,
         R::Favorite { value } => {
             let user_clause = user_id
@@ -12520,5 +12563,169 @@ mod genre_ids_filter_tests {
                     && s.unplayed_item_count == Some(1)),
             "every series should have one (unplayed) episode"
         );
+    }
+
+    async fn save_titled(db: &sqlx::SqlitePool, title: &str, kind: MediaKind) -> Uuid {
+        let collection_kind =
+            (kind == MediaKind::Collection).then_some(CollectionKind::Manual);
+        let external_ids = if kind == MediaKind::Collection {
+            ExternalIds::default()
+        } else {
+            ExternalIds {
+                imdb: NonEmptyString::try_new(format!(
+                    "tt_{}",
+                    title.replace(' ', "_")
+                ))
+                .ok(),
+                ..Default::default()
+            }
+        };
+        let mut m = Media {
+            title: title.to_string(),
+            kind,
+            collection_kind,
+            external_ids,
+            ..Default::default()
+        };
+        m.save(db)
+            .await
+            .unwrap();
+        m.id
+    }
+
+    fn collection_id_filter(
+        op: remux_sdks::remux::SetOp,
+        ids: Vec<Uuid>,
+    ) -> remux_sdks::remux::CollectionFilter {
+        remux_sdks::remux::CollectionFilter {
+            groups: vec![remux_sdks::remux::FilterGroup {
+                rules: vec![remux_sdks::remux::FilterRule::CollectionId { op, ids }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    async fn titles_of(db: &sqlx::SqlitePool, filter: MediaFilter) -> Vec<String> {
+        Media::get_by_filter(db, &filter)
+            .await
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    /// A smart collection of collections picks its members by collection id.
+    #[tokio::test]
+    async fn smart_collection_of_collections_selects_members_by_collection_id() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let a = save_titled(db, "Pick A", MediaKind::Collection).await;
+        let b = save_titled(db, "Pick B", MediaKind::Collection).await;
+        save_titled(db, "Leave C", MediaKind::Collection).await;
+
+        let titles = titles_of(
+            db,
+            MediaFilter {
+                kind: Some(vec![MediaKind::Collection]),
+                filter_rules: Some(collection_id_filter(
+                    remux_sdks::remux::SetOp::In,
+                    vec![a, b],
+                )),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut got = titles.clone();
+        got.sort();
+        assert_eq!(got, vec!["Pick A", "Pick B"], "{titles:?}");
+    }
+
+    /// A user policy's collection rule hides collection rows; it must never
+    /// be applied to media, whose ids are never collection ids (#588).
+    #[tokio::test]
+    async fn policy_collection_rule_does_not_filter_content() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        save_titled(db, "Policy Movie One", MediaKind::Movie).await;
+        save_titled(db, "Policy Movie Two", MediaKind::Movie).await;
+        let some_collection =
+            save_titled(db, "Some Collection", MediaKind::Collection).await;
+
+        for op in [
+            remux_sdks::remux::SetOp::In,
+            remux_sdks::remux::SetOp::NotIn,
+        ] {
+            let titles = titles_of(
+                db,
+                MediaFilter {
+                    kind: Some(vec![MediaKind::Movie]),
+                    policy_filter: Some(collection_id_filter(
+                        op,
+                        vec![some_collection],
+                    )),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(
+                titles.contains(&"Policy Movie One".to_string()),
+                "{titles:?}"
+            );
+            assert!(
+                titles.contains(&"Policy Movie Two".to_string()),
+                "{titles:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_collection_rule_still_hides_and_allows_collection_rows() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let shown = save_titled(db, "Shown Collection", MediaKind::Collection).await;
+        let hidden = save_titled(db, "Hidden Collection", MediaKind::Collection).await;
+
+        let hide = titles_of(
+            db,
+            MediaFilter {
+                kind: Some(vec![MediaKind::Collection]),
+                policy_filter: Some(collection_id_filter(
+                    remux_sdks::remux::SetOp::NotIn,
+                    vec![hidden],
+                )),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(hide.contains(&"Shown Collection".to_string()), "{hide:?}");
+        assert!(!hide.contains(&"Hidden Collection".to_string()), "{hide:?}");
+
+        let only = titles_of(
+            db,
+            MediaFilter {
+                kind: Some(vec![MediaKind::Collection]),
+                policy_filter: Some(collection_id_filter(
+                    remux_sdks::remux::SetOp::In,
+                    vec![shown],
+                )),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(only, vec!["Shown Collection"], "{only:?}");
     }
 }
