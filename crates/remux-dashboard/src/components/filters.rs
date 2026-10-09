@@ -758,6 +758,7 @@ pub fn FilterRuleRow(
     rule: FilterRule,
     rules: Signal<Vec<FilterRule>>,
     #[props(default)] allowed_fields: Vec<&'static str>,
+    #[props(default)] hidden_fields: Vec<&'static str>,
 ) -> Element {
     let app_state = use_context::<AppState>();
     let (field_val, op_val, value_val) = rule_to_raw(&rule);
@@ -922,7 +923,8 @@ pub fn FilterRuleRow(
     };
 
     let show_field = move |key: &'static str| {
-        allowed_fields.is_empty() || allowed_fields.contains(&key)
+        (allowed_fields.is_empty() || allowed_fields.contains(&key))
+            && !hidden_fields.contains(&key)
     };
 
     let field_style = if hide_operator {
@@ -1159,6 +1161,7 @@ fn FilterGroupRow(
     group: FilterGroup,
     groups: Signal<Vec<FilterGroup>>,
     #[props(default)] allowed_fields: Vec<&'static str>,
+    #[props(default)] hidden_fields: Vec<&'static str>,
 ) -> Element {
     let default_new_rule = if let Some(&first) = allowed_fields.first() {
         let default_op = ops_for_field(first)
@@ -1251,6 +1254,7 @@ fn FilterGroupRow(
                             rule: rule.clone(),
                             rules,
                             allowed_fields: allowed_fields.clone(),
+                            hidden_fields: hidden_fields.clone(),
                         }
                     }
                 }
@@ -1274,6 +1278,8 @@ pub fn FilterRuleEditor(
     match_mode: Signal<FilterMatchMode>,
     groups: Signal<Vec<FilterGroup>>,
     #[props(default)] allowed_fields: Vec<&'static str>,
+    #[props(default)] hidden_fields: Vec<&'static str>,
+    #[props(default = "Media Filters")] title: &'static str,
 ) -> Element {
     let has_multiple = groups
         .read()
@@ -1285,7 +1291,7 @@ pub fn FilterRuleEditor(
 
             // Header: title + group combiner (only shown when >1 group)
             div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:10px",
-                label { class: "field-label", style: "margin:0", "Media Filters" }
+                label { class: "field-label", style: "margin:0", "{title}" }
                 if has_multiple {
                     div { style: "display:flex;align-items:center;gap:6px",
                         span { style: "font-size:0.8rem;color:var(--text-muted)", "Combine groups" }
@@ -1312,6 +1318,7 @@ pub fn FilterRuleEditor(
                         group,
                         groups,
                         allowed_fields: allowed_fields.clone(),
+                        hidden_fields: hidden_fields.clone(),
                     }
                 }
             }
@@ -1324,6 +1331,51 @@ pub fn FilterRuleEditor(
                     groups.write().push(FilterGroup::default());
                 },
                 "+ Add group"
+            }
+        }
+    }
+}
+
+/// A flat list of collection rules ("collection is / is not ..."). Unlike media
+/// filters these never touch media items. For a user policy the server reads
+/// every collection rule regardless of grouping, so one flat list is enough.
+#[component]
+pub fn CollectionRuleEditor(
+    rules: Signal<Vec<FilterRule>>,
+    hint: &'static str,
+) -> Element {
+    let default_op = ops_for_field("collection_id")
+        .first()
+        .map(|(v, _)| *v)
+        .unwrap_or("");
+    rsx! {
+        div {
+            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
+            label { class: "field-label", style: "margin:0 0 4px", "Collection Filters" }
+            p { class: "field-hint", style: "margin:0 0 10px", "{hint}" }
+            div { style: "display:flex;flex-direction:column;gap:0",
+                for (idx, rule) in rules.read().iter().enumerate() {
+                    div { key: "{idx}",
+                        if idx > 0 {
+                            div { style: "height:1px;background:var(--border);margin:6px 0;opacity:0.5" }
+                        }
+                        FilterRuleRow {
+                            idx,
+                            rule: rule.clone(),
+                            rules,
+                            allowed_fields: vec!["collection_id"],
+                        }
+                    }
+                }
+            }
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "font-size:0.82rem;margin-top:6px",
+                onclick: move |_| {
+                    rules.write().push(raw_to_rule("collection_id", default_op, ""));
+                },
+                "+ Add rule"
             }
         }
     }
