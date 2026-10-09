@@ -150,9 +150,28 @@ async fn create_hls_session(
     {
         existing
     } else {
-        // Fetch media info to get the stream URL
-        let media_source_id = q
-            .media_source_id
+        // Fetch media info to get the stream URL. Follow the stream
+        // PlaybackInfo selected (probe fallback, auto-play ranking) exactly
+        // like the static stream endpoint, so the session runs on the stream
+        // whose probe data the client was given.
+        let selected =
+            crate::services::stream_service::StreamService::probe_fallback_stream_id(
+                &state.ctx,
+                Some(
+                    &auth
+                        .device
+                        .id,
+                ),
+                id,
+                q.media_source_id,
+                q.play_session_id
+                    .as_deref(),
+            );
+        if let Some(selected) = selected {
+            debug!(%selected, media_source_id = ?q.media_source_id, "HLS session follows PlaybackInfo selection");
+        }
+        let media_source_id = selected
+            .or(q.media_source_id)
             .unwrap_or(id);
         let media = db::Media::get_by_id(
             &state
@@ -1547,5 +1566,62 @@ mod tests {
         // fMP4 now also uses synthetic VOD playlist — full seek bar from the start.
         assert!(!super::should_serve_ffmpeg_variant_playlist(false, true, 0));
         assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
+    }
+
+    /// After a probe fallback the client may still name the stream whose
+    /// probe failed. The HLS session must follow PlaybackInfo's selection
+    /// like the static stream endpoint does, or it runs on a stream with no
+    /// probe data and advertises the wrong codec (avc1 + TS for HEVC).
+    #[tokio::test]
+    async fn hls_session_follows_playback_info_selection() {
+        use http::header::HeaderValue;
+
+        use crate::integration_test::{
+            auth_header_with_token, authenticated_server, seed_probe_fallback,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let fixture = seed_probe_fallback(ctx, &token, "hls-selection", "hevc").await;
+        let (owner, rejected) = (&fixture.owner, &fixture.rejected);
+
+        let response = server
+            .get(&format!(
+                "/videos/{}/master.m3u8?MediaSourceId={}&PlaySessionId=hls-selection",
+                owner.id, rejected.id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .await;
+        response.assert_status_ok();
+        let playlist = response.text();
+        assert!(playlist.contains("hvc1."), "{playlist}");
+        assert!(!playlist.contains("avc1"), "{playlist}");
+
+        let session = ctx
+            .sessions
+            .get_transcode("hls-selection")
+            .expect("HLS session");
+        let session = session
+            .read()
+            .await;
+        assert_eq!(
+            session.input_url,
+            fixture
+                .fallback_path
+                .to_string_lossy()
+        );
+        assert_eq!(
+            session
+                .source_video_codec
+                .as_deref(),
+            Some("hevc")
+        );
+        drop(session);
+        ctx.sessions
+            .stop_transcode("hls-selection")
+            .await;
     }
 }

@@ -64,14 +64,12 @@ use axum_anyhow::ApiResult as Result;
 struct SourceExtras {
     /// The source id its DeliveryUrls were built with, and its sidecar routes.
     subtitle_routes: (Uuid, Vec<SidecarSubtitleRoute>),
-    /// Set when the source is a stream-group representative — group order is
-    /// an explicit, admin-authored priority (drag-and-drop in the dashboard),
-    /// not something a device-capability sort should second-guess.
-    group_id: Option<Uuid>,
-    /// Whether extraction is feasible varies per source (a local file vs. a
-    /// remote debrid/torrent release of the same item), so the ranking pass
-    /// needs it per source, not just for the main transcode decision.
-    allow_subtitle_extraction: bool,
+    /// The candidate stream as listed.
+    stream_id: Uuid,
+    /// The stream probed for the candidate; differs from `stream_id` after a
+    /// probe fallback. Recorded for the source that plays so every playback
+    /// endpoint serves the stream this answer describes.
+    effective_stream_id: Uuid,
     /// Background extraction to start if this ends up the source that plays.
     /// Never started for the other candidates: on a remote source it reads
     /// the whole file.
@@ -381,6 +379,40 @@ async fn items_playbackinfo_inner(
     let playback_permissions =
         PlaybackPermissions::for_user(&cfg.encoding_cfg, Some(&session.user));
 
+    // Rank sources by how well they match the device's capabilities (transcode
+    // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio
+    // quality, embedded subs) so the auto-play source is the best version.
+    // The probe step orders candidates with it before probing, so the source
+    // listed first is the one that gets a real probe. `None` keeps addon order.
+    let sort_mode = probe_cfg
+        .sort_media_sources
+        .unwrap_or_default();
+    // Same combination as `max_bitrate` above, but derived from
+    // `sort_device_profile` (fresh-with-persisted-fallback) so this ranking
+    // pass's own bitrate cap is consistent with the resolution/codec
+    // judgments it's already making from that same profile.
+    let sort_max_bitrate: Option<i64> = match (
+        q.max_streaming_bitrate,
+        sort_device_profile
+            .as_ref()
+            .and_then(|p| p.max_streaming_bitrate),
+    ) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let ranking = (sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled)
+        .then(|| SourceRankingContext {
+            mode: sort_mode,
+            device_profile: sort_device_profile.as_ref(),
+            is_4k_capable: session
+                .device
+                .is_4k_capable
+                == Some(true),
+            subtitle_mode,
+            explicit_subtitle_index: q.subtitle_stream_index,
+            max_bitrate: sort_max_bitrate,
+        });
+
     let port = state
         .ctx
         .config
@@ -397,7 +429,7 @@ async fn items_playbackinfo_inner(
                 .load(media)
                 .await?;
             service
-                .probe_candidates()
+                .probe_candidates(ranking)
                 .await
         },
         async {
@@ -450,7 +482,6 @@ async fn items_playbackinfo_inner(
             .as_ref()
             .is_some_and(|item| item.is_track());
     let has_lyrics = is_track;
-    service.save_probe_fallback(&play_session_id, &probed);
     let specific_stream_requested = probed.specific_requested;
     let mut media_sources = Vec::with_capacity(
         probed
@@ -786,8 +817,8 @@ async fn items_playbackinfo_inner(
 
         source_extras.push(SourceExtras {
             subtitle_routes: (subtitle_source_id, routes),
-            group_id: stream.group_id,
-            allow_subtitle_extraction,
+            stream_id: stream.id,
+            effective_stream_id: effective_stream.id,
             subtitle_prefetch,
         });
         media_sources.push(source);
@@ -826,59 +857,6 @@ async fn items_playbackinfo_inner(
         );
     }
 
-    // Rank sources by how well they match the device's capabilities (transcode
-    // cost, observed or explicitly supported 4K, HDR tier, bit depth, audio quality, embedded subs)
-    // so the auto-play source below is the best version, not just the first
-    // one probed. `source_extras` is permuted in lockstep so it stays aligned
-    // with `media_sources`.
-    let sort_mode = probe_cfg
-        .sort_media_sources
-        .unwrap_or_default();
-    if sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled
-        && source_extras
-            .iter()
-            .all(|e| {
-                e.group_id
-                    .is_none()
-            })
-    {
-        // Same combination as `max_bitrate` above, but derived from
-        // `sort_device_profile` (fresh-with-persisted-fallback) so this
-        // ranking pass's own bitrate cap is consistent with the resolution/
-        // codec judgments it's already making from that same profile.
-        let sort_max_bitrate: Option<i64> = match (
-            q.max_streaming_bitrate,
-            sort_device_profile
-                .as_ref()
-                .and_then(|p| p.max_streaming_bitrate),
-        ) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        let ranking = SourceRankingContext {
-            mode: sort_mode,
-            device_profile: sort_device_profile.as_ref(),
-            is_4k_capable: session
-                .device
-                .is_4k_capable
-                == Some(true),
-            subtitle_mode,
-            explicit_subtitle_index: q.subtitle_stream_index,
-            max_bitrate: sort_max_bitrate,
-        };
-        let mut paired: Vec<_> = media_sources
-            .drain(..)
-            .zip(source_extras.drain(..))
-            .collect();
-        StreamService::rank_sources(&mut paired, ranking, |(source, extras)| {
-            (source.clone(), extras.allow_subtitle_extraction)
-        });
-        for (source, extras) in paired {
-            media_sources.push(source);
-            source_extras.push(extras);
-        }
-    }
-
     // Only the source that will actually play gets a background extraction.
     let selected_idx = if specific_stream_requested {
         q.media_source_id
@@ -891,6 +869,17 @@ async fn items_playbackinfo_inner(
     } else {
         0
     };
+    if let Some(extras) = source_extras.get(selected_idx) {
+        service.save_probe_fallback(
+            &play_session_id,
+            &session
+                .device
+                .id,
+            specific_stream_requested,
+            extras.stream_id,
+            extras.effective_stream_id,
+        );
+    }
     if let Some(prefetch) = source_extras
         .get_mut(selected_idx)
         .and_then(|e| {
@@ -1114,6 +1103,12 @@ pub async fn items_file(
                 .user
                 .id,
         ),
+        Some(
+            session
+                .device
+                .id
+                .clone(),
+        ),
         id,
         q,
     )
@@ -1131,24 +1126,27 @@ pub async fn items_file(
 
 /// These routes have no session extractor — clients like Infuse hit them
 /// without a `PlaySessionId`/`DeviceId`, and must still work with no token at
-/// all. Resolve the caller's user_id best-effort from whatever `ApiKey`/
-/// `Token` is present (never rejecting the request) so per-user cache
-/// scoping (e.g. `recent_probe_fallback`) still works when a valid token
-/// happens to be there.
-async fn best_effort_user_id(
+/// all. Resolve the caller's user and device best-effort from whatever
+/// `ApiKey`/`Token` is present (never rejecting the request) so per-device
+/// cache scoping (e.g. `recent_probe_fallback_for`) still works when a valid
+/// token happens to be there. An API key has a user but no device.
+async fn best_effort_caller(
     state: &AppState,
     jfauth: &auth::JellyfinAuthHeader,
-) -> Option<Uuid> {
-    let token = jfauth
+) -> (Option<Uuid>, Option<String>) {
+    let db = &state
+        .ctx
+        .db;
+    let Some(token) = jfauth
         .token
-        .as_deref()?;
-    auth::resolve_user_id_from_token(
-        &state
-            .ctx
-            .db,
-        token,
-    )
-    .await
+        .as_deref()
+    else {
+        return (None, None);
+    };
+    if let Ok(Some(device)) = auth::Device::get_by_access_token(db, token).await {
+        return (Some(device.user_id), Some(device.id));
+    }
+    (auth::resolve_user_id_from_token(db, token).await, None)
 }
 
 /// # Static
@@ -1163,8 +1161,8 @@ pub async fn audio_stream(
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    let user_id = best_effort_user_id(&state, &jfauth).await;
-    videos_stream_inner(headers, state, user_id, id, q).await
+    let (user_id, device_id) = best_effort_caller(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, device_id, id, q).await
 }
 
 #[get("/audio/{id}/stream.{container}")]
@@ -1180,8 +1178,8 @@ pub async fn audio_stream_by_container(
     {
         q.container = Some(container);
     }
-    let user_id = best_effort_user_id(&state, &jfauth).await;
-    videos_stream_inner(headers, state, user_id, id, q).await
+    let (user_id, device_id) = best_effort_caller(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, device_id, id, q).await
 }
 
 #[get("/videos/{id}/stream")]
@@ -1192,8 +1190,8 @@ pub async fn videos_stream(
     Path(id): Path<Uuid>,
     Query(q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    let user_id = best_effort_user_id(&state, &jfauth).await;
-    videos_stream_inner(headers, state, user_id, id, q).await
+    let (user_id, device_id) = best_effort_caller(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, device_id, id, q).await
 }
 
 #[get("/videos/{id}/stream.{container}")]
@@ -1209,8 +1207,8 @@ pub async fn videos_stream_by_container(
     {
         q.container = Some(container);
     }
-    let user_id = best_effort_user_id(&state, &jfauth).await;
-    videos_stream_inner(headers, state, user_id, id, q).await
+    let (user_id, device_id) = best_effort_caller(&state, &jfauth).await;
+    videos_stream_inner(headers, state, user_id, device_id, id, q).await
 }
 
 fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
@@ -1278,6 +1276,7 @@ async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
     user_id: Option<Uuid>,
+    device_id: Option<String>,
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
@@ -1293,30 +1292,19 @@ async fn videos_stream_inner(
         None
     };
 
-    // Follow the stream that PlaybackInfo actually probed. A client may echo
-    // the item ID, group ID, or original stream ID even after probe fallback;
-    // resolving that ID directly would serve the rejected stream instead.
-    let probe_fallback = q
-        .play_session_id
-        .as_deref()
-        .and_then(|psid| {
-            StreamService::probe_fallback_for(
-                &state.ctx,
-                psid,
-                q.media_source_id
-                    .unwrap_or(id),
-            )
-        })
-        .or_else(|| {
-            StreamService::recent_probe_fallback_for(
-                &state.ctx,
-                user_id,
-                id,
-                q.media_source_id
-                    .unwrap_or(id),
-            )
-        });
-    let requested_id = probe_fallback.or(q.media_source_id);
+    // Follow the stream PlaybackInfo selected. A client may echo the item
+    // ID, group ID, or original stream ID even after probe fallback;
+    // resolving that ID directly would serve a different stream than the
+    // one whose media info the client was given.
+    let selected = StreamService::probe_fallback_stream_id(
+        &state.ctx,
+        device_id.as_deref(),
+        id,
+        q.media_source_id,
+        q.play_session_id
+            .as_deref(),
+    );
+    let requested_id = selected.or(q.media_source_id);
     let media = StreamService::lookup(
         &state.ctx,
         id,
@@ -2190,80 +2178,12 @@ mod tests {
 
     #[tokio::test]
     async fn direct_stream_without_play_session_uses_probe_fallback() {
-        use crate::{
-            integration_test::seed_movie,
-            services::stream_service::{
-                ProbeResult, ProbedStreams, StreamService, StreamServiceConfig,
-            },
-            stream::StreamDescriptor,
-        };
+        use crate::integration_test::seed_probe_fallback;
 
         let (server, guard, token) = authenticated_server().await;
-        let ctx = &guard.0;
-        let owner = seed_movie(ctx).await;
-        let temp = tempfile::tempdir().unwrap();
-        let rejected_path = temp
-            .path()
-            .join("rejected.mkv");
-        let fallback_path = temp
-            .path()
-            .join("fallback.mkv");
-        tokio::fs::write(&rejected_path, b"wrong stream")
-            .await
-            .unwrap();
-        tokio::fs::write(&fallback_path, b"fallback stream")
-            .await
-            .unwrap();
-
-        let mut rejected = insert_test_source(ctx).await;
-        rejected
-            .stream_info
-            .as_mut()
-            .unwrap()
-            .descriptor = StreamDescriptor::Local(rejected_path);
-        rejected
-            .save(&ctx.db)
-            .await
-            .unwrap();
-        let mut fallback = insert_test_source(ctx).await;
-        fallback
-            .stream_info
-            .as_mut()
-            .unwrap()
-            .descriptor = StreamDescriptor::Local(fallback_path);
-        fallback
-            .save(&ctx.db)
-            .await
-            .unwrap();
-
-        // The recent-fallback cache is scoped by user; save it under the same
-        // user the request below authenticates as, exactly like PlaybackInfo
-        // (which always has a real session) would.
-        let requester_id =
-            crate::db::auth::Device::get_by_access_token(&ctx.db, &token)
-                .await
-                .unwrap()
-                .unwrap()
-                .user_id;
-        let service = StreamService::new(StreamServiceConfig {
-            ctx: ctx.clone(),
-            item_id: owner.id,
-            requested_id: Some(rejected.id),
-            show_ungrouped: true,
-            stream_filter: None,
-            user_id: Some(requester_id),
-        });
-        service.save_probe_fallback(
-            "playbackinfo-session",
-            &ProbedStreams {
-                results: vec![ProbeResult {
-                    source: super::api::MediaSourceInfo::from(rejected.clone()),
-                    stream: rejected.clone(),
-                    effective_stream: fallback.clone(),
-                }],
-                specific_requested: true,
-            },
-        );
+        let fixture =
+            seed_probe_fallback(&guard.0, &token, "playbackinfo-session", "h264").await;
+        let (owner, rejected) = (&fixture.owner, &fixture.rejected);
 
         // Infuse omits PlaySessionId and DeviceId, and sends the rejected ID.
         let response = server
