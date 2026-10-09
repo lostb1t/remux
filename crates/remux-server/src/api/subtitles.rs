@@ -89,6 +89,14 @@ struct ExtractableSubtitle {
     /// Whether ffmpeg is known to convert this stream's codec. An unknown
     /// one aborts a whole batch, so it's only ever extracted on its own.
     known_codec: bool,
+    /// ffmpeg's `s:N` ordinal of this stream among all embedded subtitle streams.
+    ordinal: usize,
+    /// Video size to give the decoder, set only for `mov_text` (TX3G). Its font
+    /// sizes are in video pixels, but without a size ffmpeg writes the ASS
+    /// header as 384x288, so players draw the text several times too large.
+    /// No other subtitle decoder accepts these options — ffmpeg aborts the
+    /// whole run if they are passed for one.
+    canvas: Option<(i64, i64)>,
 }
 
 /// How long an extraction may run before it's killed and its partial output
@@ -200,6 +208,14 @@ fn extractable_subtitles(
         })
         .collect();
     embedded.sort_by_key(|s| s.index);
+    let video_size = probe
+        .media_streams
+        .iter()
+        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+        .and_then(|s| match (s.width, s.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+            _ => None,
+        });
     embedded
         .into_iter()
         .enumerate()
@@ -217,6 +233,10 @@ fn extractable_subtitles(
                 ffmpeg_codec: subtitle_cache_ffmpeg_codec(&cache_codec, source_codec),
                 cache_codec,
                 known_codec,
+                ordinal,
+                canvas: video_size.filter(|_| {
+                    source_codec.is_some_and(|c| c.eq_ignore_ascii_case("mov_text"))
+                }),
             };
             let cache_codec = subtitle_cache_codec(source_codec.unwrap_or(""));
             let mut outputs = vec![output(cache_codec.clone())];
@@ -292,6 +312,21 @@ fn build_subtitle_extraction_args(
             .iter()
             .map(|s| s.to_string()),
     );
+    // One stream can have several outputs (e.g. SRT and ASS); size it once.
+    let mut sized: Vec<usize> = Vec::new();
+    for s in streams {
+        if let Some((width, height)) = s.canvas
+            && !sized.contains(&s.ordinal)
+        {
+            sized.push(s.ordinal);
+            args.extend([
+                format!("-width:s:{}", s.ordinal),
+                width.to_string(),
+                format!("-height:s:{}", s.ordinal),
+                height.to_string(),
+            ]);
+        }
+    }
     args.push("-i".to_string());
     args.push(input_url.to_string());
     let mut cache_paths = Vec::with_capacity(streams.len());
@@ -2442,6 +2477,142 @@ mod tests {
                         .to_string()
                 ),
                 "the final cache path must never be passed to ffmpeg directly: {args:?}"
+            );
+        }
+    }
+
+    fn sub_stream(index: i64, codec: &str) -> api::MediaStream {
+        api::MediaStream {
+            index,
+            type_: Some(api::MediaStreamType::Subtitle),
+            codec: Some(codec.into()),
+            ..Default::default()
+        }
+    }
+
+    fn video_stream(width: Option<i64>, height: Option<i64>) -> api::MediaStream {
+        api::MediaStream {
+            index: 0,
+            type_: Some(api::MediaStreamType::Video),
+            codec: Some("h264".into()),
+            width,
+            height,
+            ..Default::default()
+        }
+    }
+
+    fn extraction_args(
+        source: &api::MediaSourceInfo,
+        requested: Option<(i64, &api::SubtitleCodec)>,
+    ) -> Vec<String> {
+        let streams = extractable_subtitles(source, requested);
+        build_subtitle_extraction_args(
+            std::path::Path::new("/tmp/remux-subtitle-test"),
+            "/mnt/media/movie.mp4",
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &streams,
+        )
+        .expect("arg construction should not fail for a valid path")
+        .0
+    }
+
+    #[test]
+    fn mov_text_gets_the_video_size_so_ass_matches_the_picture() {
+        let source = source_with_subtitles(vec![
+            video_stream(Some(1920), Some(1080)),
+            sub_stream(1, "hdmv_pgs_subtitle"),
+            sub_stream(2, "mov_text"),
+        ]);
+        let args = extraction_args(&source, None);
+
+        // The PGS stream takes ordinal 0, so the mov_text stream is 0:s:1.
+        let at = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+        };
+        let width = at("-width:s:1").expect("expected a per-stream width");
+        assert_eq!(args[width + 1], "1920");
+        let height = at("-height:s:1").expect("expected a per-stream height");
+        assert_eq!(args[height + 1], "1080");
+        let input = at("-i").unwrap();
+        assert!(
+            width < input && height < input,
+            "options must precede -i: {args:?}"
+        );
+    }
+
+    #[test]
+    fn only_mov_text_streams_get_the_video_size() {
+        // Any other subtitle decoder rejects width/height and ffmpeg aborts the
+        // whole run, so the flags must never leak onto them.
+        let source = source_with_subtitles(vec![
+            video_stream(Some(1920), Some(1080)),
+            sub_stream(1, "subrip"),
+            sub_stream(2, "ass"),
+            sub_stream(3, "webvtt"),
+        ]);
+        let args = extraction_args(&source, None);
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("-width") || a.starts_with("-height")),
+            "no size flags for non-mov_text streams: {args:?}"
+        );
+
+        let mixed = source_with_subtitles(vec![
+            video_stream(Some(1280), Some(720)),
+            sub_stream(1, "subrip"),
+            sub_stream(2, "mov_text"),
+        ]);
+        let args = extraction_args(&mixed, None);
+        let flags: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("-width") || a.starts_with("-height"))
+            .collect();
+        assert_eq!(flags, ["-width:s:1", "-height:s:1"]);
+    }
+
+    #[test]
+    fn mov_text_is_sized_once_even_with_several_outputs() {
+        let source = source_with_subtitles(vec![
+            video_stream(Some(1920), Some(1080)),
+            sub_stream(1, "mov_text"),
+        ]);
+        let ass = api::SubtitleCodec::Ass;
+        let args = extraction_args(&source, Some((1, &ass)));
+        let maps = args
+            .iter()
+            .filter(|a| a.as_str() == "-map")
+            .count();
+        assert_eq!(maps, 2, "SRT and ASS outputs from one stream: {args:?}");
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.starts_with("-width"))
+                .count(),
+            1,
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn mov_text_without_a_known_video_size_gets_no_size_flags() {
+        for video in [
+            None,
+            Some(video_stream(None, None)),
+            Some(video_stream(Some(1920), None)),
+            Some(video_stream(Some(0), Some(0))),
+        ] {
+            let mut streams: Vec<api::MediaStream> = video
+                .into_iter()
+                .collect();
+            streams.push(sub_stream(1, "mov_text"));
+            let args = extraction_args(&source_with_subtitles(streams), None);
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.starts_with("-width") || a.starts_with("-height")),
+                "{args:?}"
             );
         }
     }
