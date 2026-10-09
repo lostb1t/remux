@@ -4788,27 +4788,7 @@ impl Media {
             // LIMIT/OFFSET and count_qb's total stays accurate.
             if container_only {
                 if let Some(ref pf) = filter.policy_filter {
-                    let (deny, allow) = collection_visibility_filters(pf);
-                    if let Some(allow) = &allow {
-                        if allow.is_empty() {
-                            qb.push(" AND 0");
-                        } else {
-                            qb.push(" AND media.id IN (");
-                            let mut sep = qb.separated(", ");
-                            for id in allow {
-                                sep.push_bind(*id);
-                            }
-                            qb.push(")");
-                        }
-                    }
-                    if !deny.is_empty() {
-                        qb.push(" AND media.id NOT IN (");
-                        let mut sep = qb.separated(", ");
-                        for id in &deny {
-                            sep.push_bind(*id);
-                        }
-                        qb.push(")");
-                    }
+                    push_collection_visibility(qb, pf);
                 }
             }
         }
@@ -5617,6 +5597,14 @@ impl Media {
                                 .as_ref(),
                             false,
                         );
+                        // A smart collection of collections: members the user's
+                        // policy hides must not be counted either.
+                        if kinds
+                            .as_deref()
+                            .is_some_and(kinds_are_container_only)
+                        {
+                            push_collection_visibility(&mut qb, pf);
+                        }
                     }
                 }
                 match qb
@@ -8181,6 +8169,51 @@ pub fn push_release_date_filter(
         .push(format!(
             " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
         ));
+    }
+}
+
+/// Whether every kind is a container (collection, folder or playlist), i.e. the
+/// query lists containers rather than media items.
+fn kinds_are_container_only(kinds: &[MediaKind]) -> bool {
+    !kinds.is_empty()
+        && kinds
+            .iter()
+            .all(|k| {
+                matches!(
+                    k,
+                    MediaKind::Collection | MediaKind::Folder | MediaKind::Playlist
+                )
+            })
+}
+
+/// Pushes the `AND ...` clauses that restrict container rows to the ones a
+/// user's policy lets them see (`CollectionId` allow and hide rules). Shared by
+/// the container listing and the smart collection child counts, so a count never
+/// includes a collection the listing hides.
+fn push_collection_visibility(
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    policy: &remux_sdks::remux::CollectionFilter,
+) {
+    let (deny, allow) = collection_visibility_filters(policy);
+    if let Some(allow) = &allow {
+        if allow.is_empty() {
+            qb.push(" AND 0");
+        } else {
+            qb.push(" AND media.id IN (");
+            let mut sep = qb.separated(", ");
+            for id in allow {
+                sep.push_bind(*id);
+            }
+            qb.push(")");
+        }
+    }
+    if !deny.is_empty() {
+        qb.push(" AND media.id NOT IN (");
+        let mut sep = qb.separated(", ");
+        for id in &deny {
+            sep.push_bind(*id);
+        }
+        qb.push(")");
     }
 }
 
@@ -12727,5 +12760,67 @@ mod genre_ids_filter_tests {
         )
         .await;
         assert_eq!(only, vec!["Shown Collection"], "{only:?}");
+    }
+
+    /// The child count of a smart collection of collections must match what
+    /// opening it shows: members the user's policy hides are not counted.
+    #[tokio::test]
+    async fn smart_collection_child_count_excludes_collections_the_policy_hides() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let a = save_titled(db, "Count A", MediaKind::Collection).await;
+        let b = save_titled(db, "Count B", MediaKind::Collection).await;
+        let mut parent = Media {
+            title: "Smart Parent".to_string(),
+            kind: MediaKind::Collection,
+            collection_kind: Some(CollectionKind::Smart),
+            collection_media_kind: Some(CollectionMediaKind::Collection),
+            collection_smart_filter: Some(collection_id_filter(
+                remux_sdks::remux::SetOp::In,
+                vec![a, b],
+            )),
+            ..Default::default()
+        };
+        parent
+            .save(db)
+            .await
+            .unwrap();
+
+        let count_with = |policy: Option<remux_sdks::remux::CollectionFilter>| {
+            let parent_id = parent.id;
+            async move {
+                Media::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        id: Some(vec![parent_id]),
+                        kind: Some(vec![MediaKind::Collection]),
+                        include_child_count: true,
+                        policy_filter: policy,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .records
+                .into_iter()
+                .next()
+                .and_then(|m| m.child_count)
+            }
+        };
+
+        assert_eq!(count_with(None).await, Some(2));
+        assert_eq!(
+            count_with(Some(collection_id_filter(
+                remux_sdks::remux::SetOp::NotIn,
+                vec![b]
+            )))
+            .await,
+            Some(1),
+            "the hidden member must not be counted"
+        );
     }
 }
