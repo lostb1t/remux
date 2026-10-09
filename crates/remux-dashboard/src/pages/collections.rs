@@ -314,7 +314,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
 
         if let Some(mode) = form_mode.read().clone() {
             div { class: "modal-backdrop",
-                div { class: "modal",
+                div { class: "modal modal--filters",
                     CollectionForm {
                         mode,
                         app_state: app_state.clone(),

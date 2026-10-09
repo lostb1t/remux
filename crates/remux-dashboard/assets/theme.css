@@ -1575,6 +1575,11 @@ html, body {
   width: 600px;
 }
 
+/* Modals hosting the filter rule editor, whose rows need more room. */
+.modal--filters {
+  width: min(720px, calc(100vw - 32px));
+}
+
 /* ── Addon list cards ───────────────────────────────────────────── */
 .addon-card {
   padding: 12px 14px;
@@ -1907,10 +1912,11 @@ html, body {
 }
 
 .chip-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   min-width: 0;
+  /* Wrap instead of truncating: catalog chips are "addon — catalog" and the
+     informative part comes after the long addon name; touch has no hover. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chip-remove {

@@ -149,7 +149,7 @@ pub fn UsersPage(app_state: AppState) -> Element {
 
         if let Some(mode) = form_mode.read().clone() {
             div { class: "modal-backdrop",
-                div { class: "modal",
+                div { class: "modal modal--filters",
                     UserForm {
                         mode,
                         app_state: app_state.clone(),
