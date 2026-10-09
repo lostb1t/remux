@@ -2,9 +2,9 @@ use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     AddonDto, AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
-    FilterMatchMode, GetUserAddons, GetUsers, ListAddons, SetUserAddons, StreamFilter,
-    StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration, UpdateUserPolicy,
-    UserConfiguration, UserDto,
+    FilterMatchMode, FilterRule, GetUserAddons, GetUsers, ListAddons, SetUserAddons,
+    StreamFilter, StreamRule, SubtitleMode, UpdateUser, UpdateUserConfiguration,
+    UpdateUserPolicy, UserConfiguration, UserDto,
 };
 use uuid::Uuid;
 
@@ -215,20 +215,19 @@ pub fn UserForm(
             })
             .unwrap_or(FilterMatchMode::All)
     });
-    let fr_groups: Signal<Vec<FilterGroup>> = use_signal(|| {
+    // Collection rules (which collections the user sees) are edited apart from
+    // the media filters; they are stored together in the policy's one filter.
+    let (media_groups, collection_rules) = split_collection_rules(
         existing
             .as_ref()
             .and_then(|u| {
                 u.policy
                     .filter_rules
                     .as_ref()
-            })
-            .map(|f| {
-                f.groups
-                    .clone()
-            })
-            .unwrap_or_else(|| vec![FilterGroup::default()])
-    });
+            }),
+    );
+    let fr_groups: Signal<Vec<FilterGroup>> = use_signal(|| media_groups);
+    let cf_rules: Signal<Vec<FilterRule>> = use_signal(|| collection_rules);
     let sf_stream_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
@@ -431,6 +430,9 @@ pub fn UserForm(
         let groups_snapshot = fr_groups
             .peek()
             .clone();
+        let collection_rules_snapshot = cf_rules
+            .peek()
+            .clone();
         let match_snapshot = fr_match
             .peek()
             .clone();
@@ -465,6 +467,8 @@ pub fn UserForm(
         saving.set(true);
         err.set(None);
         spawn(async move {
+            let groups_snapshot =
+                merge_collection_rules(groups_snapshot, collection_rules_snapshot);
             let has_rules = groups_snapshot
                 .iter()
                 .any(|g| {
@@ -915,6 +919,11 @@ pub fn UserForm(
             FilterRuleEditor {
                 match_mode: fr_match,
                 groups: fr_groups,
+                hidden_fields: vec!["collection_id"],
+            }
+            CollectionRuleEditor {
+                rules: cf_rules,
+                hint: "Choose which collections this user sees in their library. Items in a hidden collection stay visible everywhere else.",
             }
 
             div { style: "margin-top:10px",
@@ -944,5 +953,192 @@ pub fn UserForm(
                 }
             }
         }
+    }
+}
+
+/// Splits a policy filter into the media groups and the flat list of collection
+/// rules, so each can be edited on its own. A group left with no media rules by
+/// the split is dropped; an empty group the user added themselves is kept.
+fn split_collection_rules(
+    filter: Option<&CollectionFilter>,
+) -> (Vec<FilterGroup>, Vec<FilterRule>) {
+    let Some(filter) = filter else {
+        return (vec![FilterGroup::default()], Vec::new());
+    };
+    let is_collection = |r: &FilterRule| matches!(r, FilterRule::CollectionId { .. });
+    let groups: Vec<FilterGroup> = filter
+        .groups
+        .iter()
+        .filter_map(|g| {
+            let rules: Vec<FilterRule> = g
+                .rules
+                .iter()
+                .filter(|r| !is_collection(r))
+                .cloned()
+                .collect();
+            (!rules.is_empty()
+                || g.rules
+                    .is_empty())
+            .then(|| FilterGroup {
+                match_mode: g
+                    .match_mode
+                    .clone(),
+                rules,
+            })
+        })
+        .collect();
+    let collection_rules = filter
+        .groups
+        .iter()
+        .flat_map(|g| {
+            g.rules
+                .iter()
+        })
+        .filter(|r| is_collection(r))
+        .cloned()
+        .collect();
+    (
+        if groups.is_empty() {
+            vec![FilterGroup::default()]
+        } else {
+            groups
+        },
+        collection_rules,
+    )
+}
+
+/// Inverse of [`split_collection_rules`]: the collection rules go back into the
+/// policy as one extra group. The server collects them across all groups and
+/// skips groups that have no media rules, so this doesn't change media filtering.
+fn merge_collection_rules(
+    mut groups: Vec<FilterGroup>,
+    collection_rules: Vec<FilterRule>,
+) -> Vec<FilterGroup> {
+    if !collection_rules.is_empty() {
+        groups.push(FilterGroup {
+            match_mode: FilterMatchMode::All,
+            rules: collection_rules,
+        });
+    }
+    groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remux_sdks::remux::SetOp;
+
+    fn collection(id: u128) -> FilterRule {
+        FilterRule::CollectionId {
+            op: SetOp::NotIn,
+            ids: vec![Uuid::from_u128(id)],
+        }
+    }
+
+    fn genre(name: &str) -> FilterRule {
+        FilterRule::Genre {
+            op: SetOp::In,
+            values: vec![name.to_string()],
+        }
+    }
+
+    #[test]
+    fn collection_rules_move_out_of_the_media_groups() {
+        let filter = CollectionFilter {
+            match_mode: FilterMatchMode::Any,
+            groups: vec![
+                FilterGroup {
+                    match_mode: FilterMatchMode::All,
+                    rules: vec![genre("Drama"), collection(1)],
+                },
+                FilterGroup {
+                    match_mode: FilterMatchMode::Any,
+                    rules: vec![collection(2)],
+                },
+            ],
+        };
+        let (groups, collections) = split_collection_rules(Some(&filter));
+        assert_eq!(
+            groups.len(),
+            1,
+            "the collection-only group moves out entirely"
+        );
+        assert_eq!(groups[0].rules, vec![genre("Drama")]);
+        assert_eq!(groups[0].match_mode, FilterMatchMode::All);
+        assert_eq!(collections, vec![collection(1), collection(2)]);
+    }
+
+    #[test]
+    fn no_filter_gives_one_empty_media_group_and_no_collection_rules() {
+        let (groups, collections) = split_collection_rules(None);
+        assert_eq!(groups, vec![FilterGroup::default()]);
+        assert!(collections.is_empty());
+
+        // Only collection rules: the media editor still gets an empty group.
+        let only_collections = CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup {
+                match_mode: FilterMatchMode::All,
+                rules: vec![collection(1)],
+            }],
+        };
+        let (groups, collections) = split_collection_rules(Some(&only_collections));
+        assert_eq!(groups, vec![FilterGroup::default()]);
+        assert_eq!(collections, vec![collection(1)]);
+    }
+
+    #[test]
+    fn an_empty_group_the_user_added_is_kept() {
+        let filter = CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup::default(), FilterGroup::default()],
+        };
+        let (groups, _) = split_collection_rules(Some(&filter));
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn splitting_then_merging_loses_no_rules() {
+        let filter = CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![
+                FilterGroup {
+                    match_mode: FilterMatchMode::Any,
+                    rules: vec![genre("Drama"), genre("Comedy"), collection(1)],
+                },
+                FilterGroup {
+                    match_mode: FilterMatchMode::All,
+                    rules: vec![collection(2), collection(3)],
+                },
+            ],
+        };
+        let (groups, collections) = split_collection_rules(Some(&filter));
+        let merged = merge_collection_rules(groups, collections);
+        let all_rules: Vec<&FilterRule> = merged
+            .iter()
+            .flat_map(|g| {
+                g.rules
+                    .iter()
+            })
+            .collect();
+        for rule in [
+            genre("Drama"),
+            genre("Comedy"),
+            collection(1),
+            collection(2),
+            collection(3),
+        ] {
+            assert!(all_rules.contains(&&rule), "lost {rule:?}");
+        }
+        assert_eq!(all_rules.len(), 5);
+        // The media group keeps its own match mode.
+        assert_eq!(merged[0].match_mode, FilterMatchMode::Any);
+        assert_eq!(merged[0].rules, vec![genre("Drama"), genre("Comedy")]);
+    }
+
+    #[test]
+    fn merging_without_collection_rules_adds_no_group() {
+        let groups = vec![FilterGroup::default()];
+        assert_eq!(merge_collection_rules(groups.clone(), Vec::new()), groups);
     }
 }
