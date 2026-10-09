@@ -7043,6 +7043,17 @@ pub fn language_label(code: &str) -> String {
         .unwrap_or_else(|| code.to_string())
 }
 
+/// Human-readable label for a [`StreamRule::Bitrate`] condition, e.g. `"> 8.00 Mbps"`.
+pub fn format_bitrate_rule(op: NumericOp, value: i64) -> String {
+    let sym = match op {
+        NumericOp::Eq => "=",
+        NumericOp::NotEq => "≠",
+        NumericOp::Gt => ">",
+        NumericOp::Lt => "<",
+    };
+    format!("{sym} {:.2} Mbps", value as f64 / 1_000_000.0)
+}
+
 /// Human-readable label for a [`StreamRule::Size`] condition, e.g. `"> 18.63 GiB"`.
 pub fn format_size_rule(op: NumericOp, value: i64) -> String {
     let sym = match op {
@@ -7095,6 +7106,27 @@ pub enum StreamRule {
     Addon {
         op: SetOp,
         values: Vec<Uuid>,
+    },
+    /// Subtitle track language (ISO 639-2/B code). Matches if any embedded
+    /// subtitle stream in `probe_data`, or any subtitle the stream itself
+    /// advertises, has a listed language. With neither a match nor probe data
+    /// the stream passes the rule so unprobed sources are not silently dropped.
+    SubtitleLanguage {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    /// Overall bitrate in bits per second: the probed bitrate, or the stream's
+    /// size over its runtime. A stream whose bitrate can't be worked out passes
+    /// the rule so it isn't silently dropped.
+    Bitrate {
+        op: NumericOp,
+        value: i64,
+    },
+    /// Whether the upstream service confirmed the stream is cached (`true`), or
+    /// confirmed it is not (`false`). A stream with no cache information
+    /// passes the rule so it isn't silently dropped.
+    Cached {
+        value: bool,
     },
 }
 
@@ -7652,6 +7684,40 @@ mod tests {
         assert_eq!(format_size_rule(NumericOp::Lt, v), "< 20.00 GiB");
         assert_eq!(format_size_rule(NumericOp::Eq, v), "= 20.00 GiB");
         assert_eq!(format_size_rule(NumericOp::NotEq, v), "≠ 20.00 GiB");
+    }
+
+    #[test]
+    fn format_bitrate_rule_shows_megabits() {
+        assert_eq!(format_bitrate_rule(NumericOp::Gt, 8_000_000), "> 8.00 Mbps");
+        assert_eq!(format_bitrate_rule(NumericOp::Lt, 2_500_000), "< 2.50 Mbps");
+    }
+
+    #[test]
+    fn new_stream_rules_round_trip_through_json() {
+        let rules = [
+            (
+                StreamRule::SubtitleLanguage {
+                    op: SetOp::In,
+                    values: vec!["por".to_string()],
+                },
+                serde_json::json!({"field": "subtitle_language", "op": "in", "values": ["por"]}),
+            ),
+            (
+                StreamRule::Bitrate {
+                    op: NumericOp::Lt,
+                    value: 8_000_000,
+                },
+                serde_json::json!({"field": "bitrate", "op": "lt", "value": 8_000_000}),
+            ),
+            (
+                StreamRule::Cached { value: true },
+                serde_json::json!({"field": "cached", "value": true}),
+            ),
+        ];
+        for (rule, json) in rules {
+            assert_eq!(serde_json::to_value(&rule).unwrap(), json);
+            assert_eq!(serde_json::from_value::<StreamRule>(json).unwrap(), rule);
+        }
     }
 
     #[test]
