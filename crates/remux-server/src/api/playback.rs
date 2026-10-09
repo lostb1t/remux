@@ -3442,6 +3442,62 @@ mod tests {
         );
     }
 
+    /// A camelCase body (as Streamyfin/MPV send it) with a 2 Mbps cap must force a
+    /// transcode of an 8 Mbps source even when the profile declares an
+    /// effectively unbounded bitrate and can direct play the container/codecs.
+    #[tokio::test]
+    async fn test_playbackinfo_camelcase_body_cap_forces_transcode() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "deviceProfile": {
+                    "Name": "1. MPV",
+                    "MaxStaticBitrate": 999_999_999i64,
+                    "MaxStreamingBitrate": 999_999_999i64,
+                    "CodecProfiles": [],
+                    "DirectPlayProfiles": [{
+                        "Type": "Video",
+                        "Container": "mp4,mkv",
+                        "VideoCodec": "h264,hevc",
+                        "AudioCodec": "aac,mp3"
+                    }],
+                    "TranscodingProfiles": [{
+                        "Type": "Video",
+                        "Context": "Streaming",
+                        "Protocol": "hls",
+                        "Container": "ts",
+                        "VideoCodec": "h264,hevc",
+                        "AudioCodec": "aac,mp3,ac3,dts",
+                        "MaxAudioChannels": "6"
+                    }],
+                    "SubtitleProfiles": []
+                },
+                "isPlayback": true,
+                "autoOpenLiveStream": true,
+                "maxStreamingBitrate": 2_000_000i64,
+                "audioStreamIndex": 0
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], false, "{source}");
+        assert_eq!(source["SupportsDirectStream"], false, "{source}");
+        let url = source["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(url.contains("MaxStreamingBitrate=2000000"), "{url}");
+    }
+
     /// `enable_direct_play: false` must force transcoding even with a matching
     /// direct-play profile.
     #[tokio::test]
