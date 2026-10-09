@@ -32,7 +32,7 @@ RUN apt-get update \
         > /etc/apt/sources.list.d/jellyfin.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        jellyfin-ffmpeg7 \
+        jellyfin-ffmpeg8 \
         python3 \
         python3-pip \
         libdrm2 \

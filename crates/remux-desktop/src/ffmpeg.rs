@@ -11,6 +11,10 @@ const FFPROBE_BIN: &str = "ffprobe.exe";
 #[cfg(not(target_os = "windows"))]
 const FFPROBE_BIN: &str = "ffprobe";
 
+/// Major jellyfin-ffmpeg version the app downloads and expects. Newer majors
+/// are only picked up deliberately, by changing this.
+const FFMPEG_MAJOR: u32 = 8;
+
 fn platform_suffix() -> Option<&'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     return Some("macarm64");
@@ -30,23 +34,37 @@ pub fn ffmpeg_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("bin")
 }
 
-/// Ensure ffmpeg/ffprobe are present in `{data_dir}/bin/`, downloading
-/// jellyfin-ffmpeg if needed. Sets FFMPEG_PATH and FFPROBE_PATH on success.
+/// Ensure ffmpeg/ffprobe from jellyfin-ffmpeg `FFMPEG_MAJOR` are present in
+/// `{data_dir}/bin/`, downloading (or upgrading) them if needed. Sets
+/// FFMPEG_PATH and FFPROBE_PATH on success.
 pub async fn ensure_ffmpeg(data_dir: &Path) -> Result<()> {
     let bin_dir = ffmpeg_dir(data_dir);
     let ffmpeg = bin_dir.join(FFMPEG_BIN);
     let ffprobe = bin_dir.join(FFPROBE_BIN);
 
-    if ffmpeg.exists() && ffprobe.exists() {
+    let installed = ffmpeg.exists() && ffprobe.exists();
+    if installed && installed_major(&ffmpeg).await == Some(FFMPEG_MAJOR) {
         set_paths(&ffmpeg, &ffprobe);
         return Ok(());
     }
 
-    tracing::info!("ffmpeg not found — downloading jellyfin-ffmpeg");
+    if installed {
+        tracing::info!(
+            "installed ffmpeg is not jellyfin-ffmpeg {FFMPEG_MAJOR} — upgrading"
+        );
+    } else {
+        tracing::info!("ffmpeg not found — downloading jellyfin-ffmpeg");
+    }
     std::fs::create_dir_all(&bin_dir)?;
 
     if let Err(e) = download(&bin_dir).await {
         tracing::warn!("jellyfin-ffmpeg download failed: {e:#}");
+        if installed {
+            // An older ffmpeg still transcodes; don't leave the user without one.
+            tracing::warn!("keeping the previously installed ffmpeg");
+            set_paths(&ffmpeg, &ffprobe);
+            return Ok(());
+        }
         if let Some((ff, ffp)) = system_ffmpeg() {
             tracing::info!(ffmpeg = %ff.display(), "falling back to system ffmpeg");
             set_paths(&ff, &ffp);
@@ -64,6 +82,67 @@ pub async fn ensure_ffmpeg(data_dir: &Path) -> Result<()> {
 
     set_paths(&ffmpeg, &ffprobe);
     Ok(())
+}
+
+/// Major version reported by `ffmpeg -version`, or `None` if it can't be run
+/// or parsed (treated as stale, so it gets replaced).
+async fn installed_major(ffmpeg: &Path) -> Option<u32> {
+    let mut cmd = tokio::process::Command::new(ffmpeg);
+    cmd.arg("-version")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    parse_ffmpeg_major(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parses `ffmpeg version 8.1.3-Jellyfin ...` (or a git tag like `n7.1`) to
+/// its major version. Snapshot builds (`N-12345-g...`) have none.
+fn parse_ffmpeg_major(version_output: &str) -> Option<u32> {
+    let token = version_output
+        .lines()
+        .next()?
+        .split_whitespace()
+        .skip_while(|word| *word != "version")
+        .nth(1)?;
+    let token = token
+        .strip_prefix('n')
+        .unwrap_or(token);
+    let digits: String = token
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if digits.is_empty() || !token[digits.len()..].starts_with('.') {
+        return None;
+    }
+    digits
+        .parse()
+        .ok()
+}
+
+/// Newest stable release (GitHub lists newest first) whose tag is `v{major}.…`.
+fn pick_release(
+    releases: &[serde_json::Value],
+    major: u32,
+) -> Option<&serde_json::Value> {
+    let prefix = format!("v{major}.");
+    releases
+        .iter()
+        .find(|release| {
+            !release["draft"]
+                .as_bool()
+                .unwrap_or(false)
+                && !release["prerelease"]
+                    .as_bool()
+                    .unwrap_or(false)
+                && release["tag_name"]
+                    .as_str()
+                    .is_some_and(|tag| tag.starts_with(&prefix))
+        })
 }
 
 fn system_ffmpeg() -> Option<(PathBuf, PathBuf)> {
@@ -105,13 +184,16 @@ async fn download(bin_dir: &Path) -> Result<()> {
         .user_agent("remux-desktop")
         .build()?;
 
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/jellyfin/jellyfin-ffmpeg/releases/latest")
+    let releases: Vec<serde_json::Value> = client
+        .get("https://api.github.com/repos/jellyfin/jellyfin-ffmpeg/releases?per_page=50")
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
+    let release = pick_release(&releases, FFMPEG_MAJOR).ok_or_else(|| {
+        anyhow::anyhow!("no jellyfin-ffmpeg {FFMPEG_MAJOR}.x release found")
+    })?;
 
     let assets = release["assets"]
         .as_array()
@@ -233,4 +315,47 @@ fn set_executable(bin_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_the_major_version_from_ffmpeg_output() {
+        let major = |s: &str| parse_ffmpeg_major(s);
+        assert_eq!(
+            major(
+                "ffmpeg version 8.1.3-Jellyfin Copyright (c) 2000-2026 the FFmpeg developers\nbuilt with clang"
+            ),
+            Some(8)
+        );
+        assert_eq!(major("ffmpeg version 7.1.3-Jellyfin Copyright"), Some(7));
+        assert_eq!(major("ffmpeg version n6.0.1 Copyright"), Some(6));
+        assert_eq!(major("ffmpeg version 10.0 Copyright"), Some(10));
+        // Snapshot builds carry no release number.
+        assert_eq!(major("ffmpeg version N-117534-g1234abc Copyright"), None);
+        assert_eq!(major("ffmpeg version 8 Copyright"), None);
+        assert_eq!(major("not ffmpeg at all"), None);
+        assert_eq!(major(""), None);
+    }
+
+    #[test]
+    fn picks_the_newest_stable_release_of_the_pinned_major() {
+        let releases = vec![
+            json!({"tag_name": "v9.0.0-1", "draft": false, "prerelease": false}),
+            json!({"tag_name": "v8.2.0-1", "draft": false, "prerelease": true}),
+            json!({"tag_name": "v8.1.3-1", "draft": true, "prerelease": false}),
+            json!({"tag_name": "v8.1.2-5", "draft": false, "prerelease": false}),
+            json!({"tag_name": "v8.1.2-4", "draft": false, "prerelease": false}),
+            json!({"tag_name": "v7.1.4-3", "draft": false, "prerelease": false}),
+        ];
+        let picked = pick_release(&releases, 8).expect("a v8 release");
+        assert_eq!(picked["tag_name"], "v8.1.2-5");
+        assert_eq!(pick_release(&releases, 7).unwrap()["tag_name"], "v7.1.4-3");
+        assert!(pick_release(&releases, 6).is_none());
+        // `v8.` must not match `v80.` style tags.
+        assert!(pick_release(&[json!({"tag_name": "v80.1-1"})], 8).is_none());
+    }
 }
