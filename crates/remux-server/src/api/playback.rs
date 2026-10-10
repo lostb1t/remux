@@ -413,6 +413,46 @@ async fn items_playbackinfo_inner(
             max_bitrate: sort_max_bitrate,
         });
 
+    // Per-user playback preferences + remembered selections, resolved per source
+    // via `MediaSourceInfo::resolve_default_streams` (see below). Ranking
+    // resolves with the same inputs, so it judges each source by the tracks
+    // this request will get.
+    let user_cfg = session
+        .user
+        .configuration
+        .as_ref()
+        .map(|c| {
+            c.0.clone()
+        })
+        .unwrap_or_default();
+    let server_subtitle_lang = probe_cfg
+        .preferred_metadata_language
+        .as_deref();
+    let (saved_audio, saved_subtitle) = load_saved_selections(
+        &state
+            .ctx
+            .db,
+        &session
+            .user
+            .id,
+        &id,
+    )
+    .await;
+    // The top-level item's language is only known after the subtitle fetch
+    // below; the resolved media's own is the same item whenever ranking has
+    // more than one candidate to order (no specific stream requested).
+    let ranking_original_language =
+        playback_original_language(None, selected_source_language.clone());
+    let ranking_prefs = crate::services::DefaultStreamPrefs {
+        user_cfg: &user_cfg,
+        server_metadata_language: server_subtitle_lang,
+        original_language: ranking_original_language.as_deref(),
+        requested_audio: q.audio_stream_index,
+        requested_subtitle: q.subtitle_stream_index,
+        remembered_audio: saved_audio,
+        remembered_subtitle: saved_subtitle,
+    };
+
     let port = state
         .ctx
         .config
@@ -429,7 +469,7 @@ async fn items_playbackinfo_inner(
                 .load(media)
                 .await?;
             service
-                .probe_candidates(ranking)
+                .probe_candidates(ranking, ranking_prefs)
                 .await
         },
         async {
@@ -494,34 +534,11 @@ async fn items_playbackinfo_inner(
             .len(),
     );
 
-    // Per-user playback preferences + remembered selections, resolved per source
-    // via `MediaSourceInfo::resolve_default_streams` (see below).
-    let user_cfg = session
-        .user
-        .configuration
-        .as_ref()
-        .map(|c| {
-            c.0.clone()
-        })
-        .unwrap_or_default();
-    let server_subtitle_lang = probe_cfg
-        .preferred_metadata_language
-        .as_deref();
-    let (saved_audio, saved_subtitle) = load_saved_selections(
-        &state
-            .ctx
-            .db,
-        &session
-            .user
-            .id,
-        &id,
-    )
-    .await;
-
     for ProbeResult {
         mut source,
         stream,
         effective_stream,
+        allow_subtitle_extraction,
     } in probed.results
     {
         // Metadata-only torrent probes may not know the container duration yet.
@@ -545,13 +562,6 @@ async fn items_playbackinfo_inner(
         // can do with them.
         // Must run before resolve_default_streams below, so a dropped stream
         // can never end up as the resolved default (a dangling index).
-        let allow_subtitle_extraction = effective_stream
-            .allows_subtitle_extraction(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await;
         source
             .media_streams
             .retain(|s| {

@@ -2,7 +2,7 @@ use crate::{
     AppContext, api, db,
     db::PreProbeQualityExt,
     device_profile::SourceRankingContext,
-    playback::probe::{ProbeDataExt, probe_stream, resolve_stream_root},
+    playback::probe::{probe_stream, resolve_stream_root},
 };
 use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
@@ -19,6 +19,8 @@ pub(crate) struct ProbeResult {
     pub stream: db::Media,
     /// Effective stream post-fallback (may differ from `stream` if probe failed over).
     pub effective_stream: db::Media,
+    /// Whether on-demand subtitle extraction is feasible for `effective_stream`.
+    pub allow_subtitle_extraction: bool,
 }
 
 /// Result of `StreamService::probe_candidates`.
@@ -26,6 +28,20 @@ pub(crate) struct ProbedStreams {
     pub results: Vec<ProbeResult>,
     /// True when the client named a specific stream — keep its UUID, don't override to item_id.
     pub specific_requested: bool,
+}
+
+/// The inputs `MediaSourceInfo::resolve_default_streams` takes, so ranking
+/// judges each source by the audio/subtitle tracks the caller will actually
+/// resolve for it (e.g. a subtitle default that would need burn-in).
+#[derive(Clone, Copy)]
+pub(crate) struct DefaultStreamPrefs<'a> {
+    pub user_cfg: &'a api::UserConfiguration,
+    pub server_metadata_language: Option<&'a str>,
+    pub original_language: Option<&'a str>,
+    pub requested_audio: Option<i64>,
+    pub requested_subtitle: Option<i64>,
+    pub remembered_audio: Option<i64>,
+    pub remembered_subtitle: Option<i64>,
 }
 
 pub(crate) struct StreamServiceConfig {
@@ -76,6 +92,88 @@ impl StreamService {
             let (info, allow_subtitle_extraction) = describe(item);
             std::cmp::Reverse(ranking.sort_key(&info, allow_subtitle_extraction))
         });
+    }
+
+    /// Whether on-demand subtitle extraction is feasible for each source,
+    /// keyed by source ID. Looked up concurrently.
+    pub async fn subtitle_extraction_by_id(
+        db: &sqlx::SqlitePool,
+        sources: &[db::Media],
+    ) -> std::collections::HashMap<Uuid, bool> {
+        futures::future::join_all(
+            sources
+                .iter()
+                .map(|source| async {
+                    (
+                        source.id,
+                        source
+                            .allows_subtitle_extraction(db)
+                            .await,
+                    )
+                }),
+        )
+        .await
+        .into_iter()
+        .collect()
+    }
+
+    /// Capability-ranks `sources` in place, best first, as PlaybackInfo and
+    /// the item detail page both list them. Each source is judged on what is
+    /// known without probing (cached probe data or a filename guess), after
+    /// dropping embedded subtitles it cannot deliver and resolving its default
+    /// streams — the same steps PlaybackInfo applies before its transcode
+    /// decision. Leaves the order alone with sorting disabled, fewer than two
+    /// sources, or stream-group representatives (admin-authored order).
+    ///
+    /// Returns the subtitle-extraction flags it looked up (empty when it did
+    /// not rank), so callers need not query them again.
+    pub async fn rank_media_sources(
+        db: &sqlx::SqlitePool,
+        sources: &mut [db::Media],
+        ranking: SourceRankingContext<'_>,
+        prefs: DefaultStreamPrefs<'_>,
+    ) -> std::collections::HashMap<Uuid, bool> {
+        if ranking.mode == remux_sdks::remux::SortMediaSourcesMode::Disabled
+            || sources.len() < 2
+            || sources
+                .iter()
+                .any(|source| {
+                    source
+                        .group_id
+                        .is_some()
+                })
+        {
+            return Default::default();
+        }
+        let extraction = Self::subtitle_extraction_by_id(db, sources).await;
+        Self::rank_sources(sources, ranking, |source| {
+            let allow_subtitle_extraction = extraction
+                .get(&source.id)
+                .copied()
+                .unwrap_or(false);
+            let mut info = api::MediaSourceInfo::from(source.clone());
+            crate::conversions::apply_filename_guess(&mut info, source);
+            info.media_streams
+                .retain(|s| {
+                    crate::device_profile::keeps_embedded_subtitle(
+                        s,
+                        ranking.device_profile,
+                        allow_subtitle_extraction,
+                        ranking.subtitle_mode,
+                    )
+                });
+            info.resolve_default_streams(
+                prefs.user_cfg,
+                prefs.server_metadata_language,
+                prefs.original_language,
+                prefs.requested_audio,
+                prefs.requested_subtitle,
+                prefs.remembered_audio,
+                prefs.remembered_subtitle,
+            );
+            (info, allow_subtitle_extraction)
+        });
+        extraction
     }
 
     pub fn new(cfg: StreamServiceConfig) -> Self {
@@ -472,45 +570,29 @@ impl StreamService {
     }
 
     /// Puts `candidates` in the order PlaybackInfo lists them: addon order
-    /// without `ranking` (or for stream-group representatives, whose order is
-    /// admin-authored), else the capability ranking, run on what is known
-    /// without probing (cached probe data or a filename guess).
+    /// without `ranking`, else `rank_media_sources`. Also returns the
+    /// subtitle-extraction flags ranking looked up.
     async fn rank_candidates(
         &self,
-        candidates: Vec<db::Media>,
+        mut candidates: Vec<db::Media>,
         ranking: Option<SourceRankingContext<'_>>,
-    ) -> Vec<db::Media> {
-        let ranking = ranking.filter(|_| {
-            candidates
-                .iter()
-                .all(|s| {
-                    s.group_id
-                        .is_none()
-                })
-        });
-        let Some(ranking) = ranking else {
-            return candidates;
-        };
-        let mut described = Vec::with_capacity(candidates.len());
-        for stream in candidates {
-            let mut info = api::MediaSourceInfo::from(stream.clone());
-            crate::conversions::apply_filename_guess(&mut info, &stream);
-            let allow_subtitle_extraction = stream
-                .allows_subtitle_extraction(
+        prefs: DefaultStreamPrefs<'_>,
+    ) -> (Vec<db::Media>, std::collections::HashMap<Uuid, bool>) {
+        let extraction = match ranking {
+            Some(ranking) => {
+                Self::rank_media_sources(
                     &self
                         .ctx
                         .db,
+                    &mut candidates,
+                    ranking,
+                    prefs,
                 )
-                .await;
-            described.push((stream, info, allow_subtitle_extraction));
-        }
-        Self::rank_sources(&mut described, ranking, |(_, info, allow)| {
-            (info.clone(), *allow)
-        });
-        described
-            .into_iter()
-            .map(|(stream, ..)| stream)
-            .collect()
+                .await
+            }
+            None => Default::default(),
+        };
+        (candidates, extraction)
     }
 
     /// Probe all stream candidates and return stamped results.
@@ -524,11 +606,13 @@ impl StreamService {
     pub async fn probe_candidates(
         &self,
         ranking: Option<SourceRankingContext<'_>>,
+        prefs: DefaultStreamPrefs<'_>,
     ) -> anyhow::Result<ProbedStreams> {
         let mut sel = self.select_streams();
-        sel.candidates = self
-            .rank_candidates(std::mem::take(&mut sel.candidates), ranking)
+        let (candidates, extraction) = self
+            .rank_candidates(std::mem::take(&mut sel.candidates), ranking, prefs)
             .await;
+        sel.candidates = candidates;
         let preferred_probe_id = if sel.specific_requested {
             None
         } else {
@@ -592,16 +676,12 @@ impl StreamService {
                     si.descriptor
                         .server_input(stream.id, port)
                 });
-            let skip_probe = preferred_probe_id
-                .is_some_and(|preferred| stream.id != preferred)
-                // A legacy/RemuxDB H.264 result without a usable ref-frame
-                // count is deliberately stale. Probe it even when it is not
-                // the preferred candidate so compatibility ranking has the
-                // metadata it needs.
-                && !stream
-                    .probe_data
-                    .as_ref()
-                    .is_some_and(ProbeDataExt::needs_reprobe);
+            // Ranking already ran on what was known before probing, so a probe
+            // of any other candidate could not change the order — only the
+            // one auto-play plays is probed. A stale H.264 result elsewhere
+            // gets its refresh when a client requests that stream directly.
+            let skip_probe =
+                preferred_probe_id.is_some_and(|preferred| stream.id != preferred);
             // A filename guess is never a completed probe — it must not skip
             // submitting a freshly-probed result to RemuxDB.
             let was_cached = stream
@@ -735,10 +815,23 @@ impl StreamService {
                 }
             }
 
+            let allow_subtitle_extraction = match extraction.get(&effective_stream.id) {
+                Some(allow) => *allow,
+                None => {
+                    effective_stream
+                        .allows_subtitle_extraction(
+                            &self
+                                .ctx
+                                .db,
+                        )
+                        .await
+                }
+            };
             results.push(ProbeResult {
                 source,
                 stream,
                 effective_stream,
+                allow_subtitle_extraction,
             });
         }
 
@@ -1121,6 +1214,71 @@ mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
 
+    /// Ranking judges each source by its resolved default streams: a source
+    /// whose default subtitle would have to be burned in ranks below a
+    /// sibling that can direct play, even though the unresolved info names
+    /// no default subtitle at all.
+    #[tokio::test]
+    async fn rank_media_sources_counts_burn_in_of_resolved_default_subtitle() {
+        use crate::integration_test::{authenticated_server, insert_test_source};
+
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let mut with_pgs = insert_test_source(ctx).await;
+        with_pgs
+            .probe_data
+            .as_mut()
+            .unwrap()
+            .media_streams
+            .push(api::MediaStream {
+                codec: Some("pgssub".to_string()),
+                type_: Some(MediaStreamType::Subtitle),
+                index: 2,
+                language: Some("eng".to_string()),
+                ..Default::default()
+            });
+        let plain = insert_test_source(ctx).await;
+        let user_cfg = api::UserConfiguration {
+            subtitle_language_preference: Some("eng".to_string()),
+            subtitle_mode: remux_sdks::remux::SubtitleMode::Always,
+            ..Default::default()
+        };
+        let prefs = DefaultStreamPrefs {
+            user_cfg: &user_cfg,
+            server_metadata_language: None,
+            original_language: None,
+            requested_audio: None,
+            requested_subtitle: None,
+            remembered_audio: None,
+            remembered_subtitle: None,
+        };
+        let ranking = SourceRankingContext {
+            mode: remux_sdks::remux::SortMediaSourcesMode::Compatibility,
+            device_profile: None,
+            is_4k_capable: true,
+            subtitle_mode: remux_sdks::remux::EmbeddedSubtitleHandling::Burn,
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+        let mut sources = vec![with_pgs.clone(), plain.clone()];
+        let extraction =
+            StreamService::rank_media_sources(&ctx.db, &mut sources, ranking, prefs)
+                .await;
+        assert_eq!(
+            sources
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>(),
+            vec![plain.id, with_pgs.id],
+            "the source needing a subtitle burn-in must not be auto-played first"
+        );
+        assert_eq!(
+            extraction.len(),
+            2,
+            "extraction flags are returned for reuse"
+        );
+    }
+
     /// Candidates come out in the order PlaybackInfo lists them, and the
     /// first is the one probed and auto-played: addon order with sorting
     /// disabled or for group representatives, capability ranking otherwise.
@@ -1163,11 +1321,22 @@ mod tests {
             explicit_subtitle_index: None,
             max_bitrate: None,
         };
+        let user_cfg = api::UserConfiguration::default();
+        let prefs = DefaultStreamPrefs {
+            user_cfg: &user_cfg,
+            server_metadata_language: None,
+            original_language: None,
+            requested_audio: None,
+            requested_subtitle: None,
+            remembered_audio: None,
+            remembered_subtitle: None,
+        };
         let candidates = vec![low.clone(), high.clone()];
         let order = async |candidates: Vec<db::Media>, ranking| {
             service
-                .rank_candidates(candidates, ranking)
+                .rank_candidates(candidates, ranking, prefs)
                 .await
+                .0
                 .into_iter()
                 .map(|s| s.id)
                 .collect::<Vec<_>>()
