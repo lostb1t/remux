@@ -273,9 +273,10 @@ impl StreamDescriptor {
         }
     }
 
-    /// Returns `false` only for HTTP streams whose ranged GET yields a 4xx/5xx
-    /// status or a network/timeout error. Non-HTTP variants (local, torrent,
-    /// opendal) return `true` immediately.
+    /// Returns `false` for HTTP streams whose ranged GET gets no response,
+    /// returns 4xx/5xx, lands on an AIOStreams error clip, or starts with an
+    /// archive signature; body-read errors leave the stream alive. Non-HTTP
+    /// variants return `true`.
     pub async fn is_alive(&self) -> bool {
         let Self::Http {
             url,
@@ -289,19 +290,42 @@ impl StreamDescriptor {
         for (key, value) in request_headers {
             request = request.header(key.as_str(), value.as_str());
         }
-        request = request.header(http::header::RANGE, "bytes=0-0");
+        request = request.header(http::header::RANGE, "bytes=0-7");
 
-        match request
+        let Ok(mut response) = request
             .send()
             .await
+        else {
+            return false;
+        };
+        if response
+            .status()
+            .as_u16()
+            >= 400
+            || response
+                .url()
+                .path()
+                .rsplit_once("/static/")
+                .is_some_and(|(_, clip)| AIOSTREAMS_ERROR_CLIPS.contains(&clip))
         {
-            Ok(r) => {
-                r.status()
-                    .as_u16()
-                    < 400
-            }
-            Err(_) => false,
+            return false;
         }
+
+        // Read only until the magic-number prefix is available; servers that
+        // ignore Range must not trigger a full download.
+        let mut head = Vec::with_capacity(8);
+        while head.len() < 8 {
+            match response
+                .chunk()
+                .await
+            {
+                Ok(Some(chunk)) => head.extend_from_slice(&chunk),
+                _ => break,
+            }
+        }
+        !ARCHIVE_MAGIC
+            .iter()
+            .any(|magic| head.starts_with(magic))
     }
 
     /// Instantiate the runtime service for self-contained variants.
@@ -484,6 +508,28 @@ static AVAILABILITY_CLIENT: std::sync::LazyLock<reqwest::Client> =
             .build()
             .expect("failed to build availability client")
     });
+
+/// Clips AIOStreams redirects to (`/static/<clip>`) when a debrid resolve
+/// fails; they are playable MP4s, so status alone reads them as alive. Mirrors
+/// `StaticFiles` in AIOStreams `utils/static-errors.ts`, minus `200.mp4`.
+const AIOSTREAMS_ERROR_CLIPS: &[&str] = &[
+    "download_failed.mp4",
+    "downloading.mp4",
+    "unavailable_for_legal_reasons.mp4",
+    "store_limit_exceeded.mp4",
+    "content_proxy_limit_reached.mp4",
+    "500.mp4",
+    "429.mp4",
+    "403.mp4",
+    "401.mp4",
+    "no_matching_file.mp4",
+    "payment_required.mp4",
+];
+
+/// Archive signatures (RAR, 7z, ZIP) occasionally served by debrid links in
+/// place of the video file; ffmpeg cannot play them.
+const ARCHIVE_MAGIC: &[&[u8]] =
+    &[b"Rar!\x1a\x07", b"7z\xbc\xaf\x27\x1c", b"PK\x03\x04"];
 
 static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
@@ -943,6 +989,43 @@ mod tests {
     #[test]
     fn stream_proxy_client_builds_without_panic() {
         let _ = &*STREAM_PROXY_CLIENT;
+    }
+
+    #[tokio::test]
+    async fn is_alive_rejects_error_clips_and_archives() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/playback/failed");
+            then.status(307)
+                .header("Location", "/static/download_failed.mp4");
+        });
+        for (path, body) in [
+            ("/static/download_failed.mp4", &b"\x00\x00\x00\x20ftyp"[..]),
+            ("/archive.mkv", b"Rar!\x1a\x07\x01\x00"),
+            ("/movie.mkv", b"\x1a\x45\xdf\xa3\x01\x00\x00\x00"),
+        ] {
+            server.mock(|when, then| {
+                when.method(httpmock::Method::GET)
+                    .path(path);
+                then.status(206)
+                    .body(body);
+            });
+        }
+
+        for (path, alive) in [
+            ("/playback/failed", false),
+            ("/archive.mkv", false),
+            ("/movie.mkv", true),
+        ] {
+            assert_eq!(
+                StreamDescriptor::http(server.url(path))
+                    .is_alive()
+                    .await,
+                alive,
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]
