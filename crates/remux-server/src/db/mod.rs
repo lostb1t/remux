@@ -108,15 +108,15 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// Fixed a bug in this migration's own SQL after it had already shipped (a
-/// 3+-way duplicate cluster sharing one relation target violated
-/// `uniq_media_relation` — see the file's current comments for the actual
-/// fix). Installs where it already ran successfully before the fix must not
+/// Fixed bugs in this migration's own SQL after it had already shipped (a
+/// 3+-way duplicate cluster sharing one relation target, then a loser whose
+/// winner was itself a loser — see the file's current comments for the
+/// fixes). Installs where it already ran successfully before a fix must not
 /// be told "previously applied but has been modified" on upgrade: patch the
 /// stored checksum to match the corrected file, exactly like `prepare_squash`
 /// does for the squash migration, so they're treated as already-satisfied
 /// rather than re-run or rejected. Installs where it never succeeded (the
-/// bug in question, or brand new) are unaffected — they just run the fixed
+/// bugs above, or brand new) are unaffected — they just run the fixed
 /// version fresh.
 const DEDUPE_EXTERNAL_IDS_VERSION: i64 = 202609080001;
 
@@ -538,5 +538,57 @@ impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
         }
 
         self.push(")");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// X shares an imdb id with Y, and Y a tmdb id with Z, so the dedupe maps
+    /// X -> Y -> Z. X's season must end up under Z, not under Y (itself a
+    /// loser, whose delete would cascade the season away).
+    #[tokio::test]
+    async fn dedupe_follows_winner_chains() {
+        let db = super::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        // Schema as it was right before the dedupe, while duplicates could exist.
+        let mut pre_dedupe = sqlx::migrate!("./migrations");
+        pre_dedupe.migrations = pre_dedupe
+            .migrations
+            .iter()
+            .filter(|m| m.version < super::DEDUPE_EXTERNAL_IDS_VERSION)
+            .cloned()
+            .collect();
+        pre_dedupe
+            .run(&db)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO media (id, title, kind, external_ids, created_at, updated_at) VALUES
+                ('z', 'Show', 'series', '{"tmdb": 1}', '2026-01-01', '2026-01-01'),
+                ('y', 'Show', 'series', '{"tmdb": 1, "imdb": "tt1"}', '2026-01-02', '2026-01-02'),
+                ('x', 'Show', 'series', '{"imdb": "tt1"}', '2026-01-03', '2026-01-03');
+            INSERT INTO media (id, title, kind, parent_id, created_at, updated_at) VALUES
+                ('season', 'Season 1', 'season', 'x', '2026-01-03', '2026-01-03');
+            "#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/202609080001_dedupe_movie_series_external_ids.sql"
+        ))
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let parent: Option<String> =
+            sqlx::query_scalar("SELECT parent_id FROM media WHERE id = 'season'")
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert_eq!(parent.as_deref(), Some("z"));
     }
 }

@@ -15,9 +15,7 @@
 -- remap/delete steps below are driven by however few duplicate rows this
 -- finds (a handful, not a fraction of the table), using the existing
 -- indexes on parent_id/grandparent_id/media_relations/user_media_state to
--- locate what references them. If some pathological multi-field chain
--- isn't fully collapsed by this single pass, the next migration's
--- CREATE UNIQUE INDEX fails loudly rather than silently losing data.
+-- locate what references them.
 
 CREATE TEMP TABLE _dedupe_map (loser_id TEXT PRIMARY KEY, winner_id TEXT NOT NULL);
 
@@ -62,6 +60,22 @@ JOIN (
     ) g
 ) w ON m.kind = w.kind AND json_extract(m.external_ids, w.field) = w.val
 WHERE m.id != w.winner_id;
+
+-- Collapse chains (B -> X -> Y becomes B -> Y). The remaps below are single
+-- hops, so otherwise B's children, watch state and relations land on X, which
+-- is itself a loser and gets deleted (and moving B's relations onto X can
+-- trip uniq_media_relation while X's own haven't moved yet). A winner always
+-- sorts strictly before its loser by (created_at, id), so chains can't cycle.
+WITH RECURSIVE chain(loser_id, winner_id) AS (
+    SELECT loser_id, winner_id FROM _dedupe_map
+    UNION ALL
+    SELECT c.loser_id, d.winner_id
+    FROM chain c JOIN _dedupe_map d ON d.loser_id = c.winner_id
+)
+UPDATE _dedupe_map SET winner_id = chain.winner_id
+FROM chain
+WHERE chain.loser_id = _dedupe_map.loser_id
+  AND chain.winner_id NOT IN (SELECT loser_id FROM _dedupe_map);
 
 -- Repoint season/episode trees before deleting losers — parent_id cascades
 -- on delete, so skipping this would silently wipe a loser series' children.
