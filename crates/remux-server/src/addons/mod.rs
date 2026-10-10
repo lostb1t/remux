@@ -1244,6 +1244,21 @@ fn apply_manifest_info(
 
 const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 
+/// How long a search waits for the remaining addons once a higher-priority
+/// addon has a non-empty answer.
+const SEARCH_GRACE: Duration = Duration::from_millis(150);
+/// How long an addon's non-empty search answer serves identical searches.
+const SEARCH_TTL: Duration = Duration::from_secs(600);
+/// How long a search addon's error, timeout or empty answer keeps identical
+/// searches from asking it again.
+const FAILED_SEARCH_TTL: Duration = Duration::from_secs(60);
+
+/// One addon's search lookup, kept in the store: identical searches share it
+/// while it runs and get its answer straight away once it's done.
+type SearchLookup = futures::future::Shared<
+    futures::future::BoxFuture<'static, Option<Arc<Vec<db::Media>>>>,
+>;
+
 #[derive(Clone)]
 pub struct AddonService {
     inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
@@ -2851,42 +2866,165 @@ impl AddonService {
             .cloned()
             .collect();
 
-        for r in addons {
-            if !r
-                .search
-                .as_ref()
-                .unwrap()
-                .search_supports(kind)
+        // One slow addon must not hold up the merged answer.
+        let timeout = Duration::from_secs(
+            db::Settings::get_config_or_default(&ctx.db)
                 .await
+                .addon_fetch_timeout_secs
+                .unwrap_or(5)
+                .max(1) as u64,
+        );
+        // Ask every eligible addon concurrently and merge, so an empty answer
+        // (Stremio addons always answer) can't hide the others' results.
+        // Lookups are shared by identical searches and their outcome cached.
+        use futures::FutureExt;
+        use itertools::Itertools;
+        let normalized = query
+            .split_whitespace()
+            .join(" ")
+            .to_lowercase();
+        let mut searches = Vec::with_capacity(addons.len());
+        for r in &addons {
+            if let Some(search) = &r.search
+                && search
+                    .search_supports(kind)
+                    .await
+            {
+                searches.push((r, search.clone()));
+            }
+        }
+        let mut per_addon: Vec<Option<Vec<db::Media>>> = vec![None; searches.len()];
+        let mut waiting = vec![true; searches.len()];
+        let mut running = futures::stream::FuturesUnordered::new();
+        for (i, (r, search)) in searches
+            .into_iter()
+            .enumerate()
+        {
+            let key = format!(
+                "addon_search:{}:{kind}:{limit}:{normalized}",
+                r.row
+                    .id
+            );
+            let lookup = match ctx
+                .store
+                .get::<SearchLookup>(&key)
+            {
+                Some(lookup) => (*lookup).clone(),
+                None => {
+                    let (name, kind, query, task_ctx, task_key) = (
+                        r.row
+                            .name
+                            .clone(),
+                        kind.clone(),
+                        query.to_owned(),
+                        ctx.clone(),
+                        key.clone(),
+                    );
+                    let task = async move {
+                        let results = match tokio::time::timeout(
+                            timeout,
+                            search.search(&kind, &query, limit, &task_ctx),
+                        )
+                        .await
+                        {
+                            Ok(Ok(results)) => results.map(Arc::new),
+                            Ok(Err(e)) => {
+                                warn!(addon = %name, error = %e, "search addon error");
+                                None
+                            }
+                            Err(_) => {
+                                warn!(addon = %name, ?timeout, "search addon timed out");
+                                None
+                            }
+                        };
+                        // A Stremio addon's error arrives as an empty answer,
+                        // so only a non-empty answer is kept for long.
+                        let ttl = match &results {
+                            Some(results) if !results.is_empty() => SEARCH_TTL,
+                            _ => FAILED_SEARCH_TTL,
+                        };
+                        let done: SearchLookup =
+                            futures::future::ready(results.clone())
+                                .boxed()
+                                .shared();
+                        task_ctx
+                            .store
+                            .save(task_key, done, ttl);
+                        results
+                    };
+                    // Spawned on first poll, after the entry below is saved,
+                    // so that save can't overwrite the task's own. A task, so
+                    // a dropped request still caches the answer and an addon
+                    // panic doesn't reach the awaiters.
+                    let lookup = async move {
+                        tokio::spawn(task)
+                            .await
+                            .ok()
+                            .flatten()
+                    }
+                    .boxed()
+                    .shared();
+                    // Outlives the task, which replaces it with its outcome.
+                    ctx.store
+                        .save(&key, lookup.clone(), timeout + FAILED_SEARCH_TTL);
+                    lookup
+                }
+            };
+            running.push(async move { (i, lookup.await) });
+        }
+        // Every lookup ends within `timeout`; once the addons ahead of the
+        // first still-running one have a non-empty answer, the rest get
+        // SEARCH_GRACE.
+        let mut deadline = tokio::time::Instant::now() + timeout + SEARCH_GRACE;
+        loop {
+            let settled = waiting
+                .iter()
+                .position(|&w| w)
+                .unwrap_or(waiting.len());
+            if per_addon[..settled]
+                .iter()
+                .flatten()
+                .any(|r| !r.is_empty())
+            {
+                deadline = deadline.min(tokio::time::Instant::now() + SEARCH_GRACE);
+            }
+            let next = tokio::time::timeout_at(deadline, running.next()).await;
+            let Ok(Some((i, results))) = next else { break };
+            waiting[i] = false;
+            per_addon[i] = results.map(|results| (*results).clone());
+        }
+        // Round-robin in priority order so one addon's long list can't fill
+        // `limit` on its own; on a duplicate the first occurrence wins.
+        let mut results = crate::common::round_robin(
+            per_addon
+                .into_iter()
+                .flatten(),
+        );
+        // Adopt before deduping: two addons' copies of a stored item end up
+        // with the same id even when they carry different external ids.
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+        let mut merged: Vec<db::Media> = Vec::with_capacity(
+            results
+                .len()
+                .min(limit),
+        );
+        for m in results {
+            if merged.len() >= limit {
+                break;
+            }
+            if merged
+                .iter()
+                .any(|kept| kept.id == m.id || kept.shares_external_id(&m))
             {
                 continue;
             }
-            match r
-                .search
-                .as_ref()
-                .unwrap()
-                .search(kind, query, limit, ctx)
-                .await
-            {
-                Ok(Some(mut results)) => {
-                    db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
-                    for m in &results {
-                        ctx.store
-                            .save(
-                                m.id.to_string(),
-                                m.clone(),
-                                Duration::from_secs(3600),
-                            );
-                    }
-                    return Ok(results);
-                }
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!(addon = %r.row.name, error = %e, "search addon error")
-                }
-            }
+            merged.push(m);
         }
-        Ok(vec![])
+        for m in &merged {
+            ctx.store
+                .save(m.id.to_string(), m.clone(), Duration::from_secs(3600));
+        }
+        Ok(merged)
     }
 
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
@@ -4963,5 +5101,185 @@ mod tests {
             results[0].title, stored.title,
             "a deezer-only match is replaced wholesale too"
         );
+    }
+
+    /// Answers with its hits after sleeping `delay` and, if gated, once the
+    /// test opens the gate.
+    #[derive(Default)]
+    struct FixedSearch {
+        hits: Vec<db::Media>,
+        delay: Duration,
+        gate: Option<Arc<tokio::sync::Notify>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SearchAddon for FixedSearch {
+        async fn search_supports(&self, _kind: &db::MediaKind) -> bool {
+            true
+        }
+
+        async fn search(
+            &self,
+            _kind: &db::MediaKind,
+            _query: &str,
+            _limit: usize,
+            _ctx: &AppContext,
+        ) -> Result<Option<Vec<db::Media>>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(self.delay).await;
+            if let Some(gate) = &self.gate {
+                gate.notified()
+                    .await;
+            }
+            Ok(Some(
+                self.hits
+                    .clone(),
+            ))
+        }
+    }
+
+    fn search_runtime(results: Vec<db::Media>) -> AddonRuntime {
+        fixed_search_runtime(Arc::new(FixedSearch {
+            hits: results,
+            ..Default::default()
+        }))
+    }
+
+    fn fixed_search_runtime(search: Arc<FixedSearch>) -> AddonRuntime {
+        let mut runtime = unreachable_runtime(vec![ResourceType::Search], None);
+        runtime
+            .caps
+            .search = Some(search);
+        runtime
+    }
+
+    fn search_hit(title: &str, imdb: &str) -> db::Media {
+        db::Media {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            ..media_with_imdb(imdb)
+        }
+    }
+
+    async fn search_titles(
+        service: &AddonService,
+        ctx: &AppContext,
+        limit: usize,
+    ) -> Vec<String> {
+        service
+            .search(&db::MediaKind::Movie, "query", limit, ctx, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    async fn search_with(runtimes: Vec<AddonRuntime>, limit: usize) -> Vec<String> {
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(runtimes)),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        search_titles(&service, &guard.0, limit).await
+    }
+
+    /// Results from every search addon are interleaved in priority order, so
+    /// neither an empty answer nor a long one hides the others within
+    /// `limit`; the same item from two addons (shared imdb id) appears once,
+    /// as its first occurrence. A fast empty answer doesn't cut off a slower
+    /// addon with results.
+    #[tokio::test]
+    async fn search_interleaves_addons_and_dedupes_by_external_id() {
+        let titles = search_with(
+            vec![
+                search_runtime(vec![]),
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    hits: vec![
+                        search_hit("Shared (high)", "tt9900001"),
+                        search_hit("High 2", "tt9900002"),
+                        search_hit("High 3", "tt9900004"),
+                    ],
+                    delay: SEARCH_GRACE * 3,
+                    ..Default::default()
+                })),
+                search_runtime(vec![
+                    search_hit("Shared (low)", "tt9900001"),
+                    search_hit("Low 2", "tt9900003"),
+                ]),
+            ],
+            3,
+        )
+        .await;
+        assert_eq!(titles, ["Shared (high)", "High 2", "Low 2"]);
+    }
+
+    /// A lower-priority addon slower than `SEARCH_GRACE` doesn't hold up the
+    /// answer, an identical search while it runs doesn't ask it again, and
+    /// its late answer is merged into the next identical search.
+    #[tokio::test]
+    async fn slow_search_addon_is_asked_once_and_served_from_cache() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let slow = Arc::new(FixedSearch {
+            hits: vec![search_hit("Slow", "tt9900002")],
+            gate: Some(gate.clone()),
+            ..Default::default()
+        });
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![
+                search_runtime(vec![search_hit("Fast", "tt9900001")]),
+                fixed_search_runtime(slow.clone()),
+            ])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        assert_eq!(search_titles(&service, &guard.0, 20).await, ["Fast"]);
+        assert_eq!(search_titles(&service, &guard.0, 20).await, ["Fast"]);
+        gate.notify_one();
+        assert_eq!(
+            search_titles(&service, &guard.0, 20).await,
+            ["Fast", "Slow"]
+        );
+        assert_eq!(
+            slow.calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "an identical search asked the slow addon again"
+        );
+    }
+
+    /// A TMDB result (tmdb id only) and a Stremio result for the same title
+    /// (imdb id plus `moviedb_id`) collapse to the first occurrence.
+    #[tokio::test]
+    async fn search_dedupes_tmdb_and_stremio_copies() {
+        let tmdb = db::Media {
+            id: Uuid::new_v4(),
+            title: "Inception (TMDB)".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: Some(27205),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let meta: remux_sdks::stremio::Meta =
+            serde_json::from_value(serde_json::json!({
+                "id": "tt1375666",
+                "type": "movie",
+                "name": "Inception (Stremio)",
+                "moviedb_id": 27205,
+            }))
+            .unwrap();
+        let stremio = db::Media::try_from(meta).unwrap();
+        let titles = search_with(
+            vec![search_runtime(vec![tmdb]), search_runtime(vec![stremio])],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Inception (TMDB)"]);
     }
 }

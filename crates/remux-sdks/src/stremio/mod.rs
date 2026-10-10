@@ -526,6 +526,7 @@ pub struct Meta {
     pub certification: Option<String>,
     //#[serde(deserialize_with = "deserialize_string_from_number")]
     //pub year: String,
+    #[serde(rename = "moviedb_id")]
     pub moviedb_id: Option<u64>,
 
     pub trailers: Option<Vec<Trailer>>,

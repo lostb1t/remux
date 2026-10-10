@@ -377,7 +377,8 @@ pub async fn get_items(
                 .collect();
             let remote_results = futures::future::join_all(remote_futs).await;
 
-            let mut all_items: Vec<api::BaseItemDto> = vec![];
+            let mut per_kind: Vec<Vec<api::BaseItemDto>> =
+                Vec::with_capacity(remote_kinds.len());
             let mut debug_counts: Vec<(String, usize)> = vec![];
 
             for (kind, result) in remote_kinds
@@ -396,7 +397,7 @@ pub async fn get_items(
                             })
                             .collect();
                         debug_counts.push((kind.to_string(), items.len()));
-                        all_items.extend(items);
+                        per_kind.push(items);
                     }
                     Err(e) => {
                         warn!(error = %e, ?kind, "get_items: remote search failed");
@@ -404,6 +405,9 @@ pub async fn get_items(
                     }
                 }
             }
+            // Interleave kinds so one kind's list can't push the others past
+            // `limit`.
+            let mut all_items = crate::common::round_robin(per_kind);
 
             // Local: single DB query for all local kinds combined.
             if !local_kinds.is_empty() {

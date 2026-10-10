@@ -3171,6 +3171,19 @@ impl Media {
         id_fields
     }
 
+    /// Whether `self` and `other` are the same kind and share any of the
+    /// external ids `adopt_existing_rows` matches stored rows on — i.e. they
+    /// would resolve to the same stored item.
+    pub fn shares_external_id(&self, other: &Media) -> bool {
+        if self.kind != other.kind {
+            return false;
+        }
+        let ours = Self::external_id_fields(&self.kind, &self.external_ids);
+        Self::external_id_fields(&other.kind, &other.external_ids)
+            .iter()
+            .any(|field| ours.contains(field))
+    }
+
     pub async fn find_by_external_ids(
         db: &SqlitePool,
         kind: &MediaKind,
@@ -7709,6 +7722,11 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
+                ids.tmdb = ids
+                    .tmdb
+                    .or(meta
+                        .moviedb_id
+                        .map(|n| n as i64));
                 ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },
