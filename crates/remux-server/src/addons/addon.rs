@@ -51,18 +51,18 @@ const ADDON_COLS: &str = "id, name, preset, resources, types, enabled, priority,
 
 impl Addon {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
-        let addons = sqlx::query_as::<_, Self>(&format!(
+        let addons = sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {ADDON_COLS} FROM addons ORDER BY priority ASC, created_at ASC"
-        ))
+        )))
         .fetch_all(db)
         .await?;
         Ok(addons)
     }
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
-        let addon = sqlx::query_as::<_, Self>(&format!(
+        let addon = sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {ADDON_COLS} FROM addons WHERE id = ?1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(db)
         .await?;

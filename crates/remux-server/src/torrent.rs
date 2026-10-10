@@ -2,10 +2,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
-    SessionPersistenceConfig, TorrentStatsState,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig,
+    ListenerOptions, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState,
     api::{Api, TorrentIdOrHash},
-    dht::PersistentDhtConfig,
+    dht::DhtPersistenceConfig,
     http_api::HttpApi,
 };
 use tracing::{debug, warn};
@@ -71,31 +72,66 @@ impl TorrentManager {
         disable_dht: bool,
         peer_port: Option<u16>,
     ) -> Result<Self> {
-        let session = Session::new_with_opts(
-            data_dir,
-            SessionOptions {
-                disable_dht,
-                disable_dht_persistence: disable_dht,
-                listen_port_range: peer_port.map(|p| p..p + 10),
+        // librqbit 9 binds exactly one peer port, so walk the old `port..port+10`
+        // range ourselves, moving on whenever the listener can't bind.
+        let candidates: Vec<Option<u16>> = match peer_port {
+            Some(p) => (p..=p.saturating_add(9))
+                .map(Some)
+                .collect(),
+            None => vec![None],
+        };
+        let mut session = None;
+        let mut last_error = None;
+        for port in candidates {
+            let opts = SessionOptions {
+                dht: (!disable_dht).then(|| DhtSessionConfig {
+                    persistence: Some(DhtPersistenceConfig {
+                        config_filename: Some(cache_dir.join("dht.json")),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                listen: port.map(|p| ListenerOptions {
+                    listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, p).into(),
+                    ..Default::default()
+                }),
                 persistence: Some(SessionPersistenceConfig::Json {
                     folder: Some(cache_dir.join("rqbit")),
                 }),
-                dht_config: Some(PersistentDhtConfig {
-                    config_filename: Some(cache_dir.join("dht.json")),
-                    ..Default::default()
-                }),
                 ..Default::default()
-            },
-        )
-        .await?;
+            };
+            match Session::new_with_opts(data_dir.clone(), opts).await {
+                Ok(s) => {
+                    session = Some(s);
+                    break;
+                }
+                Err(error) => {
+                    debug!(?port, "torrent session failed to start: {error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        let session = match session {
+            Some(session) => session,
+            None => {
+                return Err(last_error.unwrap_or_else(|| {
+                    anyhow::anyhow!("no torrent session candidates")
+                }));
+            }
+        };
 
         // None → let the OS pick a free ephemeral port.
         let bind_port = http_port.unwrap_or(0);
-        let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).await?;
+        let listener = librqbit_dualstack_sockets::TcpListener::bind_tcp(
+            std::net::SocketAddr::from(([127, 0, 0, 1], bind_port)),
+            librqbit_dualstack_sockets::BindOpts {
+                request_dualstack: false,
+                ..Default::default()
+            },
+        )?;
 
         let bound_port = listener
-            .local_addr()?
+            .bind_addr()
             .port();
 
         let api = Api::new(session.clone(), None, None);

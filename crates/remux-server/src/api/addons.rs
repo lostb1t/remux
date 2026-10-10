@@ -1159,6 +1159,10 @@ mod test {
 
     #[tokio::test]
     async fn list_addons_does_not_refetch_unreachable_manifest() {
+        // The SDK response cache is process-wide and keyed by URL, and httpmock
+        // reuses pooled servers, so an earlier test's cached manifest would
+        // otherwise answer this probe.
+        crate::sdks::clear_http_cache();
         let (server, ctx, token) = authenticated_server().await;
         let (h, v) = auth(&token);
         let manifest = httpmock::MockServer::start();
