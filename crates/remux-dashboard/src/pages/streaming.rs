@@ -280,6 +280,7 @@ fn StreamingSortPanel() -> Element {
                         option { value: "Best", selected: *state.sort_mode.read() == SortMediaSourcesMode::Best, "Best" }
                         option { value: "Compatibility", selected: *state.sort_mode.read() == SortMediaSourcesMode::Compatibility, "Compatibility" }
                         option { value: "Quality", selected: *state.sort_mode.read() == SortMediaSourcesMode::Quality, "Quality" }
+                        option { value: "TranscodeCost", selected: *state.sort_mode.read() == SortMediaSourcesMode::TranscodeCost, "Transcode cost (keep addon order)" }
                     }
                 }
                 ToggleRow {
