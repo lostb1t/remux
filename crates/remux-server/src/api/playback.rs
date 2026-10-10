@@ -1129,7 +1129,9 @@ pub async fn items_file(
 /// all. Resolve the caller's user and device best-effort from whatever
 /// `ApiKey`/`Token` is present (never rejecting the request) so per-device
 /// cache scoping (e.g. `recent_selected_stream_for`) still works when a valid
-/// token happens to be there. An API key has a user but no device.
+/// token happens to be there. An API key resolves to the same synthetic
+/// `apikey-<token>` device `AuthSession` gives it, so a session-less stream
+/// request finds the selection PlaybackInfo saved under that device.
 async fn best_effort_caller(
     state: &AppState,
     jfauth: &auth::JellyfinAuthHeader,
@@ -1146,7 +1148,22 @@ async fn best_effort_caller(
     if let Ok(Some(device)) = auth::Device::get_by_access_token(db, token).await {
         return (Some(device.user_id), Some(device.id));
     }
-    (auth::resolve_user_id_from_token(db, token).await, None)
+    // Mirrors `AuthSession`'s API-key fallback: admin user, synthetic device.
+    if !matches!(
+        crate::db::ApiKey::get_by_token(db, token).await,
+        Ok(Some(_))
+    ) {
+        return (None, None);
+    }
+    let admin_id = sqlx::query_as::<_, crate::db::User>(
+        "SELECT * FROM users WHERE is_admin = 1 LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .map(|u| u.id);
+    (admin_id, Some(format!("apikey-{token}")))
 }
 
 /// # Static

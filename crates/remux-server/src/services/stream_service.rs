@@ -835,7 +835,10 @@ impl StreamService {
 
     /// The stream a playback request for `item_id` / `media_source_id` must
     /// serve, as selected by the PlaybackInfo that answered it: looked up by
-    /// play session first, then by the requesting device's recent request.
+    /// play session when the request carries one, otherwise by the requesting
+    /// device's recent request. A request with a PlaySessionId PlaybackInfo
+    /// never answered for this source resolves on its own terms — a recent
+    /// selection from an earlier session must not override it.
     pub fn selected_stream_id(
         ctx: &AppContext,
         device_id: Option<&str>,
@@ -844,13 +847,12 @@ impl StreamService {
         play_session_id: Option<&str>,
     ) -> Option<Uuid> {
         let source_id = media_source_id.unwrap_or(item_id);
-        play_session_id
-            .and_then(|psid| Self::selected_stream_for(ctx, psid, source_id))
-            .or_else(|| {
-                device_id.and_then(|device_id| {
-                    Self::recent_selected_stream_for(ctx, device_id, item_id, source_id)
-                })
-            })
+        match play_session_id {
+            Some(psid) => Self::selected_stream_for(ctx, psid, source_id),
+            None => device_id.and_then(|device_id| {
+                Self::recent_selected_stream_for(ctx, device_id, item_id, source_id)
+            }),
+        }
     }
 
     fn recent_selected_stream_key(
@@ -1525,6 +1527,28 @@ mod tests {
             StreamService::selected_stream_id(ctx, None, owner.id, None, None),
             None,
             "a request without a device token never matches"
+        );
+        assert_eq!(
+            StreamService::selected_stream_id(
+                ctx,
+                Some("device-tv"),
+                owner.id,
+                None,
+                Some("psid-unknown")
+            ),
+            None,
+            "a request with an unknown play session must not inherit the device's recent selection"
+        );
+        assert_eq!(
+            StreamService::selected_stream_id(
+                ctx,
+                Some("device-tv"),
+                owner.id,
+                None,
+                Some("psid-phone")
+            ),
+            Some(alive.id),
+            "a known play session wins over the device's recent selection"
         );
         // A client can keep requesting the original stream ID for direct play
         // even though PlaybackInfo returned the fallback stream ID.
