@@ -6704,6 +6704,31 @@ impl Media {
         }
     }
 
+    /// This item's `original_language`, else its series' for a Season/Episode.
+    pub async fn inherited_original_language(
+        &self,
+        db: &SqlitePool,
+    ) -> Result<Option<String>> {
+        if self
+            .original_language
+            .is_some()
+            || !matches!(self.kind, MediaKind::Season | MediaKind::Episode)
+        {
+            return Ok(self
+                .original_language
+                .clone());
+        }
+        let Some(series_id) = self.grandparent_id else {
+            return Ok(None);
+        };
+        let language: Option<Option<String>> =
+            sqlx::query_scalar("SELECT original_language FROM media WHERE id = ?")
+                .bind(series_id)
+                .fetch_optional(db)
+                .await?;
+        Ok(language.flatten())
+    }
+
     /// Set only this item's played state — no propagation.
     async fn apply_played(
         &self,
