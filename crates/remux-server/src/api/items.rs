@@ -1612,50 +1612,24 @@ async fn rank_item_sources(
     user_cfg: &api::UserConfiguration,
     server_metadata_language: Option<&str>,
     original_language: Option<&str>,
+    remembered_audio: Option<i64>,
+    remembered_subtitle: Option<i64>,
 ) {
-    if ranking.mode == remux_sdks::remux::SortMediaSourcesMode::Disabled
-        || sources.len() < 2
-        || sources
-            .iter()
-            .any(|source| {
-                source
-                    .group_id
-                    .is_some()
-            })
-    {
-        return;
-    }
-
-    let mut extraction: std::collections::HashMap<Uuid, bool> = Default::default();
-    for source in sources.iter() {
-        extraction.insert(
-            source.id,
-            source
-                .allows_subtitle_extraction(db)
-                .await,
-        );
-    }
-
-    crate::services::StreamService::rank_sources(sources, ranking, |source| {
-        let mut info = api::MediaSourceInfo::from(source.clone());
-        crate::conversions::apply_filename_guess(&mut info, source);
-        info.resolve_default_streams(
+    crate::services::StreamService::rank_media_sources(
+        db,
+        sources,
+        ranking,
+        crate::services::DefaultStreamPrefs {
             user_cfg,
             server_metadata_language,
             original_language,
-            None,
-            None,
-            None,
-            None,
-        );
-        (
-            info,
-            extraction
-                .get(&source.id)
-                .copied()
-                .unwrap_or(false),
-        )
-    });
+            requested_audio: None,
+            requested_subtitle: None,
+            remembered_audio,
+            remembered_subtitle,
+        },
+    )
+    .await;
 }
 
 async fn item_for_user(
@@ -1746,6 +1720,14 @@ async fn item_for_user(
         std::slice::from_mut(&mut media),
     )
     .await;
+
+    // Same remembered track selections PlaybackInfo resolves with, so both
+    // endpoints rank and default sources identically.
+    let (remembered_audio, remembered_subtitle) = media
+        .user_state
+        .as_ref()
+        .map(|s| (s.audio_idx, s.subtitle_idx))
+        .unwrap_or_default();
 
     let needs_streams = want_streams
         && matches!(
@@ -1907,6 +1889,8 @@ async fn item_for_user(
                     media
                         .original_language
                         .as_deref(),
+                    remembered_audio,
+                    remembered_subtitle,
                 )
                 .await;
             }
@@ -1989,6 +1973,8 @@ async fn item_for_user(
                     media
                         .original_language
                         .as_deref(),
+                    remembered_audio,
+                    remembered_subtitle,
                 )
                 .await;
             }
@@ -2097,8 +2083,8 @@ async fn item_for_user(
                         .as_deref(),
                     None,
                     None,
-                    None,
-                    None,
+                    remembered_audio,
+                    remembered_subtitle,
                 );
             }
         }
