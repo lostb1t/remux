@@ -1384,13 +1384,10 @@ fn select_candidates(
             }
             true
         })
-        // In group-cascade mode (restrict_resolution=false) try all candidates;
-        // otherwise honour the configured retry cap.
-        .take(if restrict_resolution {
-            max_retries
-        } else {
-            usize::MAX
-        })
+        // The configured fallback cap is a latency/safety bound, not a
+        // resolution-filtering option. Cascade mode may broaden which
+        // candidates qualify, but it must not silently disable the cap.
+        .take(max_retries)
         .filter_map(|c| {
             let url = c
                 .stream_info
@@ -1400,6 +1397,18 @@ fn select_candidates(
             Some((c.clone(), url))
         })
         .collect()
+}
+
+fn probe_attempt_timeout(primary: &db::Media, configured_secs: u64) -> u64 {
+    if primary
+        .stream_info
+        .as_ref()
+        .is_some_and(|info| info.is_p2p())
+    {
+        configured_secs.min(30)
+    } else {
+        configured_secs
+    }
 }
 
 /// Probe a stream URL, retrying with the next matching candidate on failure.
@@ -1444,8 +1453,11 @@ where
         .collect();
     let total_available = probe_pool.len();
     let mut attempts = 0usize;
-
+    // Torrent startup depends on piece availability and can otherwise hold
+    // PlaybackInfo for the full configured 60s per candidate. Keep real P2P
+    // probing, but restore the bounded per-attempt wait used before #422.
     for (stream, url_opt) in all_to_try {
+        let effective_timeout = probe_attempt_timeout(&stream, timeout_secs);
         let is_retry = stream.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
@@ -1468,7 +1480,7 @@ where
         let db2 = db.clone();
         let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
+            std::time::Duration::from_secs(effective_timeout),
             tokio::task::spawn_blocking(move || f(url2)),
         )
         .await;
@@ -1544,7 +1556,7 @@ where
                 warn!(url = %url, error = %e, "probe task panicked");
             }
             Err(_) => {
-                warn!(url = %url, timeout = timeout_secs, "probe timed out");
+                warn!(url = %url, timeout = effective_timeout, "probe timed out");
             }
         }
     }
@@ -1946,7 +1958,7 @@ mod probe_tests {
     }
 
     #[test]
-    fn cascade_mode_ignores_retry_cap() {
+    fn cascade_mode_honours_retry_cap() {
         let primary = http_media("http://a.example.com");
         let others: Vec<_> = (0..5)
             .map(|i| http_media(&format!("http://s{i}.example.com")))
@@ -1955,7 +1967,17 @@ mod probe_tests {
             .chain(others)
             .collect();
         let result = select_candidates(&primary, &all, true, 1, false, 3000);
-        assert_eq!(result.len(), 5);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn p2p_probe_timeout_is_capped_without_changing_http_timeout() {
+        assert_eq!(probe_attempt_timeout(&p2p_media(), 60), 30);
+        assert_eq!(probe_attempt_timeout(&p2p_media(), 15), 15);
+        assert_eq!(
+            probe_attempt_timeout(&http_media("http://example.com"), 60),
+            60
+        );
     }
 
     #[tokio::test]
@@ -2133,7 +2155,7 @@ mod probe_tests {
     }
 
     #[tokio::test]
-    async fn cascade_mode_tries_all_streams() {
+    async fn cascade_mode_stops_at_retry_cap() {
         let db = test_db().await;
         let sources: Vec<_> = (0..4)
             .map(|i| http_media(&format!("http://s{i}.example.com")))
@@ -2144,23 +2166,18 @@ mod probe_tests {
             Some("http://s0.example.com".to_string()),
             10,
             true,
-            1, // max_retries=1, but restrict_resolution=false → cascade
+            1, // one fallback candidate even when resolution is unrestricted
             &sources,
             false,
             3000,
             &db,
-            queued_probe(vec![
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-                Err(anyhow!("fail")),
-            ]),
+            queued_probe(vec![Err(anyhow!("fail")), Err(anyhow!("fail"))]),
         )
         .await;
         let err = format!("{:?}", result.unwrap_err());
         assert!(
-            err.contains("tried 4 of 4 streams"),
-            "unexpected error: {err}"
+            err.contains("tried 2 of 4 streams"),
+            "configured fallback cap must limit cascade attempts: {err}"
         );
     }
 
