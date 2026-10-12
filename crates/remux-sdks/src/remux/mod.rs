@@ -669,6 +669,17 @@ pub enum SortMediaSourcesMode {
     Compatibility,
     /// Best quality always wins, regardless of whether it needs a transcode.
     Quality,
+    /// Order only by transcode cost for the requesting device: Direct Play,
+    /// then Direct Stream (remux only), then sources whose verdict rests on
+    /// unknown facts (no probe, and the device could reject what is missing),
+    /// then an audio-only re-encode, then a video re-encode. The cost
+    /// includes the bitrate cap (`MaxStreamingBitrate`) and the profile's
+    /// resolution limits, so a lighter version that fits beats a heavier one
+    /// that would be re-encoded. Within a tier the probe/addon order is kept,
+    /// so an addon that already ranks its streams (by quality, cache state,
+    /// ...) decides which version plays. Remux only steps in to avoid a
+    /// transcode.
+    TranscodeCost,
 }
 
 #[dto]
@@ -775,8 +786,9 @@ pub struct ServerConfiguration {
     /// (default — Direct Play and Direct Stream count equally, so quality
     /// picks the winner between them; a real transcode still ranks below
     /// both), `Compatibility` (never prefer any transcode-needing version,
-    /// and never prefer a remux over a true direct play), or `Quality` (best
-    /// quality always wins, regardless of transcode cost).
+    /// and never prefer a remux over a true direct play), `Quality` (best
+    /// quality always wins, regardless of transcode cost), or `TranscodeCost`
+    /// (cheapest playback first, addon order kept within each tier).
     #[default(Some(SortMediaSourcesMode::Best))]
     pub sort_media_sources: Option<SortMediaSourcesMode>,
     /// Append the playback decision ("Direct Play" / "Direct Stream" /
