@@ -412,14 +412,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         onclick: move |e| {
                                                             e.stop_propagation();
                                                             name_input.set(k_name.clone());
-                                                            let mut defaults = std::collections::HashMap::new();
-                                                            if let Some(meta) = kinds.read().iter().find(|m| m.id == k_id_cfg).cloned() {
-                                                                for opt in &meta.options {
-                                                                    if let Some(default) = &opt.default {
-                                                                        defaults.insert(opt.id.clone(), default.clone());
-                                                                    }
-                                                                }
-                                                            }
+                                                            let defaults = kinds
+                                                                .read()
+                                                                .iter()
+                                                                .find(|m| m.id == k_id_cfg)
+                                                                .map(|meta| initial_option_values(&meta.options))
+                                                                .unwrap_or_default();
                                                             form_values.set(defaults);
                                                             create_step.set(1);
                                                         },
@@ -1041,13 +1039,16 @@ pub(crate) fn AddonOptionField(
                 AddonOptionType::Select { options } => rsx! {
                     select {
                         class: "form-input",
-                        value: "{current_str}",
                         onchange: move |e| {
                             let mut map = values.write();
                             map.insert(id_select.clone(), serde_json::Value::String(e.value()));
                         },
                         for so in options.iter().cloned() {
-                            option { value: "{so.value}", "{so.label}" }
+                            option {
+                                value: "{so.value}",
+                                selected: current_str == so.value,
+                                "{so.label}"
+                            }
                         }
                     }
                 },
@@ -1158,6 +1159,38 @@ pub(crate) fn AddonOptionField(
 /// Stremio addon manifests conventionally live at `/manifest.json`, while the
 /// corresponding setup page is served from the same base path at `/configure`.
 /// Query parameters and fragments are intentionally retained.
+/// Starting form values for a new addon: each option's default, or for a
+/// required select with none, its first choice, so what the dropdown shows is
+/// what gets saved.
+fn initial_option_values(
+    options: &[AddonOption],
+) -> std::collections::HashMap<String, serde_json::Value> {
+    options
+        .iter()
+        .filter_map(|opt| {
+            let value = match (&opt.default, &opt.kind) {
+                (Some(default), _) => default.clone(),
+                (None, AddonOptionType::Select { options: choices })
+                    if opt.required =>
+                {
+                    serde_json::Value::String(
+                        choices
+                            .first()?
+                            .value
+                            .clone(),
+                    )
+                }
+                _ => return None,
+            };
+            Some((
+                opt.id
+                    .clone(),
+                value,
+            ))
+        })
+        .collect()
+}
+
 fn manifest_configure_url(value: &str) -> Option<String> {
     let mut url = Url::parse(value.trim()).ok()?;
     let path = url
@@ -1178,7 +1211,46 @@ fn manifest_configure_url(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::manifest_configure_url;
+    use super::{initial_option_values, manifest_configure_url};
+    use remux_sdks::remux::{AddonOption, AddonOptionType, AddonSelectOption};
+
+    fn select(id: &str, required: bool, default: Option<&str>) -> AddonOption {
+        AddonOption {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            required,
+            default: default.map(|d| serde_json::json!(d)),
+            kind: AddonOptionType::Select {
+                options: vec![
+                    AddonSelectOption {
+                        label: "Movies".to_string(),
+                        value: "movie".to_string(),
+                    },
+                    AddonSelectOption {
+                        label: "Tracks".to_string(),
+                        value: "track".to_string(),
+                    },
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn required_select_without_default_starts_on_first_choice() {
+        let values = initial_option_values(&[select("media_kind", true, None)]);
+        assert_eq!(values["media_kind"], serde_json::json!("movie"));
+    }
+
+    #[test]
+    fn explicit_default_wins_and_optional_select_stays_unset() {
+        let values = initial_option_values(&[
+            select("a", true, Some("track")),
+            select("b", false, None),
+        ]);
+        assert_eq!(values["a"], serde_json::json!("track"));
+        assert!(!values.contains_key("b"));
+    }
 
     #[test]
     fn manifest_configure_url_replaces_manifest_path_and_preserves_query() {
