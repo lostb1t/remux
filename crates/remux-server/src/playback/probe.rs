@@ -1405,7 +1405,13 @@ fn probe_attempt_timeout(primary: &db::Media, configured_secs: u64) -> u64 {
         .as_ref()
         .is_some_and(|info| info.is_p2p())
     {
-        configured_secs.min(30)
+        // PlaybackInfo clients currently allow about 90 seconds for the entire
+        // request, while the server can try the primary plus three fallback
+        // streams. A 30-second P2P attempt can therefore consume the whole
+        // client budget before the later candidates are reached. Real-device
+        // rotations also show viable fallback torrents becoming probeable well
+        // inside this window once the dead candidate is skipped.
+        configured_secs.min(15)
     } else {
         configured_secs
     }
@@ -1972,8 +1978,8 @@ mod probe_tests {
 
     #[test]
     fn p2p_probe_timeout_is_capped_without_changing_http_timeout() {
-        assert_eq!(probe_attempt_timeout(&p2p_media(), 60), 30);
-        assert_eq!(probe_attempt_timeout(&p2p_media(), 15), 15);
+        assert_eq!(probe_attempt_timeout(&p2p_media(), 60), 15);
+        assert_eq!(probe_attempt_timeout(&p2p_media(), 10), 10);
         assert_eq!(
             probe_attempt_timeout(&http_media("http://example.com"), 60),
             60
