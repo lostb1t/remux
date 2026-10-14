@@ -159,8 +159,7 @@ impl AddonPreset for OpendalLocalPreset {
             .cloned()
             .unwrap_or_default();
         let operator =
-            opendal::Operator::new(opendal::services::Fs::default().root(&first))?
-                .finish();
+            opendal::Operator::new(opendal::services::Fs::default().root(&first))?;
 
         let addon = Arc::new(OpendalAddon {
             addon_id,
@@ -288,7 +287,7 @@ impl AddonPreset for OpendalWebdavPreset {
         {
             builder = builder.password(p);
         }
-        let operator = opendal::Operator::new(builder)?.finish();
+        let operator = opendal::Operator::new(builder)?;
 
         let addon = Arc::new(OpendalAddon {
             addon_id,
@@ -1155,8 +1154,7 @@ async fn scan_addon(
             .into_iter()
             .map(|p| {
                 let op =
-                    opendal::Operator::new(opendal::services::Fs::default().root(&p))?
-                        .finish();
+                    opendal::Operator::new(opendal::services::Fs::default().root(&p))?;
                 Ok((op, "/".to_string(), p))
             })
             .collect::<Result<_>>()?
@@ -1979,7 +1977,7 @@ fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
     {
         builder = builder.password(p);
     }
-    Ok(opendal::Operator::new(builder)?.finish())
+    Ok(opendal::Operator::new(builder)?)
 }
 
 async fn fetch_existing_imdb(
@@ -2162,8 +2160,7 @@ mod tests {
 
         let operator =
             opendal::Operator::new(opendal::services::Fs::default().root(&root))
-                .unwrap()
-                .finish();
+                .unwrap();
         let addon_kind = OpendalAddon {
             addon_id,
             operator: Arc::new(operator),
@@ -4433,14 +4430,16 @@ mod tests {
 
     #[test]
     fn probe_version_changes_with_strm_target_even_at_same_size() {
-        let meta = opendal::Metadata::new(EntryMode::FILE).with_content_length(24);
+        let meta = opendal::MetadataBuilder::file(24).build();
         let a = probe_version_of("http://host/aaaaaaaaa.mkv", &meta);
         let b = probe_version_of("http://host/bbbbbbbbb.mkv", &meta);
         assert_ne!(a, b);
         assert_eq!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &meta));
-        let tagged = meta
+        let mut builder = meta
             .clone()
-            .with_etag("\"v2\"".to_string());
+            .into_builder();
+        builder.etag("\"v2\"");
+        let tagged = builder.build();
         assert_ne!(a, probe_version_of("http://host/aaaaaaaaa.mkv", &tagged));
     }
 

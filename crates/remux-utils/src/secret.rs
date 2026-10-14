@@ -94,7 +94,7 @@ mod sqlx_impls {
     {
         fn encode_by_ref(
             &self,
-            buf: &mut <DB as sqlx::Database>::ArgumentBuffer<'q>,
+            buf: &mut <DB as sqlx::Database>::ArgumentBuffer,
         ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
             self.0
                 .encode_by_ref(buf)

@@ -123,9 +123,9 @@ impl UserMediaTracker {
     }
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        Ok(sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM user_media_trackers WHERE id = ?1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(db)
         .await?)
@@ -136,9 +136,9 @@ impl UserMediaTracker {
         user_id: Uuid,
         addon_id: Uuid,
     ) -> Result<Option<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        Ok(sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM user_media_trackers WHERE user_id = ?1 AND addon_id = ?2"
-        ))
+        )))
         .bind(user_id)
         .bind(addon_id)
         .fetch_optional(db)
@@ -146,20 +146,20 @@ impl UserMediaTracker {
     }
 
     pub async fn list_for_user(db: &SqlitePool, user_id: Uuid) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        Ok(sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM user_media_trackers WHERE user_id = ?1 \
              ORDER BY created_at ASC"
-        ))
+        )))
         .bind(user_id)
         .fetch_all(db)
         .await?)
     }
 
     pub async fn list_for_addon(db: &SqlitePool, addon_id: Uuid) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>(&format!(
+        Ok(sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM user_media_trackers WHERE addon_id = ?1 \
              ORDER BY created_at ASC"
-        ))
+        )))
         .bind(addon_id)
         .fetch_all(db)
         .await?)

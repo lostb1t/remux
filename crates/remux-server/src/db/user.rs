@@ -7,10 +7,8 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use argon2::{
-    Argon2,
-    password_hash::{
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
-    },
+    Argon2, PasswordHash,
+    password_hash::{PasswordHasher, PasswordVerifier},
 };
 use async_trait::async_trait;
 use axum::{
@@ -162,7 +160,7 @@ impl User {
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!("SELECT * FROM users WHERE id IN ({placeholders})");
-            let mut q = sqlx::query_as::<_, Self>(&sql);
+            let mut q = sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(sql.as_str()));
             for id in chunk {
                 q = q.bind(id);
             }
@@ -278,9 +276,8 @@ impl User {
     }
 
     pub fn hash_password(password: &str) -> Result<String> {
-        let salt = SaltString::generate(&mut OsRng);
         let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .map_err(|e| anyhow!("password hashing failed: {e}"))?;
 
         Ok(hash.to_string())
@@ -793,7 +790,7 @@ impl UserMediaState {
         let sql = format!(
             "SELECT * FROM user_media_state WHERE media_raw IN ({placeholders})"
         );
-        let mut q = sqlx::query_as::<_, Self>(&sql);
+        let mut q = sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(sql.as_str()));
         for r in &raw_jsons {
             q = q.bind(r.as_str());
         }
@@ -838,7 +835,8 @@ impl UserMediaState {
         let sql = format!(
             "SELECT user_id, media_id FROM user_media_state WHERE media_id IN ({placeholders})"
         );
-        let mut q = sqlx::query_as::<_, (Uuid, Uuid)>(&sql);
+        let mut q =
+            sqlx::query_as::<_, (Uuid, Uuid)>(sqlx::AssertSqlSafe(sql.as_str()));
         for id in &new_ids {
             q = q.bind(id);
         }
@@ -906,7 +904,7 @@ impl UserMediaState {
             }
             sql.push(')');
 
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for (old_id, new_id) in chunk {
                 q = q
                     .bind(old_id)

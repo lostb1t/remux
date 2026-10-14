@@ -970,7 +970,7 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
             error!(
                 status = %status,
                 title = %err.title(),
-                detail = %err.detail(),
+                detail = err.detail().unwrap_or_default(),
                 cause = %format!("{:#}", cause),
                 "api error"
             );
@@ -978,7 +978,7 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
             debug!(
                 status = %status,
                 title = %err.title(),
-                detail = %err.detail(),
+                detail = err.detail().unwrap_or_default(),
                 cause = %format!("{:#}", cause),
                 "api error"
             );
@@ -987,14 +987,14 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
         error!(
             status = %status,
             title = %err.title(),
-            detail = %err.detail(),
+            detail = err.detail().unwrap_or_default(),
             "api error"
         );
     } else {
         debug!(
             status = %status,
             title = %err.title(),
-            detail = %err.detail(),
+            detail = err.detail().unwrap_or_default(),
             "api error"
         );
     }

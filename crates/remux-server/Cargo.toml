@@ -35,7 +35,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 serde = { version = "1.0", features = ["rc"] }
 serde_json = "^1.0"
-tokio = { version = "^1.0", features = ["full", "io-util", "time"] }
+tokio = { version = "^1.53", features = ["full", "io-util", "time"] }
 axum = { version = "^0.8", features = ["ws"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "^0.3", features = [
@@ -53,103 +53,104 @@ libc = "0.2"
 tracing = "^0.1"
 tracing-log = "^0.2"
 tower = { version = "^0.5", features = ["tokio", "util"] }
-tower-http = { version = "^0.6", features = ["full"] }
+tower-http = { version = "^0.7", features = ["full"] }
 percent-encoding = "2"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = { version = "3", features = ["chrono", "macros"] }
-uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
-http = "1.4.0"
-http-body = "1.0"
+uuid = { version = "1.27", features = ["v4", "v5", "serde"] }
+http = "1.5.0"
+http-body = "1.1"
 http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["compat", "io", "io-util", "time"] }
-futures-util = "0.3.31"
-axum-extra = { version = "0.12.5", features = [
+futures-util = "0.3.34"
+axum-extra = { version = "0.12.6", features = [
     "file-stream",
     "typed-header",
     "query",
 ] }
 #fake = { version = "4.3.0", features = ["derive"] }
-strum_macros = "^0.27"
-strum = "^0.27"
-base64 = "^0.22"
+strum_macros = "^0.28"
+strum = "^0.28"
+base64 = "^0.23"
 tokio-stream = { version = "0.1", features = ["io-util", "sync"] }
-futures = "0.3.31"
-async-compression = "0.4.23"
+futures = "0.3.34"
+async-compression = "0.4.50"
 #backon = "1.5.2"
-itertools = "0.14.0"
+itertools = "0.15.0"
 #merge = "0.2.0"
-tempfile = "3.20.0"
-flate2 = "1.1.1"
-tar = "0.4.44"
+tempfile = "3.27.0"
+flate2 = "1.1.10"
+tar = "0.4.46"
 #reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
 remux-sdks = { path = "../remux-sdks", features = ["native"] }
 remux-utils = { path = "../remux-utils", features = ["sqlx"] }
 isolang = { version = "2.4.0", features = ["list_languages"] }
 timed = "0.2.1"
-async-trait = "0.1.88"
+async-trait = "0.1.92"
 async-stream = "0.3"
-headers = "0.4.0"
+headers = "0.4.2"
 urlencoding = "2.1.3"
-url = "2.5.4"
+url = "2.5.8"
 thiserror = "^2.0"
 #serde_qs = "0.15.0"
-bytes = "1.10.1"
+bytes = "1.12.1"
 csv-async = { version = "1.3.1", features = ["tokio-stream", "tokio", "serde"] }
 #toml = "^0.9"
 #base36 = "0.0.1"
 dotenvy = "0.15.7"
-dirs = "5"
+dirs = "7"
 include_dir = { version = "0.7", optional = true }
-duration-str = "0.18.0"
+duration-str = "0.21.0"
 #reqwest-retry = "0.8.0"
 default2 = "1.0.2"
 serde_alias = "0.0.2"
-axum-anyhow = "0.10.3"
-moka = { version = "0.12.12", features = ["sync"] }
+axum-anyhow = "0.11.11"
+moka = { version = "0.12.16", features = ["sync"] }
 #reqwest-tracing = "0.5.8"
 serde_urlencoded = "0.7.1"
-config = "0.15.19"
+config = "0.15.27"
 clap = { version = "4", features = ["derive"] }
 serde-aux = "4.7.0"
-sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chrono", "json" ] }
-argon2 = { version = "0.5.3", default-features = true}
+sqlx = { version = "0.9", features = [ "runtime-tokio", "sqlite", "uuid", "chrono", "json" ] }
+argon2 = { version = "0.6.0", default-features = true}
 # argo depends on 0,8
-rand = { version = "0.8", features = ["getrandom"] }
+rand = "0.10"
 #md5 = "0.8.0"
 #cron_tab = { version = "0.2", features = ["sync", "async"] }
 tokio-cron-scheduler = "*"
 inventory = "0.3"
 remux-macros = { path = "../remux-macros" }
-dashmap = "5.5"
+dashmap = "6.2"
 arc-swap = "1"
-rust_iso3166 = "0.1.14"
-quick-xml = { version = "0.37", features = ["encoding"] }
-opendal = { version = "0.52", features = ["services-webdav", "services-fs"] }
+rust_iso3166 = "0.2.0"
+quick-xml = { version = "0.42", features = ["encoding"] }
+opendal = { version = "0.59", features = ["services-webdav", "services-fs"] }
 
-librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api", "tracing-subscriber-utils"] }
+librqbit-dualstack-sockets = "0.7"
+librqbit = { version = "9", default-features = false, features = ["rust-tls", "http-api", "tracing-subscriber-utils"] }
 regex = "1"
 handlebars = "6"
 hunch = "2"
 log = "0.4"
 env_logger = "0.11"
-nutype = { version = "0.6", features = ["serde"] }
+nutype = { version = "0.8", features = ["serde"] }
 tikv-jemallocator = { version = "0.7", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-imageproc = { version = "0.26", default-features = false, features = ["text"] }
+imageproc = { version = "0.27", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
-opentelemetry = "0.32.0"
-opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
+opentelemetry = "0.33.0"
+opentelemetry_sdk = { version = "0.33.0", features = ["rt-tokio"] }
 # grpc-tonic (async, non-blocking) rather than the default reqwest-blocking-client —
 # span export must not block a tokio worker thread.
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["grpc-tonic", "trace"] }
-tracing-opentelemetry = "0.33.0"
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = "0.34.0"
 [features]
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
 desktop = ["include_dir"]
 
 [dev-dependencies]
-axum-test = "18.7.0"
-criterion = { version = "0.5", features = ["html_reports"] }
+axum-test = "21.1.0"
+criterion = { version = "0.8", features = ["html_reports"] }
 chrono = { version = "0.4", features = ["serde"] }
-httpmock = "0.7"
+httpmock = "0.8"

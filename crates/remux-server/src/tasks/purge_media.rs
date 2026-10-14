@@ -62,10 +62,10 @@ impl Task for PurgeMediaTask {
                 .execute(&mut *conn)
                 .await?;
 
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TEMP TABLE _keep AS \
                  SELECT * FROM media WHERE kind NOT IN ({PURGE_KINDS})"
-            ))
+            )))
             .execute(&mut *conn)
             .await?;
             // Index so subsequent IN (SELECT id FROM _keep) subqueries use index
@@ -106,9 +106,11 @@ impl Task for PurgeMediaTask {
             .await?;
 
             for (name, _) in &indexes {
-                sqlx::query(&format!("DROP INDEX IF EXISTS \"{name}\""))
-                    .execute(&mut *conn)
-                    .await?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP INDEX IF EXISTS \"{name}\""
+                )))
+                .execute(&mut *conn)
+                .await?;
             }
 
             // Truncate every table — O(1) each since foreign_keys = OFF enables the
@@ -154,7 +156,7 @@ impl Task for PurgeMediaTask {
 
             // Rebuild media indexes over ~1,200 surviving rows — near-instant.
             for (_, sql) in &indexes {
-                sqlx::query(sql)
+                sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                     .execute(&mut *conn)
                     .await?;
             }

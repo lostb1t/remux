@@ -48,7 +48,7 @@ pub async fn new_test_server_with_config(
         .save_cookies()
         .expect_success_by_default()
         .mock_transport()
-        .build(app)?;
+        .build(app);
 
     // Seed admin user via startup wizard (no auth required)
     server
