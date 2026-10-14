@@ -5,7 +5,7 @@ use super::subtitles::{
     SidecarSubtitleRoute, SubtitleDedupSettings, append_external_subtitles,
     drop_unsupported_embedded_subtitles_with_external_match,
     filter_external_subtitles_for_source, inject_sidecar_subtitles, provider_filename,
-    save_sidecar_subtitle_routes,
+    save_sidecar_subtitle_routes, save_source_subtitles,
 };
 use axum::{
     body::Body,
@@ -64,6 +64,10 @@ use axum_anyhow::ApiResult as Result;
 struct SourceExtras {
     /// The source id its DeliveryUrls were built with, and its sidecar routes.
     subtitle_routes: (Uuid, Vec<SidecarSubtitleRoute>),
+    /// Addon subtitles fetched for this source's release, before language
+    /// capping and dedup. The subtitle-download endpoint re-derives the menu
+    /// from this exact list, so it is stored with the sidecar routes.
+    external_subtitles: Vec<crate::addons::SubtitleInfo>,
     /// The candidate stream as listed.
     stream_id: Uuid,
     /// The stream probed for the candidate; differs from `stream_id` after a
@@ -463,7 +467,9 @@ async fn items_playbackinfo_inner(
     let subtitle_media_hint = media_source_id
         .is_none()
         .then(|| media.clone());
-    let (probed, (subtitle_media, external_subtitles)) = tokio::join!(
+    // Addon subtitles are fetched per source inside `probe_candidates`,
+    // alongside that source's probe, so only the item itself is loaded here.
+    let (probed, subtitle_media) = tokio::join!(
         async {
             service
                 .load(media)
@@ -474,9 +480,8 @@ async fn items_playbackinfo_inner(
         },
         async {
             // `id` is the top-level Movie/Episode UUID even when the request
-            // targets a child source. Fetch subtitle addons while stream addons
-            // load and their candidates are probed.
-            let mut subtitle_media = match subtitle_media_hint {
+            // targets a child source.
+            match subtitle_media_hint {
                 Some(hint) => Some(hint),
                 None => db::Media::get_by_id(
                     &state
@@ -487,28 +492,7 @@ async fn items_playbackinfo_inner(
                 .await
                 .ok()
                 .flatten(),
-            };
-            let external_subtitles = if is_live {
-                Vec::new()
-            } else if let Some(ref mut sub_media) = subtitle_media {
-                state
-                    .ctx
-                    .addons
-                    .fetch_subtitles(
-                        sub_media,
-                        &state.ctx,
-                        false,
-                        Some(
-                            session
-                                .user
-                                .id,
-                        ),
-                    )
-                    .await
-            } else {
-                Vec::new()
-            };
-            (subtitle_media, external_subtitles)
+            }
         }
     );
     let probed = probed?;
@@ -539,6 +523,7 @@ async fn items_playbackinfo_inner(
         stream,
         effective_stream,
         allow_subtitle_extraction,
+        external_subtitles,
     } in probed.results
     {
         // Metadata-only torrent probes may not know the container duration yet.
@@ -827,6 +812,7 @@ async fn items_playbackinfo_inner(
 
         source_extras.push(SourceExtras {
             subtitle_routes: (subtitle_source_id, routes),
+            external_subtitles,
             stream_id: stream.id,
             effective_stream_id: effective_stream.id,
             subtitle_prefetch,
@@ -834,23 +820,29 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // Probe and subtitle lookup ran concurrently. Append only after the real
-    // stream indexes are known.
-    append_external_subtitles(
-        &mut media_sources,
-        &external_subtitles,
-        &probe_cfg
-            .subtitle_languages
-            .clone()
-            .unwrap_or_default(),
-        sort_device_profile.as_ref(),
-        id,
-        session
-            .device
-            .access_token
-            .expose(),
-        subtitle_dedup,
-    );
+    // Append only after the real stream indexes are known. Each source gets
+    // the subtitles fetched for its own release.
+    let subtitle_languages = probe_cfg
+        .subtitle_languages
+        .clone()
+        .unwrap_or_default();
+    for (source, extras) in media_sources
+        .iter_mut()
+        .zip(&source_extras)
+    {
+        append_external_subtitles(
+            std::slice::from_mut(source),
+            &extras.external_subtitles,
+            &subtitle_languages,
+            sort_device_profile.as_ref(),
+            id,
+            session
+                .device
+                .access_token
+                .expose(),
+            subtitle_dedup,
+        );
+    }
 
     // Re-resolve defaults after external subtitles were injected so language
     // matching can also pick addon subtitles (same request context as the
@@ -936,6 +928,19 @@ async fn items_playbackinfo_inner(
         .zip(source_extras)
     {
         let (delivery_source_id, routes) = extras.subtitle_routes;
+        for source_id in [source.id, delivery_source_id] {
+            save_source_subtitles(
+                &state.ctx,
+                &session
+                    .device
+                    .id,
+                id,
+                source_id,
+                extras
+                    .external_subtitles
+                    .clone(),
+            );
+        }
         // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
         // some clients construct the route from the final MediaSourceInfo ID.
         // Cache both keys when auto-play rewrites the first source ID.

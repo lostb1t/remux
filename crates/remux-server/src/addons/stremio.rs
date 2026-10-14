@@ -18,7 +18,7 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
     MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, SubtitleInfo,
-    TreeAddon, addon,
+    SubtitleQuery, TreeAddon, addon,
 };
 use crate::{
     AppContext, common, db, sdks,
@@ -616,10 +616,11 @@ impl SubtitleAddon for StremioAddon {
     async fn subtitle_fetch(
         &self,
         media: &db::Media,
+        query: &SubtitleQuery,
         _db: &SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
         let svc = self.service()?;
-        let subs = stremio_subtitles(&svc, media).await?;
+        let subs = stremio_subtitles(&svc, media, query).await?;
         Ok(subs
             .into_iter()
             .map(|s| {
@@ -1678,6 +1679,7 @@ async fn stremio_search(
 async fn stremio_subtitles(
     svc: &stremio_service::StremioService,
     media: &db::Media,
+    query: &SubtitleQuery,
 ) -> Result<Vec<sdks::stremio::Subtitle>> {
     let (imdb_id, media_type, season, episode) = match media.kind {
         db::MediaKind::Movie => (
@@ -1707,8 +1709,17 @@ async fn stremio_subtitles(
         _ => return Err(anyhow!("subtitles not supported for {:?}", media.kind)),
     };
 
-    svc.get_subtitles(media_type, imdb_id, season, episode)
-        .await
+    svc.get_subtitles(
+        media_type,
+        imdb_id,
+        season,
+        episode,
+        query
+            .filename
+            .clone(),
+        query.video_size,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

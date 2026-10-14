@@ -835,12 +835,38 @@ pub struct SubtitleInfo {
     pub ai_translated: Option<bool>,
 }
 
+/// The release being played, so an addon can return subtitles made for that
+/// exact file instead of a generic list for the title. All fields are optional;
+/// addons that can't use them ignore the query.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubtitleQuery {
+    pub filename: Option<String>,
+    pub video_size: Option<i64>,
+}
+
+impl SubtitleQuery {
+    fn cache_suffix(&self) -> String {
+        if self == &Self::default() {
+            return String::new();
+        }
+        format!(
+            ":{}:{}",
+            self.filename
+                .as_deref()
+                .unwrap_or(""),
+            self.video_size
+                .map_or(String::new(), |size| size.to_string())
+        )
+    }
+}
+
 #[async_trait]
 pub trait SubtitleAddon: Send + Sync {
     fn supports(&self, media: &db::Media) -> bool;
     async fn subtitle_fetch(
         &self,
         media: &db::Media,
+        query: &SubtitleQuery,
         db: &SqlitePool,
     ) -> Result<Vec<SubtitleInfo>>;
 }
@@ -2897,7 +2923,6 @@ impl AddonService {
     /// Items detail fetch racing a PlaybackInfo call for the same item used
     /// to each pay the full addon fetch independently and concurrently.
     /// Cache the result briefly and serialize concurrent callers the same way.
-    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_subtitles(
         &self,
         media: &mut db::Media,
@@ -2905,7 +2930,29 @@ impl AddonService {
         background: bool,
         user_id: Option<Uuid>,
     ) -> Vec<SubtitleInfo> {
+        self.fetch_subtitles_for(
+            media,
+            &SubtitleQuery::default(),
+            ctx,
+            background,
+            user_id,
+        )
+        .await
+    }
+
+    /// Like `fetch_subtitles`, but asks addons for subtitles made for the
+    /// release in `query`. Each distinct query is cached on its own.
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
+    pub async fn fetch_subtitles_for(
+        &self,
+        media: &mut db::Media,
+        query: &SubtitleQuery,
+        ctx: &AppContext,
+        background: bool,
+        user_id: Option<Uuid>,
+    ) -> Vec<SubtitleInfo> {
         const SUBTITLES_TTL: Duration = Duration::from_secs(5 * 60);
+        const SUBTITLE_ADDON_TIMEOUT: Duration = Duration::from_secs(5);
         static SUBTITLE_LOCKS: KeyedLock<String> = KeyedLock::new();
 
         if media.kind == db::MediaKind::Episode {
@@ -2916,11 +2963,12 @@ impl AddonService {
         }
 
         let cache_key = format!(
-            "addon-subtitles:{}:{}",
+            "addon-subtitles:{}:{}{}",
             media.id,
             user_id
                 .map(|id| id.to_string())
-                .unwrap_or_else(|| "anon".to_string())
+                .unwrap_or_else(|| "anon".to_string()),
+            query.cache_suffix()
         );
         if let Some(cached) = ctx
             .store
@@ -2947,22 +2995,39 @@ impl AddonService {
 
         debug!(count = addons.len(), "subtitle addons matched");
         let instant = Instant::now();
+        // Addons are queried concurrently so the slowest one sets the wait
+        // instead of the sum, and each is capped so one hung addon can't
+        // stall playback. Results keep addon order.
+        let media_ref: &db::Media = media;
+        let fetched = futures::future::join_all(
+            addons
+                .iter()
+                .map(|r| async move {
+                    debug!(addon = %r.row.name, "fetching subtitles from addon");
+                    let result = tokio::time::timeout(
+                        SUBTITLE_ADDON_TIMEOUT,
+                        r.subtitle
+                            .as_ref()
+                            .unwrap()
+                            .subtitle_fetch(media_ref, query, &ctx.db),
+                    )
+                    .await;
+                    (r, result)
+                }),
+        )
+        .await;
         let mut subs = vec![];
-        for r in &addons {
-            debug!(addon = %r.row.name, "fetching subtitles from addon");
-            match r
-                .subtitle
-                .as_ref()
-                .unwrap()
-                .subtitle_fetch(media, &ctx.db)
-                .await
-            {
-                Ok(s) => {
+        for (r, result) in fetched {
+            match result {
+                Ok(Ok(s)) => {
                     debug!(addon = %r.row.name, count = s.len(), "subtitle addon returned results");
                     subs.extend(s);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(addon = %r.row.name, error = %e, "subtitle addon failed")
+                }
+                Err(_) => {
+                    warn!(addon = %r.row.name, timeout = ?SUBTITLE_ADDON_TIMEOUT, "subtitle addon timed out")
                 }
             }
         }
@@ -4469,6 +4534,7 @@ mod tests {
         async fn subtitle_fetch(
             &self,
             _media: &db::Media,
+            _query: &SubtitleQuery,
             _db: &SqlitePool,
         ) -> Result<Vec<SubtitleInfo>> {
             self.calls

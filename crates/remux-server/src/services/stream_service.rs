@@ -21,6 +21,23 @@ pub(crate) struct ProbeResult {
     pub effective_stream: db::Media,
     /// Whether on-demand subtitle extraction is feasible for `effective_stream`.
     pub allow_subtitle_extraction: bool,
+    /// Addon subtitles fetched for `effective_stream`'s release, alongside its
+    /// probe. Empty for candidates that were not probed.
+    pub external_subtitles: Vec<crate::addons::SubtitleInfo>,
+}
+
+/// What a subtitle addon needs to match subtitles to this exact release.
+fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQuery {
+    let info = stream
+        .stream_info
+        .as_ref();
+    crate::addons::SubtitleQuery {
+        filename: info.and_then(|info| {
+            info.filename
+                .clone()
+        }),
+        video_size: info.and_then(|info| info.size),
+    }
 }
 
 /// Result of `StreamService::probe_candidates`.
@@ -701,22 +718,61 @@ impl StreamService {
             } else {
                 timeout
             };
-            let (mut source, effective_stream) = probe_stream(
-                &stream,
-                url_opt,
-                skip_probe,
-                timeout_secs,
-                auto_next,
-                max_retries,
-                &sel.probe_pool,
-                sel.restrict_resolution,
-                port,
-                &self
-                    .ctx
-                    .db,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            // Subtitles are only fetched for the candidate being probed, and
+            // alongside that probe: both are slow network round-trips, so
+            // waiting for one before starting the other would add them up.
+            let wants_subtitles = !skip_probe
+                && item
+                    .as_ref()
+                    .is_some_and(|it| !it.is_live());
+            let subtitle_query = subtitle_query_for(&stream);
+            let fetch_subtitles = |query: crate::addons::SubtitleQuery| {
+                let media = item.clone();
+                async move {
+                    match media {
+                        Some(mut media) if wants_subtitles => {
+                            self.ctx
+                                .addons
+                                .fetch_subtitles_for(
+                                    &mut media,
+                                    &query,
+                                    &self.ctx,
+                                    false,
+                                    self.user_id,
+                                )
+                                .await
+                        }
+                        _ => Vec::new(),
+                    }
+                }
+            };
+            let (probed, mut external_subtitles) = tokio::join!(
+                probe_stream(
+                    &stream,
+                    url_opt,
+                    skip_probe,
+                    timeout_secs,
+                    auto_next,
+                    max_retries,
+                    &sel.probe_pool,
+                    sel.restrict_resolution,
+                    port,
+                    &self
+                        .ctx
+                        .db,
+                ),
+                fetch_subtitles(subtitle_query.clone()),
+            );
+            let (mut source, effective_stream) =
+                probed.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            // The probe failed over to another release, whose subtitles are
+            // for a different file than the ones just fetched.
+            if effective_stream.id != stream.id {
+                let effective_query = subtitle_query_for(&effective_stream);
+                if effective_query != subtitle_query {
+                    external_subtitles = fetch_subtitles(effective_query).await;
+                }
+            }
 
             // Use the StreamGroup UUID when this candidate is a group representative
             // (group_id is set by filter_sources). This ensures the client sends back
@@ -832,6 +888,7 @@ impl StreamService {
                 stream,
                 effective_stream,
                 allow_subtitle_extraction,
+                external_subtitles,
             });
         }
 

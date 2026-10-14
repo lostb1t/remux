@@ -310,19 +310,17 @@ pub struct MetaResponse {
     pub meta: Meta,
 }
 
-// TODO: The Stremio subtitles protocol accepts a `filename` extra prop for
-// better addon-side matching, but this is still unimplemented — subtitle
-// fetches happen once per item (`stremio_subtitles(media: &db::Media)`), and
-// a single item can have multiple sources with different filenames, so there
-// isn't yet a single filename to send here. Client-side is_release_match
-// filtering (subtitle_selection.rs) works around this by ranking whatever
-// the addon returns, not by asking it for release-specific results.
+/// `/subtitles/{type}/{id}/{extraArgs}.json`. The optional `filename` and
+/// `videoSize` extras let addons match the subtitle to the exact release being
+/// played; without them an addon can only return a list for the title.
 #[derive(Debug, Clone)]
 pub struct SubtitlesEndpoint {
     pub media_type: MediaType,
     pub imdb_id: String,
     pub season: Option<i64>,
     pub episode: Option<i64>,
+    pub filename: Option<String>,
+    pub video_size: Option<i64>,
 }
 
 impl Endpoint for SubtitlesEndpoint {
@@ -335,7 +333,27 @@ impl Endpoint for SubtitlesEndpoint {
                 .imdb_id
                 .clone(),
         };
-        format!("/subtitles/{}/{}.json", self.media_type, id)
+        let mut extras = Vec::new();
+        if let Some(size) = self.video_size {
+            extras.push(format!("videoSize={size}"));
+        }
+        if let Some(name) = self
+            .filename
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        {
+            extras.push(format!("filename={}", urlencoding::encode(name)));
+        }
+        if extras.is_empty() {
+            format!("/subtitles/{}/{}.json", self.media_type, id)
+        } else {
+            format!(
+                "/subtitles/{}/{}/{}.json",
+                self.media_type,
+                id,
+                extras.join("&")
+            )
+        }
     }
 }
 

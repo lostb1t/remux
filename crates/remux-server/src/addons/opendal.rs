@@ -15,7 +15,7 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, AddonSelectOption, CatalogAddon, CatalogInfo,
     IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, SubtitleAddon,
-    SubtitleInfo, TreeAddon,
+    SubtitleInfo, SubtitleQuery, TreeAddon,
 };
 use crate::{
     AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint,
@@ -556,6 +556,7 @@ impl SubtitleAddon for OpendalAddon {
     async fn subtitle_fetch(
         &self,
         media: &db::Media,
+        _query: &SubtitleQuery,
         db: &sqlx::SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "episode" {
@@ -3253,7 +3254,7 @@ mod tests {
             ..Default::default()
         };
         let infos = addon
-            .subtitle_fetch(&movie_media, &ctx.db)
+            .subtitle_fetch(&movie_media, &SubtitleQuery::default(), &ctx.db)
             .await
             .unwrap();
         assert_eq!(infos.len(), 3, "subtitle_fetch should return 3 subtitles");
