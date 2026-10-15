@@ -784,55 +784,6 @@ fn load_sidecar_subtitle_routes(
         ))
 }
 
-/// The stream PlaybackInfo selected for this device and source id. After a
-/// probe fallback, or for auto-play where the id is the item's, resolving the
-/// id directly would pick a different release than the one whose subtitles
-/// and media info the client was given.
-///
-/// The subtitle URL carries no PlaySessionId, so the selection comes from the
-/// device's last PlaybackInfo for this item and source id.
-fn selected_source_id(
-    state: &AppState,
-    session: &auth::AuthSession,
-    item_id: Uuid,
-    media_source_id: Uuid,
-) -> Uuid {
-    crate::services::StreamService::recent_selected_stream_for(
-        &state.ctx,
-        &session
-            .device
-            .id,
-        item_id,
-        media_source_id,
-    )
-    .unwrap_or(media_source_id)
-}
-
-/// The add-on subtitles for one source's release, as PlaybackInfo fetched them
-/// (same query, so the same cache entry).
-async fn fetch_source_subtitles(
-    state: &AppState,
-    session: &auth::AuthSession,
-    item_media: &mut db::Media,
-    source: &db::Media,
-) -> Vec<crate::addons::SubtitleInfo> {
-    state
-        .ctx
-        .addons
-        .fetch_subtitles_for(
-            item_media,
-            &crate::services::stream_service::subtitle_query_for(source),
-            &state.ctx,
-            true,
-            Some(
-                session
-                    .user
-                    .id,
-            ),
-        )
-        .await
-}
-
 async fn sidecar_subtitle_response(
     state: &AppState,
     routes: Option<&[SidecarSubtitleRoute]>,
@@ -871,6 +822,18 @@ async fn subtitles_stream_inner(
     stream_index: i64,
     format: String,
 ) -> Result<impl IntoResponse> {
+    // The URL carries no PlaySessionId: use the stream this device's last
+    // PlaybackInfo selected for the source id. After a probe fallback, or with
+    // an auto-play id, resolving the id directly picks another release.
+    let selected_id = crate::services::StreamService::device_selected_stream_for(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        item_id,
+        media_source_id,
+    )
+    .unwrap_or(media_source_id);
     let sidecar_routes = load_sidecar_subtitle_routes(
         &state.ctx,
         &session
@@ -909,12 +872,7 @@ async fn subtitles_stream_inner(
         let source_media = crate::services::StreamService::lookup(
             &state.ctx,
             item_id,
-            Some(selected_source_id(
-                &state,
-                &session,
-                item_id,
-                media_source_id,
-            )),
+            Some(selected_id),
             None,
             Some(
                 session
@@ -963,8 +921,18 @@ async fn subtitles_stream_inner(
             // list, so it's needed up front; otherwise only for an external.
             let mut subs = if dedup.enabled {
                 Some(
-                    fetch_source_subtitles(&state, &session, &mut item_media, source)
-                        .await,
+                    crate::services::StreamService::subtitles_for_stream(
+                        &state.ctx,
+                        &mut item_media,
+                        source,
+                        true,
+                        Some(
+                            session
+                                .user
+                                .id,
+                        ),
+                    )
+                    .await,
                 )
             } else {
                 None
@@ -1020,11 +988,16 @@ async fn subtitles_stream_inner(
                 let subs = match subs.take() {
                     Some(subs) => subs,
                     None => {
-                        fetch_source_subtitles(
-                            &state,
-                            &session,
+                        crate::services::StreamService::subtitles_for_stream(
+                            &state.ctx,
                             &mut item_media,
                             source,
+                            true,
+                            Some(
+                                session
+                                    .user
+                                    .id,
+                            ),
                         )
                         .await
                     }
@@ -1107,12 +1080,7 @@ async fn subtitles_stream_inner(
     let Ok(media) = crate::services::StreamService::lookup(
         &state.ctx,
         item_id,
-        Some(selected_source_id(
-            &state,
-            &session,
-            item_id,
-            media_source_id,
-        )),
+        Some(selected_id),
         None,
         Some(
             session

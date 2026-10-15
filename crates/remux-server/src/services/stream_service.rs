@@ -27,7 +27,7 @@ pub(crate) struct ProbeResult {
 }
 
 /// What a subtitle addon needs to match subtitles to this exact release.
-pub(crate) fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQuery {
+fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQuery {
     let info = stream
         .stream_info
         .as_ref();
@@ -37,6 +37,29 @@ pub(crate) fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQ
                 .clone()
         }),
         video_size: info.and_then(|info| info.size),
+    }
+}
+
+impl StreamService {
+    /// The add-on subtitles for one stream's release: what PlaybackInfo
+    /// advertises and what the subtitle download endpoint resolves an index
+    /// against, so both ask with the same query and share a cache entry.
+    pub(crate) async fn subtitles_for_stream(
+        ctx: &AppContext,
+        item: &mut db::Media,
+        stream: &db::Media,
+        background: bool,
+        user_id: Option<Uuid>,
+    ) -> Vec<crate::addons::SubtitleInfo> {
+        ctx.addons
+            .fetch_subtitles_for(
+                item,
+                &subtitle_query_for(stream),
+                ctx,
+                background,
+                user_id,
+            )
+            .await
     }
 }
 
@@ -722,22 +745,19 @@ impl StreamService {
                 && item
                     .as_ref()
                     .is_some_and(|it| !it.is_live());
-            let subtitle_query = subtitle_query_for(&stream);
-            let fetch_subtitles = |query: crate::addons::SubtitleQuery| {
+            let fetch_subtitles = |for_stream: db::Media| {
                 let media = item.clone();
                 async move {
                     match media {
                         Some(mut media) if wants_subtitles => {
-                            self.ctx
-                                .addons
-                                .fetch_subtitles_for(
-                                    &mut media,
-                                    &query,
-                                    &self.ctx,
-                                    false,
-                                    self.user_id,
-                                )
-                                .await
+                            Self::subtitles_for_stream(
+                                &self.ctx,
+                                &mut media,
+                                &for_stream,
+                                false,
+                                self.user_id,
+                            )
+                            .await
                         }
                         _ => Vec::new(),
                     }
@@ -758,17 +778,16 @@ impl StreamService {
                         .ctx
                         .db,
                 ),
-                fetch_subtitles(subtitle_query.clone()),
+                fetch_subtitles(stream.clone()),
             );
             let (mut source, effective_stream) =
                 probed.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             // The probe failed over to another release, whose subtitles are
             // for a different file than the ones just fetched.
-            if effective_stream.id != stream.id {
-                let effective_query = subtitle_query_for(&effective_stream);
-                if effective_query != subtitle_query {
-                    external_subtitles = fetch_subtitles(effective_query).await;
-                }
+            if effective_stream.id != stream.id
+                && subtitle_query_for(&effective_stream) != subtitle_query_for(&stream)
+            {
+                external_subtitles = fetch_subtitles(effective_stream.clone()).await;
             }
 
             // Use the StreamGroup UUID when this candidate is a group representative
@@ -941,7 +960,7 @@ impl StreamService {
             self.ctx
                 .store
                 .save(
-                    Self::recent_selected_stream_key(
+                    Self::device_selected_stream_key(
                         device_id,
                         self.item_id,
                         recent_id,
@@ -969,14 +988,14 @@ impl StreamService {
     /// PlaybackInfo for the same item with different capabilities, and each
     /// must get its own selection. A device belongs to one user, so this
     /// also never answers another user's request.
-    pub fn recent_selected_stream_for(
+    pub fn device_selected_stream_for(
         ctx: &AppContext,
         device_id: &str,
         item_id: Uuid,
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::recent_selected_stream_key(
+            .get::<Uuid>(Self::device_selected_stream_key(
                 device_id, item_id, source_id,
             ))
             .map(|id| *id)
@@ -999,17 +1018,17 @@ impl StreamService {
         match play_session_id {
             Some(psid) => Self::selected_stream_for(ctx, psid, source_id),
             None => device_id.and_then(|device_id| {
-                Self::recent_selected_stream_for(ctx, device_id, item_id, source_id)
+                Self::device_selected_stream_for(ctx, device_id, item_id, source_id)
             }),
         }
     }
 
-    fn recent_selected_stream_key(
+    fn device_selected_stream_key(
         device_id: &str,
         item_id: Uuid,
         source_id: Uuid,
     ) -> String {
-        format!("pstream:recent:{device_id}:{item_id}:{source_id}")
+        format!("pstream:device:{device_id}:{item_id}:{source_id}")
     }
 
     fn selected_stream_key(play_session_id: &str, source_id: Uuid) -> String {
@@ -1803,21 +1822,21 @@ mod tests {
             Some(alive.id)
         );
         assert_eq!(
-            StreamService::recent_selected_stream_for(
+            StreamService::device_selected_stream_for(
                 ctx, "device-a", owner.id, dead.id
             ),
             Some(alive.id),
             "Infuse's sessionless direct request must resolve to the probed stream"
         );
         assert_eq!(
-            StreamService::recent_selected_stream_for(
+            StreamService::device_selected_stream_for(
                 ctx, "device-a", alive.id, dead.id
             ),
             None,
             "recent fallback must not leak to another item"
         );
         assert_eq!(
-            StreamService::recent_selected_stream_for(
+            StreamService::device_selected_stream_for(
                 ctx, "device-b", owner.id, dead.id
             ),
             None,
@@ -1831,7 +1850,7 @@ mod tests {
             dead.id,
         );
         assert_eq!(
-            StreamService::recent_selected_stream_for(
+            StreamService::device_selected_stream_for(
                 ctx, "device-a", owner.id, dead.id
             ),
             Some(dead.id),

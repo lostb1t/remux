@@ -65,8 +65,7 @@ struct SourceExtras {
     /// The source id its DeliveryUrls were built with, and its sidecar routes.
     subtitle_routes: (Uuid, Vec<SidecarSubtitleRoute>),
     /// Addon subtitles fetched for this source's release, before language
-    /// capping and dedup. The subtitle-download endpoint re-derives the menu
-    /// from this exact list, so it is stored with the sidecar routes.
+    /// capping and dedup.
     external_subtitles: Vec<crate::addons::SubtitleInfo>,
     /// The candidate stream as listed.
     stream_id: Uuid,
@@ -1130,7 +1129,7 @@ pub async fn items_file(
 /// without a `PlaySessionId`/`DeviceId`, and must still work with no token at
 /// all. Resolve the caller's user and device best-effort from whatever
 /// `ApiKey`/`Token` is present (never rejecting the request) so per-device
-/// cache scoping (e.g. `recent_selected_stream_for`) still works when a valid
+/// cache scoping (e.g. `device_selected_stream_for`) still works when a valid
 /// token happens to be there. An API key resolves to the same synthetic
 /// `apikey-<token>` device `AuthSession` gives it, so a session-less stream
 /// request finds the selection PlaybackInfo saved under that device.
