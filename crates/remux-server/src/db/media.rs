@@ -991,6 +991,17 @@ impl ExternalRatings {
         }
     }
 
+    /// The provider's own average, unweighted: what an item with few votes,
+    /// like an episode, should show instead of a score pulled towards the
+    /// prior. `None` when the provider has no votes, since it reports 0 for
+    /// an unrated item.
+    pub fn provider_rating(&self) -> Option<f64> {
+        self.tmdb
+            .as_ref()
+            .filter(|r| r.vote_count != Some(0))
+            .map(|r| r.score)
+    }
+
     pub fn audience_rating(&self) -> Option<f64> {
         const PRIOR: f64 = 6.5;
         const M: f64 = 500.0;
@@ -9042,6 +9053,33 @@ pub(crate) fn build_genre_relations_from_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmdb_ratings(score: f64, vote_count: Option<u32>) -> ExternalRatings {
+        ExternalRatings {
+            tmdb: Some(Rating { score, vote_count }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn provider_rating_is_the_unweighted_score() {
+        let ratings = tmdb_ratings(8.25, Some(22));
+        assert_eq!(ratings.provider_rating(), Some(8.25));
+        // The weighted score is what pulled this episode to ~6.6.
+        assert!(
+            ratings
+                .audience_rating()
+                .unwrap()
+                < 7.0
+        );
+        assert_eq!(tmdb_ratings(7.0, None).provider_rating(), Some(7.0));
+    }
+
+    #[test]
+    fn provider_rating_ignores_an_unrated_item() {
+        assert_eq!(tmdb_ratings(0.0, Some(0)).provider_rating(), None);
+        assert_eq!(ExternalRatings::default().provider_rating(), None);
+    }
 
     #[test]
     fn stremio_stream_conversion_preserves_cache_status() {

@@ -319,6 +319,25 @@ fn stub_sources(media: &db::Media) -> Vec<MediaSourceInfo> {
     ]
 }
 
+/// The rating shown to clients. The stored `rating_audience` is weighted
+/// towards a prior, which suits sorting but pulls an episode, which has few
+/// votes, to nearly the same score as every other episode. Episodes show the
+/// provider's own score instead.
+fn community_rating(media: &db::Media) -> Option<f64> {
+    let provider = media
+        .external_ratings
+        .as_ref()
+        .filter(|ratings| {
+            ratings
+                .tmdb
+                .is_some()
+        });
+    match (&media.kind, provider) {
+        (db::MediaKind::Episode, Some(ratings)) => ratings.provider_rating(),
+        _ => media.rating_audience,
+    }
+}
+
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
@@ -465,9 +484,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         production_year: media
             .released_at
             .map(|d| d.year() as i64),
-        community_rating: media
-            .rating_audience
-            .map(|r| (r * 10.0).round() / 10.0),
+        community_rating: community_rating(&media).map(|r| (r * 10.0).round() / 10.0),
         critic_rating: media
             .rating_critic
             .clone(),
@@ -1229,4 +1246,53 @@ pub struct RemoteSubtitleInfo {
     pub is_hash_match: Option<bool>,
     pub ai_translated: Option<bool>,
     pub machine_translated: Option<bool>,
+}
+
+#[cfg(test)]
+mod community_rating_tests {
+    use super::*;
+
+    fn media(
+        kind: db::MediaKind,
+        weighted: f64,
+        tmdb: Option<(f64, u32)>,
+    ) -> db::Media {
+        db::Media {
+            kind,
+            rating_audience: Some(weighted),
+            external_ratings: tmdb.map(|(score, votes)| db::ExternalRatings {
+                tmdb: Some(db::Rating {
+                    score,
+                    vote_count: Some(votes),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn episodes_show_the_provider_score() {
+        let episode = media(db::MediaKind::Episode, 6.57, Some((8.25, 22)));
+        assert_eq!(community_rating(&episode), Some(8.25));
+        assert_eq!(db_media_to_item(episode, false).community_rating, Some(8.3));
+    }
+
+    #[test]
+    fn other_kinds_keep_the_stored_rating() {
+        let movie = media(db::MediaKind::Movie, 7.1, Some((8.0, 5)));
+        assert_eq!(community_rating(&movie), Some(7.1));
+    }
+
+    #[test]
+    fn episodes_without_a_provider_rating_keep_the_stored_one() {
+        let episode = media(db::MediaKind::Episode, 7.0, None);
+        assert_eq!(community_rating(&episode), Some(7.0));
+    }
+
+    #[test]
+    fn unvoted_episodes_have_no_rating() {
+        let episode = media(db::MediaKind::Episode, 6.5, Some((0.0, 0)));
+        assert_eq!(community_rating(&episode), None);
+    }
 }
