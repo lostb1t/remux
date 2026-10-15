@@ -2923,27 +2923,11 @@ impl AddonService {
     /// Items detail fetch racing a PlaybackInfo call for the same item used
     /// to each pay the full addon fetch independently and concurrently.
     /// Cache the result briefly and serialize concurrent callers the same way.
-    pub async fn fetch_subtitles(
-        &self,
-        media: &mut db::Media,
-        ctx: &AppContext,
-        background: bool,
-        user_id: Option<Uuid>,
-    ) -> Vec<SubtitleInfo> {
-        self.fetch_subtitles_for(
-            media,
-            &SubtitleQuery::default(),
-            ctx,
-            background,
-            user_id,
-        )
-        .await
-    }
-
-    /// Like `fetch_subtitles`, but asks addons for subtitles made for the
-    /// release in `query`. Each distinct query is cached on its own.
+    /// `query` asks addons for subtitles made for one release; the default
+    /// query asks for the title's generic list. Each distinct query is cached
+    /// on its own.
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
-    pub async fn fetch_subtitles_for(
+    pub async fn fetch_subtitles(
         &self,
         media: &mut db::Media,
         query: &SubtitleQuery,
@@ -4612,9 +4596,10 @@ mod tests {
         let mut media_b = media_a.clone();
         let user_id = uuid::Uuid::new_v4();
 
+        let query = SubtitleQuery::default();
         let (subs_a, subs_b) = tokio::join!(
-            service.fetch_subtitles(&mut media_a, &ctx, false, Some(user_id)),
-            service.fetch_subtitles(&mut media_b, &ctx, false, Some(user_id)),
+            service.fetch_subtitles(&mut media_a, &query, &ctx, false, Some(user_id),),
+            service.fetch_subtitles(&mut media_b, &query, &ctx, false, Some(user_id),),
         );
 
         assert_eq!(
@@ -4815,7 +4800,7 @@ mod tests {
         };
 
         service
-            .fetch_subtitles(&mut media, &ctx, false, None)
+            .fetch_subtitles(&mut media, &SubtitleQuery::default(), &ctx, false, None)
             .await;
 
         assert!(

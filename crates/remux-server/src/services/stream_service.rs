@@ -52,7 +52,7 @@ impl StreamService {
         user_id: Option<Uuid>,
     ) -> Vec<crate::addons::SubtitleInfo> {
         ctx.addons
-            .fetch_subtitles_for(
+            .fetch_subtitles(
                 item,
                 &subtitle_query_for(stream),
                 ctx,
