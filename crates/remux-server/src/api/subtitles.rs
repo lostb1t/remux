@@ -788,24 +788,41 @@ fn load_sidecar_subtitle_routes(
 /// probe fallback, or for auto-play where the id is the item's, resolving the
 /// id directly would pick a different release than the one whose subtitles
 /// and media info the client was given.
+///
+/// The subtitle URL carries no PlaySessionId, so it comes from the device's
+/// active playback session for this item (kept 24h), then from the device's
+/// recent PlaybackInfo (5 min) for requests that land before the player has
+/// reported playback started.
 fn selected_source_id(
     state: &AppState,
     session: &auth::AuthSession,
     item_id: Uuid,
     media_source_id: Uuid,
 ) -> Uuid {
-    crate::services::StreamService::selected_stream_id(
-        &state.ctx,
-        Some(
-            &session
-                .device
-                .id,
-        ),
-        item_id,
-        Some(media_source_id),
-        None,
-    )
-    .unwrap_or(media_source_id)
+    let device_id = session
+        .device
+        .id
+        .as_str();
+    let play_session_id = state
+        .ctx
+        .sessions
+        .get_by_device(device_id)
+        .filter(|playing| playing.item_id == item_id)
+        .map(|playing| playing.play_session_id);
+    let select = |play_session_id: Option<&str>| {
+        crate::services::StreamService::selected_stream_id(
+            &state.ctx,
+            Some(device_id),
+            item_id,
+            Some(media_source_id),
+            play_session_id,
+        )
+    };
+    play_session_id
+        .as_deref()
+        .and_then(|psid| select(Some(psid)))
+        .or_else(|| select(None))
+        .unwrap_or(media_source_id)
 }
 
 /// The add-on subtitles for one source's release, as PlaybackInfo fetched them
