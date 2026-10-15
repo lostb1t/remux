@@ -927,6 +927,17 @@ async fn items_playbackinfo_inner(
         .zip(source_extras)
     {
         let (delivery_source_id, routes) = extras.subtitle_routes;
+        // Subtitle URLs carry this id and no PlaySessionId, so the device's
+        // selection must be findable under it, refreshed for this answer.
+        StreamService::save_device_selection(
+            &state.ctx,
+            &session
+                .device
+                .id,
+            id,
+            delivery_source_id,
+            extras.effective_stream_id,
+        );
         // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
         // some clients construct the route from the final MediaSourceInfo ID.
         // Cache both keys when auto-play rewrites the first source ID.

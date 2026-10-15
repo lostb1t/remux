@@ -698,6 +698,52 @@ impl StreamService {
             .ok();
         }
 
+        // Addon subtitles are fetched for every candidate that is probed or
+        // already has real probe data: those are the sources that list
+        // embedded tracks, so they must list the add-on ones too or a
+        // download would rebuild a different menu than the one advertised.
+        // The fetches start now, concurrently, so each overlaps the probe
+        // loop below instead of adding to it.
+        let mut subtitle_fetches: std::collections::HashMap<
+            Uuid,
+            tokio::task::JoinHandle<Vec<crate::addons::SubtitleInfo>>,
+        > = sel
+            .candidates
+            .iter()
+            .filter(|stream| {
+                let probed =
+                    !preferred_probe_id.is_some_and(|preferred| stream.id != preferred);
+                let real_probe_data = stream
+                    .probe_data
+                    .as_ref()
+                    .is_some_and(|pd| {
+                        pd.video_stream()
+                            .is_some()
+                            && !pd.is_filename_guess()
+                    });
+                probed || real_probe_data
+            })
+            .filter_map(|stream| {
+                let mut media = item
+                    .clone()
+                    .filter(|it| !it.is_live())?;
+                let ctx = self
+                    .ctx
+                    .clone();
+                let user_id = self.user_id;
+                let stream = stream.clone();
+                Some((
+                    stream.id,
+                    tokio::spawn(async move {
+                        Self::subtitles_for_stream(
+                            &ctx, &mut media, &stream, false, user_id,
+                        )
+                        .await
+                    }),
+                ))
+            })
+            .collect();
+
         let mut results = Vec::with_capacity(
             sel.candidates
                 .len(),
@@ -738,48 +784,27 @@ impl StreamService {
             } else {
                 timeout
             };
-            // Subtitles are only fetched for the candidate being probed, and
-            // alongside that probe: both are slow network round-trips, so
-            // waiting for one before starting the other would add them up.
-            let wants_subtitles = !skip_probe
-                && item
-                    .as_ref()
-                    .is_some_and(|it| !it.is_live());
-            let fetch_subtitles = |for_stream: db::Media| {
-                let media = item.clone();
-                async move {
-                    match media {
-                        Some(mut media) if wants_subtitles => {
-                            Self::subtitles_for_stream(
-                                &self.ctx,
-                                &mut media,
-                                &for_stream,
-                                false,
-                                self.user_id,
-                            )
-                            .await
-                        }
-                        _ => Vec::new(),
-                    }
-                }
+            let probed = probe_stream(
+                &stream,
+                url_opt,
+                skip_probe,
+                timeout_secs,
+                auto_next,
+                max_retries,
+                &sel.probe_pool,
+                sel.restrict_resolution,
+                port,
+                &self
+                    .ctx
+                    .db,
+            )
+            .await;
+            let mut external_subtitles = match subtitle_fetches.remove(&stream.id) {
+                Some(fetch) => fetch
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
             };
-            let (probed, mut external_subtitles) = tokio::join!(
-                probe_stream(
-                    &stream,
-                    url_opt,
-                    skip_probe,
-                    timeout_secs,
-                    auto_next,
-                    max_retries,
-                    &sel.probe_pool,
-                    sel.restrict_resolution,
-                    port,
-                    &self
-                        .ctx
-                        .db,
-                ),
-                fetch_subtitles(stream.clone()),
-            );
             let (mut source, effective_stream) =
                 probed.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             // The probe failed over to another release, whose subtitles are
@@ -787,7 +812,19 @@ impl StreamService {
             if effective_stream.id != stream.id
                 && subtitle_query_for(&effective_stream) != subtitle_query_for(&stream)
             {
-                external_subtitles = fetch_subtitles(effective_stream.clone()).await;
+                if let Some(mut media) = item
+                    .clone()
+                    .filter(|it| !it.is_live())
+                {
+                    external_subtitles = Self::subtitles_for_stream(
+                        &self.ctx,
+                        &mut media,
+                        &effective_stream,
+                        false,
+                        self.user_id,
+                    )
+                    .await;
+                }
             }
 
             // Use the StreamGroup UUID when this candidate is a group representative
@@ -953,22 +990,36 @@ impl StreamService {
         // playback can run; the next PlaybackInfo replaces it. Deduped: for a
         // specific-stream request, source_id and the listed candidate's own id
         // are frequently identical.
-        let recent_ids: std::collections::HashSet<Uuid> = [source_id, stream_id]
+        let device_source_ids: std::collections::HashSet<Uuid> = [source_id, stream_id]
             .into_iter()
             .collect();
-        for recent_id in recent_ids {
-            self.ctx
-                .store
-                .save(
-                    Self::device_selected_stream_key(
-                        device_id,
-                        self.item_id,
-                        recent_id,
-                    ),
-                    effective_stream_id,
-                    std::time::Duration::from_secs(24 * 3600),
-                );
+        for device_source_id in device_source_ids {
+            Self::save_device_selection(
+                &self.ctx,
+                device_id,
+                self.item_id,
+                device_source_id,
+                effective_stream_id,
+            );
         }
+    }
+
+    /// The device-keyed mapping for `source_id`; see `save_selected_stream`.
+    /// Also used for the source ids PlaybackInfo puts in subtitle URLs, which
+    /// may differ from the ones above and must not keep an older selection.
+    pub fn save_device_selection(
+        ctx: &AppContext,
+        device_id: &str,
+        item_id: Uuid,
+        source_id: Uuid,
+        effective_stream_id: Uuid,
+    ) {
+        ctx.store
+            .save(
+                Self::device_selected_stream_key(device_id, item_id, source_id),
+                effective_stream_id,
+                std::time::Duration::from_secs(24 * 3600),
+            );
     }
 
     /// The stream PlaybackInfo selected when it answered `play_session_id`
