@@ -927,19 +927,11 @@ impl StreamService {
                 effective_stream_id,
                 std::time::Duration::from_secs(24 * 3600),
             );
-        // Requests that carry no PlaySessionId (subtitle downloads) may arrive
-        // before the player has reported playback started, so there is no
-        // playback session to ask. Point the device and item at this session.
-        self.ctx
-            .store
-            .save(
-                Self::device_play_session_key(device_id, self.item_id),
-                play_session_id.to_string(),
-                std::time::Duration::from_secs(24 * 3600),
-            );
         // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
-        // DeviceId query parameter. Keep a brief mapping for that request too,
-        // keyed by the device its access token belongs to. Deduped: for a
+        // DeviceId query parameter, and subtitle downloads carry no
+        // PlaySessionId either. Keep a mapping for those requests too, keyed
+        // by the device its access token belongs to, for as long as a
+        // playback can run; the next PlaybackInfo replaces it. Deduped: for a
         // specific-stream request, source_id and the listed candidate's own id
         // are frequently identical.
         let recent_ids: std::collections::HashSet<Uuid> = [source_id, stream_id]
@@ -955,7 +947,7 @@ impl StreamService {
                         recent_id,
                     ),
                     effective_stream_id,
-                    std::time::Duration::from_secs(5 * 60),
+                    std::time::Duration::from_secs(24 * 3600),
                 );
         }
     }
@@ -1018,23 +1010,6 @@ impl StreamService {
         source_id: Uuid,
     ) -> String {
         format!("pstream:recent:{device_id}:{item_id}:{source_id}")
-    }
-
-    fn device_play_session_key(device_id: &str, item_id: Uuid) -> String {
-        format!("pstream:device-psid:{device_id}:{item_id}")
-    }
-
-    /// The PlaySessionId of the PlaybackInfo this device last answered for
-    /// `item_id`. Unlike a playback session it exists as soon as PlaybackInfo
-    /// has answered, so it serves requests that carry no PlaySessionId.
-    pub fn device_play_session_for(
-        ctx: &AppContext,
-        device_id: &str,
-        item_id: Uuid,
-    ) -> Option<String> {
-        ctx.store
-            .get::<String>(Self::device_play_session_key(device_id, item_id))
-            .map(|id| (*id).clone())
     }
 
     fn selected_stream_key(play_session_id: &str, source_id: Uuid) -> String {
