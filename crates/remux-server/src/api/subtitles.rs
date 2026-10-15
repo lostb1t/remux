@@ -784,6 +784,30 @@ fn load_sidecar_subtitle_routes(
         ))
 }
 
+/// The stream PlaybackInfo selected for this device and source id. After a
+/// probe fallback, or for auto-play where the id is the item's, resolving the
+/// id directly would pick a different release than the one whose subtitles
+/// and media info the client was given.
+fn selected_source_id(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_id: Uuid,
+    media_source_id: Uuid,
+) -> Uuid {
+    crate::services::StreamService::selected_stream_id(
+        &state.ctx,
+        Some(
+            &session
+                .device
+                .id,
+        ),
+        item_id,
+        Some(media_source_id),
+        None,
+    )
+    .unwrap_or(media_source_id)
+}
+
 /// The add-on subtitles for one source's release, as PlaybackInfo fetched them
 /// (same query, so the same cache entry).
 async fn fetch_source_subtitles(
@@ -885,7 +909,12 @@ async fn subtitles_stream_inner(
         let source_media = crate::services::StreamService::lookup(
             &state.ctx,
             item_id,
-            Some(media_source_id),
+            Some(selected_source_id(
+                &state,
+                &session,
+                item_id,
+                media_source_id,
+            )),
             None,
             Some(
                 session
@@ -1078,7 +1107,12 @@ async fn subtitles_stream_inner(
     let Ok(media) = crate::services::StreamService::lookup(
         &state.ctx,
         item_id,
-        Some(media_source_id),
+        Some(selected_source_id(
+            &state,
+            &session,
+            item_id,
+            media_source_id,
+        )),
         None,
         Some(
             session
