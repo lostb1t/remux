@@ -1118,8 +1118,47 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaType, Meta, ReleaseInfo, Stream, parse_duration_lossy};
+    use super::{
+        Endpoint, MediaType, Meta, ReleaseInfo, Stream, SubtitlesEndpoint,
+        parse_duration_lossy,
+    };
     use std::time::Duration;
+
+    fn subtitles_path(filename: Option<&str>, video_size: Option<i64>) -> String {
+        SubtitlesEndpoint {
+            media_type: MediaType::Movie,
+            imdb_id: "tt0133093".into(),
+            season: None,
+            episode: None,
+            filename: filename.map(String::from),
+            video_size,
+        }
+        .path()
+    }
+
+    #[test]
+    fn subtitles_path_without_extras_has_no_extra_segment() {
+        assert_eq!(
+            subtitles_path(None, None),
+            "/subtitles/movie/tt0133093.json"
+        );
+        assert_eq!(
+            subtitles_path(Some(""), None),
+            "/subtitles/movie/tt0133093.json"
+        );
+    }
+
+    #[test]
+    fn subtitles_path_sends_size_and_encoded_filename() {
+        assert_eq!(
+            subtitles_path(Some("The Matrix (1999) 1080p&x=1.mkv"), Some(1234)),
+            "/subtitles/movie/tt0133093/videoSize=1234&filename=The%20Matrix%20%281999%29%201080p%26x%3D1.mkv.json"
+        );
+        assert_eq!(
+            subtitles_path(None, Some(1234)),
+            "/subtitles/movie/tt0133093/videoSize=1234.json"
+        );
+    }
 
     #[test]
     fn cached_status_uses_behavior_hint_when_service_status_is_missing() {

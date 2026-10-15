@@ -1289,6 +1289,29 @@ mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
 
+    #[test]
+    fn subtitle_query_comes_from_the_streams_filename_and_size() {
+        let stream = db::Media {
+            stream_info: Some(StreamInfo {
+                filename: Some("Show.S01E02.1080p.mkv".into()),
+                size: Some(42),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            subtitle_query_for(&stream),
+            crate::addons::SubtitleQuery {
+                filename: Some("Show.S01E02.1080p.mkv".into()),
+                video_size: Some(42),
+            }
+        );
+        assert_eq!(
+            subtitle_query_for(&db::Media::default()),
+            crate::addons::SubtitleQuery::default()
+        );
+    }
+
     /// Ranking judges each source by its resolved default streams: a source
     /// whose default subtitle would have to be burned in ranks below a
     /// sibling that can direct play, even though the unresolved info names

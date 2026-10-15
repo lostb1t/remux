@@ -4505,6 +4505,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn subtitle_query_cache_suffix_keeps_default_keys_and_separates_releases() {
+        let release = |filename: &str, size| SubtitleQuery {
+            filename: Some(filename.into()),
+            video_size: size,
+        };
+        assert_eq!(SubtitleQuery::default().cache_suffix(), "");
+        assert_ne!(
+            release("a.mkv", Some(1)).cache_suffix(),
+            release("b.mkv", Some(1)).cache_suffix()
+        );
+        assert_ne!(
+            release("a.mkv", Some(1)).cache_suffix(),
+            release("a.mkv", Some(2)).cache_suffix()
+        );
+        assert_ne!(
+            release("a.mkv", None).cache_suffix(),
+            SubtitleQuery::default().cache_suffix()
+        );
+    }
+
     struct CountingSubtitleAddon {
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
