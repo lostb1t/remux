@@ -166,6 +166,8 @@ impl StremioService {
         imdb_id: &str,
         season: Option<i64>,
         episode: Option<i64>,
+        filename: Option<String>,
+        video_size: Option<i64>,
     ) -> Result<Vec<sdks::stremio::Subtitle>> {
         Ok(self
             .client
@@ -175,6 +177,8 @@ impl StremioService {
                     imdb_id: imdb_id.to_string(),
                     season,
                     episode,
+                    filename,
+                    video_size,
                 })
                 .with_cache(Duration::from_secs(86_400)),
             )

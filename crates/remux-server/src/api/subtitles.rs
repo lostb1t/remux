@@ -814,28 +814,6 @@ async fn sidecar_subtitle_response(
     )
 }
 
-/// The item's add-on subtitles, as PlaybackInfo fetched them (same cache).
-async fn fetch_item_subtitles(
-    state: &AppState,
-    session: &auth::AuthSession,
-    item_media: &mut db::Media,
-) -> Vec<crate::addons::SubtitleInfo> {
-    state
-        .ctx
-        .addons
-        .fetch_subtitles(
-            item_media,
-            &state.ctx,
-            true,
-            Some(
-                session
-                    .user
-                    .id,
-            ),
-        )
-        .await
-}
-
 async fn subtitles_stream_inner(
     state: AppState,
     session: auth::AuthSession,
@@ -844,6 +822,18 @@ async fn subtitles_stream_inner(
     stream_index: i64,
     format: String,
 ) -> Result<impl IntoResponse> {
+    // The URL carries no PlaySessionId: use the stream this device's last
+    // PlaybackInfo selected for the source id. After a probe fallback, or with
+    // an auto-play id, resolving the id directly picks another release.
+    let selected_id = crate::services::StreamService::device_selected_stream_for(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        item_id,
+        media_source_id,
+    )
+    .unwrap_or(media_source_id);
     let sidecar_routes = load_sidecar_subtitle_routes(
         &state.ctx,
         &session
@@ -882,7 +872,7 @@ async fn subtitles_stream_inner(
         let source_media = crate::services::StreamService::lookup(
             &state.ctx,
             item_id,
-            Some(media_source_id),
+            Some(selected_id),
             None,
             Some(
                 session
@@ -930,7 +920,20 @@ async fn subtitles_stream_inner(
             // With dedup on, PlaybackInfo's embedded set depends on the add-on
             // list, so it's needed up front; otherwise only for an external.
             let mut subs = if dedup.enabled {
-                Some(fetch_item_subtitles(&state, &session, &mut item_media).await)
+                Some(
+                    crate::services::StreamService::subtitles_for_stream(
+                        &state.ctx,
+                        &mut item_media,
+                        source,
+                        true,
+                        Some(
+                            session
+                                .user
+                                .id,
+                        ),
+                    )
+                    .await,
+                )
             } else {
                 None
             };
@@ -985,7 +988,18 @@ async fn subtitles_stream_inner(
                 let subs = match subs.take() {
                     Some(subs) => subs,
                     None => {
-                        fetch_item_subtitles(&state, &session, &mut item_media).await
+                        crate::services::StreamService::subtitles_for_stream(
+                            &state.ctx,
+                            &mut item_media,
+                            source,
+                            true,
+                            Some(
+                                session
+                                    .user
+                                    .id,
+                            ),
+                        )
+                        .await
                     }
                 };
                 // Match append_external_subtitles' filtering exactly, or the
@@ -1066,7 +1080,7 @@ async fn subtitles_stream_inner(
     let Ok(media) = crate::services::StreamService::lookup(
         &state.ctx,
         item_id,
-        Some(media_source_id),
+        Some(selected_id),
         None,
         Some(
             session

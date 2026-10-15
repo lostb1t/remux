@@ -268,6 +268,7 @@ pub async fn search_remote_subtitles(
         .addons
         .fetch_subtitles(
             &mut media,
+            &crate::addons::SubtitleQuery::default(),
             &state.ctx,
             false,
             Some(
