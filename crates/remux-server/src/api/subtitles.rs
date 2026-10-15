@@ -790,9 +790,10 @@ fn load_sidecar_subtitle_routes(
 /// and media info the client was given.
 ///
 /// The subtitle URL carries no PlaySessionId, so it comes from the device's
-/// active playback session for this item (kept 24h), then from the device's
-/// recent PlaybackInfo (5 min) for requests that land before the player has
-/// reported playback started.
+/// active playback session for this item, else from the PlaySessionId of the
+/// PlaybackInfo the device last answered for it (a subtitle can be requested
+/// before the player reports playback started), else the device's recent
+/// PlaybackInfo (5 min).
 fn selected_source_id(
     state: &AppState,
     session: &auth::AuthSession,
@@ -803,7 +804,7 @@ fn selected_source_id(
         .device
         .id
         .as_str();
-    let play_session_id = state
+    let playing = state
         .ctx
         .sessions
         .get_by_device(device_id)
@@ -818,9 +819,12 @@ fn selected_source_id(
             play_session_id,
         )
     };
-    play_session_id
-        .as_deref()
-        .and_then(|psid| select(Some(psid)))
+    playing
+        .into_iter()
+        .chain(crate::services::StreamService::device_play_session_for(
+            &state.ctx, device_id, item_id,
+        ))
+        .find_map(|psid| select(Some(&psid)))
         .or_else(|| select(None))
         .unwrap_or(media_source_id)
 }
