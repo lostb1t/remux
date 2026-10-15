@@ -27,7 +27,7 @@ pub(crate) struct ProbeResult {
 }
 
 /// What a subtitle addon needs to match subtitles to this exact release.
-fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQuery {
+pub(crate) fn subtitle_query_for(stream: &db::Media) -> crate::addons::SubtitleQuery {
     let info = stream
         .stream_info
         .as_ref();
@@ -659,15 +659,12 @@ impl StreamService {
             .ctx
             .config
             .port;
-        let mut item = db::Media::get_by_id(
-            &self
-                .ctx
-                .db,
-            &self.item_id,
-        )
-        .await
-        .ok()
-        .flatten();
+        // Alias-aware: search and catalog ids resolve to a persisted item.
+        let mut item =
+            crate::services::MediaResolveService::resolve_item(self.item_id, &self.ctx)
+                .await
+                .ok()
+                .flatten();
         if let Some(ref mut it) = item {
             it.grandparent(
                 &self

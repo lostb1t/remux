@@ -5,7 +5,7 @@ use super::subtitles::{
     SidecarSubtitleRoute, SubtitleDedupSettings, append_external_subtitles,
     drop_unsupported_embedded_subtitles_with_external_match,
     filter_external_subtitles_for_source, inject_sidecar_subtitles, provider_filename,
-    save_sidecar_subtitle_routes, save_source_subtitles,
+    save_sidecar_subtitle_routes,
 };
 use axum::{
     body::Body,
@@ -928,19 +928,6 @@ async fn items_playbackinfo_inner(
         .zip(source_extras)
     {
         let (delivery_source_id, routes) = extras.subtitle_routes;
-        for source_id in [source.id, delivery_source_id] {
-            save_source_subtitles(
-                &state.ctx,
-                &session
-                    .device
-                    .id,
-                id,
-                source_id,
-                extras
-                    .external_subtitles
-                    .clone(),
-            );
-        }
         // DeliveryUrl contains the source ID from apply_subtitle_delivery, while
         // some clients construct the route from the final MediaSourceInfo ID.
         // Cache both keys when auto-play rewrites the first source ID.

@@ -784,49 +784,29 @@ fn load_sidecar_subtitle_routes(
         ))
 }
 
-fn source_subtitles_key(
-    device_id: &str,
-    item_id: Uuid,
-    media_source_id: Uuid,
-) -> String {
-    format!("source-subtitles:{device_id}:{item_id}:{media_source_id}")
-}
-
-/// The addon subtitles PlaybackInfo fetched for one source's release, kept so
-/// the subtitle-download endpoint resolves a menu index against the same list
-/// instead of asking the addons again.
-pub(crate) fn save_source_subtitles(
-    ctx: &crate::AppContext,
-    device_id: &str,
-    item_id: Uuid,
-    media_source_id: Uuid,
-    subtitles: Vec<crate::addons::SubtitleInfo>,
-) {
-    if subtitles.is_empty() {
-        return;
-    }
-    ctx.store
-        .save(
-            source_subtitles_key(device_id, item_id, media_source_id),
-            subtitles,
-            std::time::Duration::from_secs(6 * 60 * 60),
-        );
-}
-
-fn load_source_subtitles(
-    ctx: &crate::AppContext,
-    device_id: &str,
-    item_id: Uuid,
-    media_source_id: Uuid,
+/// The add-on subtitles for one source's release, as PlaybackInfo fetched them
+/// (same query, so the same cache entry).
+async fn fetch_source_subtitles(
+    state: &AppState,
+    session: &auth::AuthSession,
+    item_media: &mut db::Media,
+    source: &db::Media,
 ) -> Vec<crate::addons::SubtitleInfo> {
-    ctx.store
-        .get::<Vec<crate::addons::SubtitleInfo>>(&source_subtitles_key(
-            device_id,
-            item_id,
-            media_source_id,
-        ))
-        .map(|subs| (*subs).clone())
-        .unwrap_or_default()
+    state
+        .ctx
+        .addons
+        .fetch_subtitles_for(
+            item_media,
+            &crate::services::stream_service::subtitle_query_for(source),
+            &state.ctx,
+            true,
+            Some(
+                session
+                    .user
+                    .id,
+            ),
+        )
+        .await
 }
 
 async fn sidecar_subtitle_response(
@@ -952,17 +932,14 @@ async fn subtitles_stream_inner(
             let dedup = SubtitleDedupSettings::from_config(&server_cfg);
             // With dedup on, PlaybackInfo's embedded set depends on the add-on
             // list, so it's needed up front; otherwise only for an external.
-            let stored_subs = load_source_subtitles(
-                &state.ctx,
-                &session
-                    .device
-                    .id,
-                item_id,
-                media_source_id,
-            );
-            let mut subs = dedup
-                .enabled
-                .then(|| stored_subs.clone());
+            let mut subs = if dedup.enabled {
+                Some(
+                    fetch_source_subtitles(&state, &session, &mut item_media, source)
+                        .await,
+                )
+            } else {
+                None
+            };
             // Only the embedded streams PlaybackInfo kept, dropped by the same
             // two steps in the same order: add-on externals are numbered after
             // those, not after every probed stream.
@@ -1011,9 +988,18 @@ async fn subtitles_stream_inner(
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
-                let subs = subs
-                    .take()
-                    .unwrap_or(stored_subs);
+                let subs = match subs.take() {
+                    Some(subs) => subs,
+                    None => {
+                        fetch_source_subtitles(
+                            &state,
+                            &session,
+                            &mut item_media,
+                            source,
+                        )
+                        .await
+                    }
+                };
                 // Match append_external_subtitles' filtering exactly, or the
                 // index a client requests (from the menu it was shown) won't
                 // line up with this reconstructed list. That means resolving
