@@ -13,28 +13,35 @@ use axum_anyhow::ApiResult as Result;
 #[get("/studios")]
 pub async fn studios(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let records = db::Media::get_by_filter(
+    let result = db::Media::get_by_filter(
         &state
             .ctx
             .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Studio]),
             limit: q.limit,
+            offset: q.start_index,
+            total_count: true,
+            user_state: api::items::favorite_user_state(
+                &q,
+                session
+                    .user
+                    .id,
+            ),
             ..Default::default()
         },
     )
-    .await?
-    .records;
-    let total = records.len() as i64;
+    .await?;
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: records
+        items: result
+            .records
             .into_iter()
             .map(|m| api::db_media_to_item(m, false))
             .collect(),
-        total_record_count: total,
+        total_record_count: result.total_count as i64,
         start_index: q
             .start_index
             .unwrap_or(0),
