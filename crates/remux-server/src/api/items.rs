@@ -2829,15 +2829,7 @@ pub fn favorite_user_state(
     q: &api::GetItemsQuery,
     user_id: Uuid,
 ) -> Option<db::UserMediaStateFilter> {
-    let favorite = q
-        .is_favorite
-        .or_else(|| {
-            q.filters
-                .as_deref()
-                .unwrap_or(&[])
-                .contains(&api::ItemFilter::IsFavorite)
-                .then_some(true)
-        })?;
+    let favorite = q.favorite()?;
     Some(db::UserMediaStateFilter {
         user_id: Some(user_id),
         favorite: Some(favorite),
@@ -4352,6 +4344,26 @@ mod tests {
             .await
             .json();
         assert_eq!(response["TotalRecordCount"], 2);
+
+        let response: serde_json::Value = server
+            .get("/studios")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_param("StartIndex", "1")
+            .add_query_param("Limit", "1")
+            .await
+            .json();
+        assert_eq!(
+            response["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(response["TotalRecordCount"], 2);
+        assert_eq!(response["StartIndex"], 1);
     }
 
     #[tokio::test]

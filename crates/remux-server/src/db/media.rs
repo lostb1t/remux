@@ -6416,13 +6416,7 @@ impl Media {
         let is_played = item_filters.contains(&api::ItemFilter::IsPlayed);
         let is_unplayed = item_filters.contains(&api::ItemFilter::IsUnplayed);
         let is_resumable = item_filters.contains(&api::ItemFilter::IsResumable);
-        let favorite = filter
-            .is_favorite
-            .or_else(|| {
-                item_filters
-                    .contains(&api::ItemFilter::IsFavorite)
-                    .then_some(true)
-            });
+        let favorite = filter.favorite();
 
         let user_state =
             if favorite.is_some() || is_played || is_unplayed || is_resumable {

@@ -1750,6 +1750,20 @@ pub struct GetItemsQuery {
 }
 
 impl GetItemsQuery {
+    /// The favorite constraint, from `IsFavorite=` or `Filters=IsFavorite`.
+    pub fn favorite(&self) -> Option<bool> {
+        self.is_favorite
+            .or_else(|| {
+                self.filters
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .contains(&ItemFilter::IsFavorite)
+                    .then_some(true)
+            })
+    }
+}
+
+impl GetItemsQuery {
     pub fn get_requested_item_types(&self) -> Vec<MediaType> {
         let mut requested: Vec<MediaType> = vec![
             MediaType::Movie,
