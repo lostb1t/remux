@@ -1546,6 +1546,7 @@ pub struct GetItemsQuery {
     #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_trailer: Option<bool>,
     pub adjacent_to: Option<String>,
+    pub season: Option<i64>,
     pub index_number: Option<i64>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -7414,6 +7415,14 @@ mod tests {
             .unwrap();
         assert_eq!(ids.tmdb, vec![27205]);
         assert_eq!(ids.imdb, vec!["tt1375666".to_string()]);
+    }
+
+    #[test]
+    fn get_items_query_deserializes_season_case_variants() {
+        for query in ["Season=2", "season=2"] {
+            let q: GetItemsQuery = serde_urlencoded::from_str(query).unwrap();
+            assert_eq!(q.season, Some(2));
+        }
     }
 
     #[test]

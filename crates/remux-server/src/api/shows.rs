@@ -68,6 +68,48 @@ pub async fn shows_episodes(
     ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    if q.season_id
+        .is_none()
+        && let Some(season_number) = q.season
+    {
+        let season_query = api::GetItemsQuery {
+            parent_id: Some(item.id),
+            include_item_types: Some(vec![api::MediaType::Season]),
+            index_number: Some(season_number),
+            ..Default::default()
+        };
+        let server_config = db::Settings::get_config_or_default(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
+        let season = db::Media::get_by_jellyfin_filter(
+            &state
+                .ctx
+                .db,
+            &season_query,
+            true,
+            Some(&session.user),
+            Some(&server_config),
+            None,
+            None,
+        )
+        .await?
+        .records
+        .into_iter()
+        .next();
+        let Some(season) = season else {
+            return Ok(Json(api::BaseItemDtoQueryResult {
+                start_index: q
+                    .start_index
+                    .unwrap_or(0),
+                ..Default::default()
+            }));
+        };
+        q.season_id = Some(season.id);
+    }
+
     // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
     // If season_id is given, it's sufficient on its own (maps to parent_id in get_items),
     // so skip setting series_id to avoid filtering by the wrong ID.
@@ -2361,5 +2403,122 @@ pub(crate) mod test {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn episodes_filters_by_season_number_including_specials() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let (series, _) =
+            insert_series_with_episodes(db, "SeasonFilterSeries", &[]).await;
+
+        let mut expected_by_season = HashMap::new();
+        for season_number in [0_i64, 1, 2] {
+            let season_id = crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:{season_number}", series.id),
+            );
+            let mut season = db::Media {
+                id: season_id,
+                title: format!("Season {season_number}"),
+                kind: db::MediaKind::Season,
+                grandparent_id: Some(series.id),
+                parent_id: Some(series.id),
+                idx: Some(season_number),
+                digital_released_at: Some(
+                    NaiveDate::from_ymd_opt(2020, 1, 1)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                ),
+                ..Default::default()
+            };
+            season
+                .save(db)
+                .await
+                .unwrap();
+
+            let mut expected = Vec::new();
+            for episode_number in [1_i64, 2] {
+                let episode_id = crate::common::stable_media_uuid(
+                    &db::MediaKind::Episode,
+                    &format!("{}:{episode_number}", season_id),
+                );
+                let mut episode = db::Media {
+                    id: episode_id,
+                    title: format!("S{season_number}E{episode_number}"),
+                    kind: db::MediaKind::Episode,
+                    grandparent_id: Some(series.id),
+                    parent_id: Some(season_id),
+                    parent_idx: Some(season_number),
+                    idx: Some(episode_number),
+                    digital_released_at: Some(
+                        NaiveDate::from_ymd_opt(2020, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                };
+                episode
+                    .save(db)
+                    .await
+                    .unwrap();
+                expected.push(
+                    episode
+                        .id
+                        .simple()
+                        .to_string(),
+                );
+            }
+            expected_by_season.insert(season_number, expected);
+        }
+
+        for (query, expected) in [
+            ("?Season=2", expected_by_season[&2].clone()),
+            ("?Season=0", expected_by_season[&0].clone()),
+            ("?Season=99", Vec::new()),
+            (
+                "",
+                [
+                    expected_by_season[&0].clone(),
+                    expected_by_season[&1].clone(),
+                    expected_by_season[&2].clone(),
+                ]
+                .concat(),
+            ),
+        ] {
+            let response = server
+                .get(&format!("/shows/{}/episodes{query}", series.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .await;
+            let body: serde_json::Value = response.json();
+            let items = body["Items"]
+                .as_array()
+                .unwrap();
+            let ids: Vec<_> = items
+                .iter()
+                .map(|item| {
+                    item["Id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(ids, expected, "query {query}");
+            assert_eq!(
+                body["TotalRecordCount"].as_i64(),
+                Some(expected.len() as i64)
+            );
+        }
     }
 }
