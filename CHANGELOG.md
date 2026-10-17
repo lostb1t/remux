@@ -1,3 +1,31 @@
+# [0.37.0](https://github.com/lostb1t/remux/compare/v0.36.1...v0.37.0) (2026-10-17)
+
+
+### Bug Fixes
+
+* find subtitles for the exact release being played ([#609](https://github.com/lostb1t/remux/issues/609)) ([fbac093](https://github.com/lostb1t/remux/commit/fbac0930e92b0247002974404d1c5eb66bbe8fab))
+* let user addons provide catalogs (fixes [#595](https://github.com/lostb1t/remux/issues/595)) ([#597](https://github.com/lostb1t/remux/issues/597)) ([76fdcff](https://github.com/lostb1t/remux/commit/76fdcff918e0ba9161b54dac3bd7c14ee0ea8580))
+* make the unreachable manifest test independent of other tests ([bd4bb4c](https://github.com/lostb1t/remux/commit/bd4bb4ced8474f555b50f4f39cfb9b93447f1254))
+* **media:** resolve dedupe winner chains before remapping to avoid uniq_media_relation conflicts ([#603](https://github.com/lostb1t/remux/issues/603)) ([e82d1f8](https://github.com/lostb1t/remux/commit/e82d1f8afb23a4ef694eb4b02c0364375cf2c9c8))
+* play the version PlaybackInfo actually probed ([#602](https://github.com/lostb1t/remux/issues/602)) ([7738b2f](https://github.com/lostb1t/remux/commit/7738b2f9a645c751371b9138344bfd7cd619d708))
+* re-resolve the tmdb id when TMDB returns 404 for it ([#596](https://github.com/lostb1t/remux/issues/596)) ([9071eea](https://github.com/lostb1t/remux/commit/9071eea38d6efd195acc280c001142cf957b8cf9))
+* render mov_text subtitles at the video size when served as ASS (fixes [#599](https://github.com/lostb1t/remux/issues/599)) ([6ff664d](https://github.com/lostb1t/remux/commit/6ff664dbe4aa1c9ee074ef6206f74aa87d39a872))
+* restore collection selection in smart collections and split out collection filters ([#601](https://github.com/lostb1t/remux/issues/601)) ([5c97fb4](https://github.com/lostb1t/remux/commit/5c97fb489c43d7592df2c4578a0da0db1142496a))
+* show episodes' own rating instead of the weighted one (fixes [#611](https://github.com/lostb1t/remux/issues/611)) ([cdc2e52](https://github.com/lostb1t/remux/commit/cdc2e521de1290dc2a9134815a20b0ee3fa10cac))
+* show full catalog names in filter chips and widen the filter editor (fixes [#591](https://github.com/lostb1t/remux/issues/591)) ([2a8bd19](https://github.com/lostb1t/remux/commit/2a8bd1942ba5770e99b996014a5f4a0a120816be))
+* show the saved choice in addon dropdowns (fixes [#605](https://github.com/lostb1t/remux/issues/605)) ([44d9ebd](https://github.com/lostb1t/remux/commit/44d9ebd7ec541668a462bd6c03acad86425addc8))
+* stop importing catalogs from user addons (fixes [#595](https://github.com/lostb1t/remux/issues/595)) ([f81ef87](https://github.com/lostb1t/remux/commit/f81ef872b03933ff2720b69119238dd886068e09))
+
+
+### Features
+
+* add subtitle, bitrate and cached filters to stream groups (fixes [#594](https://github.com/lostb1t/remux/issues/594), fixes [#541](https://github.com/lostb1t/remux/issues/541)) ([#600](https://github.com/lostb1t/remux/issues/600)) ([da0540d](https://github.com/lostb1t/remux/commit/da0540d49616fe30b538f4209273e80bd44178ac))
+
+
+### Reverts
+
+* let user addons provide catalogs ([#597](https://github.com/lostb1t/remux/issues/597)) ([55f679d](https://github.com/lostb1t/remux/commit/55f679dca5e64d4661f9e8e95b92c79cdd617309))
+
 ## [0.36.1](https://github.com/lostb1t/remux/compare/v0.36.0...v0.36.1) (2026-10-06)
 
 
