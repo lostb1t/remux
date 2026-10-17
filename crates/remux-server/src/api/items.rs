@@ -2758,6 +2758,12 @@ pub async fn genres(
         .as_deref()
         .map(|f| f.contains(&api::ItemFields::ItemCounts))
         .unwrap_or(false);
+    let favorite = favorite_user_state(
+        &q,
+        session
+            .user
+            .id,
+    );
     let policy = session
         .user
         .policy
@@ -2794,6 +2800,7 @@ pub async fn genres(
             sort_order: q
                 .sort_order
                 .unwrap_or_default(),
+            user_state: favorite,
             title_contains: q.search_term,
             ..Default::default()
         },
@@ -2812,6 +2819,30 @@ pub async fn genres(
             .unwrap_or(0),
         ..Default::default()
     }))
+}
+
+/// Favorite filter for the name-list endpoints (`/Studios`, `/Genres`), which
+/// build their own `MediaFilter` instead of going through `get_items`. The
+/// web client's Favorites tab sends `IsFavorite=true` (or `Filters=IsFavorite`)
+/// to them; dropping it there lists every studio and genre as a favorite.
+pub fn favorite_user_state(
+    q: &api::GetItemsQuery,
+    user_id: Uuid,
+) -> Option<db::UserMediaStateFilter> {
+    let favorite = q
+        .is_favorite
+        .or_else(|| {
+            q.filters
+                .as_deref()
+                .unwrap_or(&[])
+                .contains(&api::ItemFilter::IsFavorite)
+                .then_some(true)
+        })?;
+    Some(db::UserMediaStateFilter {
+        user_id: Some(user_id),
+        favorite: Some(favorite),
+        ..Default::default()
+    })
 }
 
 #[get("/musicgenres")]
@@ -4216,6 +4247,111 @@ mod tests {
 
         assert_eq!(names, vec!["Official Video"]);
         assert_eq!(response["TotalRecordCount"], 1);
+    }
+
+    /// Jellyfin web's Favorites tab asks `/Studios` and `/Genres` for
+    /// `IsFavorite=true`; both must return only the requester's favorites
+    /// rather than every studio/genre.
+    #[tokio::test]
+    async fn studios_and_genres_honor_is_favorite() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let requester = db::User::get_by_username(db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut other_user = db::User::new_with_password(
+            String::new(),
+            "other-user".into(),
+            "test",
+            None,
+        )
+        .unwrap();
+        other_user
+            .save(db)
+            .await
+            .unwrap();
+
+        let item =
+            insert_media(db, "Some Show", db::MediaKind::Series, "tt1000010").await;
+        let mut rows = Vec::new();
+        for (kind, names) in [
+            (db::MediaKind::Genre, ["Drama", "Comedy"]),
+            (db::MediaKind::Studio, ["Studio A", "Studio B"]),
+        ] {
+            let names: Vec<String> = names
+                .iter()
+                .map(|n| n.to_string())
+                .collect();
+            let pairs = db::build_genre_relations_from_names(item.id, &names, kind);
+            let media: Vec<_> = pairs
+                .iter()
+                .map(|(_, m)| m.clone())
+                .collect();
+            db::Media::upsert(db, &media)
+                .await
+                .unwrap();
+            rows.extend(media);
+        }
+        let row = |title: &str| {
+            rows.iter()
+                .find(|m| m.title == title)
+                .unwrap()
+                .clone()
+        };
+        for (user, title) in [
+            (&requester, "Drama"),
+            (&requester, "Studio A"),
+            (&other_user, "Comedy"),
+            (&other_user, "Studio B"),
+        ] {
+            let mut state = db::UserMediaState::get_or_new(db, user, &row(title))
+                .await
+                .unwrap();
+            state.favorite = true;
+            state
+                .save(db)
+                .await
+                .unwrap();
+        }
+
+        for (path, query, expected) in [
+            ("/genres", ("IsFavorite", "true"), "Drama"),
+            ("/genres", ("Filters", "IsFavorite"), "Drama"),
+            ("/studios", ("IsFavorite", "true"), "Studio A"),
+            ("/studios", ("Filters", "IsFavorite"), "Studio A"),
+        ] {
+            let response: serde_json::Value = server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .add_query_param(query.0, query.1)
+                .await
+                .json();
+            let names: Vec<&str> = response["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["Name"].as_str())
+                .collect();
+            assert_eq!(names, vec![expected], "{path}?{}={}", query.0, query.1);
+            assert_eq!(response["TotalRecordCount"], 1);
+        }
+
+        let response: serde_json::Value = server
+            .get("/studios")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        assert_eq!(response["TotalRecordCount"], 2);
     }
 
     #[tokio::test]
