@@ -50,11 +50,7 @@ pub async fn music_search(
             &term,
             limit,
             &state.ctx,
-            Some(
-                session
-                    .user
-                    .id,
-            ),
+            Some(&session.user),
         )
         .await?;
 

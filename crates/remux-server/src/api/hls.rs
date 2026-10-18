@@ -198,6 +198,18 @@ async fn create_hls_session(
                 .next()
                 .context_not_found("no streams available for this group")?;
         }
+        // Refuse to stream a title the user's policy hides.
+        if resolved_media
+            .is_hidden_by_policy(
+                &state
+                    .ctx
+                    .db,
+                &auth.user,
+            )
+            .await?
+        {
+            return Err(anyhow::anyhow!("not found").context_not_found("not found"));
+        }
         if matches!(
             resolved_media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode

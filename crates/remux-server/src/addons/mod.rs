@@ -2827,10 +2827,10 @@ impl AddonService {
         query: &str,
         limit: usize,
         ctx: &AppContext,
-        user_id: Option<Uuid>,
+        user: Option<&db::User>,
     ) -> Result<Vec<db::Media>> {
-        let override_ids = match user_id {
-            Some(uid) => addon::user_addon_override(&ctx.db, uid)
+        let override_ids = match user {
+            Some(user) => addon::user_addon_override(&ctx.db, user.id)
                 .await
                 .unwrap_or(None),
             None => None,
@@ -2870,6 +2870,14 @@ impl AddonService {
             {
                 Ok(Some(mut results)) => {
                     db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+                    // Addon results skip the library query that applies the
+                    // user's policy, so drop what it would hide.
+                    if let Some(user) = user {
+                        let hidden =
+                            db::Media::hidden_by_policy(&ctx.db, user, &results)
+                                .await?;
+                        results.retain(|m| !hidden.contains(&m.id));
+                    }
                     for m in &results {
                         ctx.store
                             .save(

@@ -3515,6 +3515,103 @@ impl Media {
             .await?)
     }
 
+    /// Ids of the `items` that `user`'s policy hides from them.
+    ///
+    /// Library listings apply the policy inside their SQL query. Search
+    /// results, item lookups and playback don't go through a listing, so they
+    /// ask that same query about their items here. Only titles are checked:
+    /// containers, people, genres and the like always pass, and a stream is
+    /// judged by the title it belongs to. A title without a database row can't
+    /// be checked and counts as hidden.
+    pub async fn hidden_by_policy(
+        db: &SqlitePool,
+        user: &super::User,
+        items: &[Media],
+    ) -> Result<HashSet<Uuid>> {
+        let Some(policy) = user
+            .policy
+            .as_ref()
+            .map(|p| &p.0)
+            .filter(|p| p.restricts_content())
+        else {
+            return Ok(HashSet::new());
+        };
+
+        // Titles are what a policy rates: playable items and the folders that
+        // group them (series, seasons, albums, artists). Containers stay
+        // visible (AGENTS.md), and a stream is judged by its title.
+        let is_title = |kind: &MediaKind| {
+            (kind.is_playable_leaf() || kind.is_folder())
+                && !kinds_are_container_only(std::slice::from_ref(kind))
+        };
+        // (item id, id of the title whose rating decides for it)
+        let titles: Vec<(Uuid, Uuid)> = items
+            .iter()
+            .filter_map(|m| match m.kind {
+                MediaKind::Stream => m
+                    .parent_id
+                    .map(|title| (m.id, title)),
+                _ if is_title(&m.kind) => Some((m.id, m.id)),
+                _ => None,
+            })
+            .collect();
+        if titles.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let visible: HashSet<Uuid> = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                id: Some(
+                    titles
+                        .iter()
+                        .map(|(_, title)| *title)
+                        .collect(),
+                ),
+                user_id: Some(user.id),
+                policy_filter: policy
+                    .filter_rules
+                    .clone(),
+                max_parental_rating: policy.max_parental_rating,
+                blocked_tags: Some(
+                    policy
+                        .blocked_tags
+                        .clone(),
+                )
+                .filter(|tags| !tags.is_empty()),
+                allowed_tags: Some(
+                    policy
+                        .allowed_tags
+                        .clone(),
+                )
+                .filter(|tags| !tags.is_empty()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+
+        Ok(titles
+            .into_iter()
+            .filter(|(_, title)| !visible.contains(title))
+            .map(|(item, _)| item)
+            .collect())
+    }
+
+    /// Whether `user`'s policy hides this item. See [`Media::hidden_by_policy`].
+    pub async fn is_hidden_by_policy(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+    ) -> Result<bool> {
+        let hidden =
+            Self::hidden_by_policy(db, user, std::slice::from_ref(self)).await?;
+        Ok(!hidden.is_empty())
+    }
+
     pub async fn get_by_id(
         db: &SqlitePool,
         id: &Uuid,
@@ -12492,6 +12589,105 @@ mod genre_ids_filter_tests {
         assert!(
             !names.contains("Track In Untagged Album"),
             "track in an unrelated album should not match: {names:?}"
+        );
+    }
+
+    /// `hidden_by_policy` follows the listing rules: a title the policy hides
+    /// is reported, a stream follows its title, containers and people always
+    /// pass, a title without a database row (a remote search result) counts as
+    /// hidden, and a policy that restricts nothing (or only hides collections)
+    /// hides nothing.
+    #[tokio::test]
+    async fn hidden_by_policy_follows_the_listing_rules() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let movie = |age: i32, tmdb: i64| Media {
+            kind: MediaKind::Movie,
+            certification_age: Some(age),
+            external_ids: ExternalIds {
+                tmdb: Some(tmdb),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut kids = movie(0, 9_000_101);
+        let mut adult = movie(16, 9_000_102);
+        kids.save(&db)
+            .await
+            .unwrap();
+        adult
+            .save(&db)
+            .await
+            .unwrap();
+        let mut adult_stream = Media {
+            kind: MediaKind::Stream,
+            parent_id: Some(adult.id),
+            ..Default::default()
+        };
+        adult_stream
+            .save(&db)
+            .await
+            .unwrap();
+        let remote = movie(0, 9_000_103);
+        let items = [
+            kids.clone(),
+            adult.clone(),
+            adult_stream.clone(),
+            remote.clone(),
+            Media {
+                kind: MediaKind::Collection,
+                ..Default::default()
+            },
+            Media {
+                kind: MediaKind::Person,
+                ..Default::default()
+            },
+        ];
+
+        let mut user = crate::db::User {
+            policy: Some(sqlx::types::Json(crate::api::UserPolicy::default())),
+            ..Default::default()
+        };
+        let hidden = Media::hidden_by_policy(&db, &user, &items)
+            .await
+            .unwrap();
+        assert!(hidden.is_empty(), "an unrestricted policy hid {hidden:?}");
+
+        // Hiding a collection hides that collection row only, not content.
+        user.policy
+            .as_mut()
+            .unwrap()
+            .0
+            .filter_rules = Some(remux_sdks::remux::CollectionFilter {
+            groups: vec![remux_sdks::remux::FilterGroup {
+                rules: vec![remux_sdks::remux::FilterRule::CollectionId {
+                    op: remux_sdks::remux::SetOp::NotIn,
+                    ids: vec![Uuid::from_u128(1)],
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let hidden = Media::hidden_by_policy(&db, &user, &items)
+            .await
+            .unwrap();
+        assert!(hidden.is_empty(), "a collection-only policy hid {hidden:?}");
+
+        user.policy
+            .as_mut()
+            .unwrap()
+            .0
+            .max_parental_rating = Some(12);
+        let hidden = Media::hidden_by_policy(&db, &user, &items)
+            .await
+            .unwrap();
+        assert_eq!(
+            hidden,
+            HashSet::from([adult.id, adult_stream.id, remote.id])
         );
     }
 

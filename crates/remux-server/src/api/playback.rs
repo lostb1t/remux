@@ -314,6 +314,28 @@ async fn items_playbackinfo_inner(
         MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
             .await?
             .context_not_found("not found")?;
+    // The source that will play must be allowed, and so must the title in the
+    // URL when a MediaSourceId names something else (another title or one of
+    // its streams).
+    let title = match media_source_id {
+        Some(source_id) if source_id != id => {
+            MediaResolveService::resolve_item(id, &state.ctx).await?
+        }
+        _ => None,
+    };
+    for checked in std::iter::once(&media).chain(&title) {
+        if checked
+            .is_hidden_by_policy(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+            )
+            .await?
+        {
+            return Err(anyhow!("not found").context_not_found("not found"));
+        }
+    }
 
     let mut service = StreamService::new(StreamServiceConfig {
         ctx: state
@@ -1357,6 +1379,21 @@ async fn videos_stream_inner(
             return Ok(no_streams_response().into_response());
         }
     };
+    // Refuse streams of a title the user's policy hides. A request without a
+    // token has no known user, so there is nothing to check it against.
+    if let Some(user) = &user {
+        if media
+            .is_hidden_by_policy(
+                &state
+                    .ctx
+                    .db,
+                user,
+            )
+            .await?
+        {
+            return Err(anyhow!("not found").context_not_found("not found"));
+        }
+    }
     let Some(si) = media
         .stream_info
         .clone()
@@ -5069,5 +5106,126 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A title the user's policy hides can't be streamed, not even through an
+    /// allowed title's PlaybackInfo that names the hidden stream as its source.
+    #[tokio::test]
+    async fn policy_hidden_title_cannot_be_streamed() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db, stream,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let set_age_limit = |age: i32| async move {
+            let mut user = db::User::get_by_username(db, "test")
+                .await
+                .unwrap()
+                .unwrap();
+            let mut policy = user
+                .policy
+                .map(|p| p.0)
+                .unwrap_or_default();
+            policy.max_parental_rating = Some(age);
+            user.policy = Some(sqlx::types::Json(policy));
+            user.save(db)
+                .await
+                .unwrap();
+        };
+
+        let movie = |title: &str, age: i32, tmdb: i64| db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Movie,
+            certification_age: Some(age),
+            external_ids: db::ExternalIds {
+                tmdb: Some(tmdb),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut allowed = movie("Family Movie", 0, 9000001);
+        let mut hidden = movie("Restricted Movie", 16, 9000002);
+        allowed
+            .save(db)
+            .await
+            .unwrap();
+        hidden
+            .save(db)
+            .await
+            .unwrap();
+        let fixture = std::env::temp_dir()
+            .join(format!("remux-policy-{}.mkv", uuid::Uuid::new_v4()));
+        tokio::fs::write(&fixture, b"0123456789abcdef")
+            .await
+            .unwrap();
+        let mut hidden_stream = db::Media {
+            kind: db::MediaKind::Stream,
+            parent_id: Some(hidden.id),
+            stream_info: Some(stream::StreamInfo {
+                descriptor: stream::StreamDescriptor::Local(fixture.clone()),
+                ..Default::default()
+            }),
+            probe_data: Some(MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: vec![
+                    MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: Some(MediaStreamType::Video),
+                        index: 0,
+                        ..Default::default()
+                    },
+                    MediaStream {
+                        codec: Some("aac".to_string()),
+                        type_: Some(MediaStreamType::Audio),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        hidden_stream
+            .save(db)
+            .await
+            .unwrap();
+        let stream_path = format!("/videos/{}/stream.mkv", hidden_stream.id);
+        let playback_info = |source: uuid::Uuid| {
+            server
+                .post(&format!("/items/{}/playbackinfo", allowed.id))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&json!({ "MediaSourceId": source }))
+        };
+
+        set_age_limit(0).await;
+        playback_info(hidden_stream.id)
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+        server
+            .get(&stream_path)
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+
+        // Once the limit allows the title, the same requests succeed.
+        set_age_limit(16).await;
+        playback_info(hidden_stream.id)
+            .await
+            .assert_status_ok();
+        server
+            .get(&stream_path)
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .add_header(http::header::RANGE, HeaderValue::from_static("bytes=4-7"))
+            .await
+            .assert_status(StatusCode::PARTIAL_CONTENT);
+
+        let _ = tokio::fs::remove_file(fixture).await;
     }
 }
