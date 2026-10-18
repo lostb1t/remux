@@ -1376,6 +1376,8 @@ pub struct MediaFilter {
     pub parent_id: Option<Uuid>,
     /// Filter by multiple parent IDs (OR). Used for programs by channel.
     pub parent_ids: Option<Vec<Uuid>>,
+    /// Restrict collection rows to these declared content-library kinds.
+    pub collection_media_kinds: Option<Vec<CollectionMediaKind>>,
     pub promoted: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -4307,6 +4309,18 @@ impl Media {
                     }
                 }
             }
+            if let Some(kinds) = &filter.collection_media_kinds {
+                if kinds.is_empty() {
+                    qb.push(" AND 1 = 0");
+                } else {
+                    qb.push(" AND collection_media_kind IN (");
+                    let mut sep = qb.separated(", ");
+                    for kind in kinds {
+                        sep.push_bind(kind);
+                    }
+                    qb.push(")");
+                }
+            }
             if let Some(kinds) = &filter.album_kinds {
                 if !kinds.is_empty() {
                     // Only the requested release kinds; albums without a stored
@@ -6592,6 +6606,35 @@ impl Media {
                     }),
                 grandparent_id: filter.series_id,
                 parent: parent.cloned(),
+                collection_media_kinds: parent
+                    .filter(|p| {
+                        p.kind == MediaKind::Collection
+                            && p.promoted
+                            && !p.is_group_container()
+                            && filter.recursive
+                            && filter
+                                .include_item_types
+                                .as_ref()
+                                .is_some_and(|types| {
+                                    types.contains(&api::MediaType::BoxSet)
+                                })
+                    })
+                    .and_then(|p| match p.collection_media_kind {
+                        Some(CollectionMediaKind::Movie) => Some(vec![
+                            CollectionMediaKind::Movie,
+                            CollectionMediaKind::Mixed,
+                        ]),
+                        Some(CollectionMediaKind::Series) => Some(vec![
+                            CollectionMediaKind::Series,
+                            CollectionMediaKind::Mixed,
+                        ]),
+                        Some(CollectionMediaKind::Mixed) => Some(vec![
+                            CollectionMediaKind::Movie,
+                            CollectionMediaKind::Series,
+                            CollectionMediaKind::Mixed,
+                        ]),
+                        _ => Some(vec![]),
+                    }),
                 exclude_childless: targeting_containers
                     && !filter
                         .include_childless

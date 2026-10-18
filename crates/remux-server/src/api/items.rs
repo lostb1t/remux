@@ -263,6 +263,24 @@ pub async fn get_items(
         None
     };
 
+    // Promoted Movie/Series libraries are collection rows, but their BoxSets
+    // are independent collection records rather than children of the library.
+    // Scope the BoxSet query by the library's declared content kind below.
+    let library_boxset_query = parent
+        .as_ref()
+        .is_some_and(|p| {
+            p.kind == db::MediaKind::Collection
+                && p.promoted
+                && !p.is_group_container()
+                && q.recursive
+                && q.include_item_types
+                    .as_ref()
+                    .is_some_and(|types| types.contains(&api::MediaType::BoxSet))
+        });
+    if library_boxset_query {
+        q.parent_id = None;
+    }
+
     // Apply the collection's default sort override when the client sends no sort
     // preference or its built-in default sort (treated as "no preference").
     if let Some(ref p) = parent {
@@ -536,7 +554,7 @@ pub async fn get_items(
         }
 
         // collection browse
-        if parent.kind == db::MediaKind::Collection {
+        if parent.kind == db::MediaKind::Collection && !library_boxset_query {
             // Manual group container browse.
             if parent.is_group_container()
                 && parent.collection_kind == Some(db::CollectionKind::Manual)
@@ -4676,6 +4694,162 @@ mod tests {
             .await
             .expect("insert_smart_collection failed");
         c
+    }
+
+    async fn insert_library(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        media_kind: db::CollectionMediaKind,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut library = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(media_kind),
+            promoted: true,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        library
+            .save(db)
+            .await
+            .unwrap();
+        library
+    }
+
+    #[tokio::test]
+    async fn items_boxsets_work_unscoped_and_scoped_to_library_ids() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let movie_library =
+            insert_library(db, "Movies", db::CollectionMediaKind::Movie).await;
+        let series_library =
+            insert_library(db, "Shows", db::CollectionMediaKind::Series).await;
+        let empty_library =
+            insert_library(db, "Music", db::CollectionMediaKind::Music).await;
+
+        let movie =
+            insert_media(db, "Movie in library", db::MediaKind::Movie, "tt2000001")
+                .await;
+        let series =
+            insert_media(db, "Show in library", db::MediaKind::Series, "tt2000002")
+                .await;
+        let movie_boxset =
+            insert_smart_collection(db, "Movie BoxSet", db::CollectionMediaKind::Movie)
+                .await;
+        let series_boxset = insert_smart_collection(
+            db,
+            "Series BoxSet",
+            db::CollectionMediaKind::Series,
+        )
+        .await;
+        for (collection, member) in [(&movie_boxset, &movie), (&series_boxset, &series)]
+        {
+            db::MediaRelation::add_collection_items(db, &collection.id, &[member.id])
+                .await
+                .unwrap();
+        }
+
+        let virtual_folders: serde_json::Value = server
+            .get("/library/virtualfolders")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let id_for = |name: &str| {
+            virtual_folders
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|folder| folder["Name"] == name)
+                .and_then(|folder| folder["ItemId"].as_str())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            id_for("Movies"),
+            movie_library
+                .id
+                .to_string()
+        );
+        assert_eq!(
+            id_for("Shows"),
+            series_library
+                .id
+                .to_string()
+        );
+        assert_eq!(
+            id_for("Music"),
+            empty_library
+                .id
+                .to_string()
+        );
+
+        let query = |parent_id: Option<String>| {
+            let mut request = server
+                .get("/Items")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .add_query_param("Recursive", "true")
+                .add_query_param("IncludeItemTypes", "BoxSet")
+                .add_query_param("Fields", "ChildCount,RecursiveItemCount");
+            if let Some(id) = parent_id {
+                request = request.add_query_param("ParentId", id);
+            }
+            request
+        };
+
+        let unscoped: serde_json::Value = query(None)
+            .await
+            .json();
+        assert_eq!(unscoped["TotalRecordCount"], 2);
+        assert_eq!(
+            unscoped["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            unscoped["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["Type"] == "BoxSet")
+        );
+
+        for (library_id, expected_name) in [
+            (id_for("Movies"), "Movie BoxSet"),
+            (id_for("Shows"), "Series BoxSet"),
+        ] {
+            let scoped: serde_json::Value = query(Some(library_id))
+                .await
+                .json();
+            assert_eq!(scoped["TotalRecordCount"], 1);
+            assert_eq!(scoped["Items"][0]["Name"], expected_name);
+            assert_eq!(scoped["Items"][0]["Type"], "BoxSet");
+        }
+
+        let empty: serde_json::Value = query(Some(id_for("Music")))
+            .await
+            .json();
+        assert_eq!(empty["TotalRecordCount"], 0);
+        assert_eq!(
+            empty["Items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     // Requests movies from a series-only smart collection; must return nothing.
