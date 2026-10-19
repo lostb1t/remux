@@ -68,46 +68,12 @@ pub async fn shows_episodes(
     ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Filter episodes directly so seasons without release dates (notably specials)
+    // do not disappear during a season-item lookup.
     if q.season_id
         .is_none()
-        && let Some(season_number) = q.season
     {
-        let season_query = api::GetItemsQuery {
-            parent_id: Some(item.id),
-            include_item_types: Some(vec![api::MediaType::Season]),
-            index_number: Some(season_number),
-            ..Default::default()
-        };
-        let server_config = db::Settings::get_config_or_default(
-            &state
-                .ctx
-                .db,
-        )
-        .await;
-        let season = db::Media::get_by_jellyfin_filter(
-            &state
-                .ctx
-                .db,
-            &season_query,
-            true,
-            Some(&session.user),
-            Some(&server_config),
-            None,
-            None,
-        )
-        .await?
-        .records
-        .into_iter()
-        .next();
-        let Some(season) = season else {
-            return Ok(Json(api::BaseItemDtoQueryResult {
-                start_index: q
-                    .start_index
-                    .unwrap_or(0),
-                ..Default::default()
-            }));
-        };
-        q.season_id = Some(season.id);
+        q.parent_index_number = q.season;
     }
 
     // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
@@ -2431,12 +2397,12 @@ pub(crate) mod test {
                 grandparent_id: Some(series.id),
                 parent_id: Some(series.id),
                 idx: Some(season_number),
-                digital_released_at: Some(
+                digital_released_at: (season_number != 2).then(|| {
                     NaiveDate::from_ymd_opt(2020, 1, 1)
                         .unwrap()
                         .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ),
+                        .unwrap()
+                }),
                 ..Default::default()
             };
             season
@@ -2483,6 +2449,16 @@ pub(crate) mod test {
         for (query, expected) in [
             ("?Season=2", expected_by_season[&2].clone()),
             ("?Season=0", expected_by_season[&0].clone()),
+            (
+                &format!(
+                    "?Season=2&SeasonId={}",
+                    crate::common::stable_media_uuid(
+                        &db::MediaKind::Season,
+                        &format!("{}:0", series.id),
+                    )
+                ),
+                expected_by_season[&0].clone(),
+            ),
             ("?Season=99", Vec::new()),
             (
                 "",

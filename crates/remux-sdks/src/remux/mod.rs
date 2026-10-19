@@ -1547,6 +1547,7 @@ pub struct GetItemsQuery {
     pub has_trailer: Option<bool>,
     pub adjacent_to: Option<String>,
     pub season: Option<i64>,
+    pub parent_index_number: Option<i64>,
     pub index_number: Option<i64>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
