@@ -3517,9 +3517,9 @@ impl Media {
 
     /// Ids of the `items` that `user`'s policy hides from them.
     ///
-    /// Library listings apply the policy inside their SQL query. Search
-    /// results, item lookups and playback don't go through a listing, so they
-    /// ask that same query about their items here. Only titles are checked:
+    /// Library listings apply the policy inside their SQL query. Item lookups
+    /// and playback don't go through a listing, so they ask that same query
+    /// about their items here. Only titles are checked:
     /// containers, people, genres and the like always pass, and a stream is
     /// judged by the title it belongs to. A title without a database row can't
     /// be checked and counts as hidden.
@@ -4810,11 +4810,10 @@ impl Media {
                     qb.push(")");
                 }
             }
-            // Policy filters (rating, tags, smart policy rules) must not apply to:
-            // - container rows (Collection/Folder/Playlist) — CLAUDE.md rule
-            // - music content (Track/Album/Artist/MusicGenre) — ratings/tags are irrelevant
-            // - live TV (TvChannel/TvProgram) — same reason
-            // All four policy conditions live here — one place, one guard.
+            // Policy filters (rating, tags, smart policy rules) must not apply to
+            // container rows (Collection/Folder/Playlist), see AGENTS.md. They do
+            // apply to music and live TV, which have no rating, so a rating rule
+            // hides them. All four policy conditions live here: one place, one guard.
             let container_only = filter
                 .kind
                 .as_deref()

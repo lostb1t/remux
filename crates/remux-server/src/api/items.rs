@@ -367,7 +367,11 @@ pub async fn get_items(
                             s,
                             kind_limit(k, fetch_limit),
                             &state.ctx,
-                            Some(&session.user),
+                            Some(
+                                session
+                                    .user
+                                    .id,
+                            ),
                         )
                 })
                 .collect();
