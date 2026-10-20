@@ -438,10 +438,11 @@ impl CatalogAddon for OpendalAddon {
                     track_number: Option<i64>,
                     artist: Option<String>,
                     album: Option<String>,
+                    disc_number: Option<i64>,
                 }
                 let files: Vec<FileRow> = sqlx::query_as(
-                    "SELECT path, title, track_number, artist, album FROM opendal_files \
-                     WHERE addon_id = ? AND media_kind = 'track' ORDER BY artist, album, track_number",
+                    "SELECT path, title, track_number, artist, album, disc_number FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'track' ORDER BY artist, album, disc_number, track_number",
                 )
                 .bind(self.addon_id)
                 .fetch_all(&ctx.db)
@@ -541,6 +542,7 @@ impl CatalogAddon for OpendalAddon {
                             .unwrap_or_default(),
                         kind: db::MediaKind::Track,
                         idx: f.track_number,
+                        parent_idx: f.disc_number,
                         parent_id: album_id,
                         grandparent_id: artist_id,
                         stream_info: Some(crate::stream::StreamInfo {
@@ -778,8 +780,35 @@ impl StreamAddon for OpendalAddon {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
             // Local tracks carry their own descriptor (path) on the media row;
             // fall back to a title+artist+album match for legacy rows.
+            // Only reuse it when the file is one this addon indexed: every music
+            // addon supports every track, so another addon's descriptor must not
+            // be stamped with this addon's identity.
             if let Some(si) = &media.stream_info {
-                return Ok(vec![si.clone()]);
+                let owned_path = match &si.descriptor {
+                    crate::stream::StreamDescriptor::Local(p) => Some(
+                        p.to_string_lossy()
+                            .into_owned(),
+                    ),
+                    crate::stream::StreamDescriptor::Opendal { addon_id, path }
+                        if *addon_id == self.addon_id =>
+                    {
+                        Some(path.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(path) = owned_path {
+                    let owned: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM opendal_files \
+                         WHERE addon_id = ? AND media_kind = 'track' AND path = ?)",
+                    )
+                    .bind(self.addon_id)
+                    .bind(&path)
+                    .fetch_one(&ctx.db)
+                    .await?;
+                    if owned {
+                        return Ok(vec![si.clone()]);
+                    }
+                }
             }
             sqlx::query_as(
                 "SELECT path, name, title, imdb_id, season, episode, track_number, year, size, probe_data \
@@ -1223,6 +1252,57 @@ fn split_subtitle_stem(stem: &str) -> (String, Option<String>, bool, bool) {
     };
 
     (parts[..suffix_start].join("."), lang, is_forced, is_hi)
+}
+
+/// Artist, album and disc number of a music file from the Jellyfin folder
+/// layout: `{Artist}/{Album}/{NN - Title}`, album-only folders (`{Album}/{Track}`)
+/// and loose tracks. A `Disc N` / `CD N` folder inside the album carries the
+/// disc number instead of naming the album. `rel_path` is relative to the
+/// operator root; `scan_dir` is the configured directory it was listed from
+/// (`/` for local roots) and is not part of the layout.
+fn music_layout(
+    rel_path: &str,
+    scan_dir: &str,
+) -> (Option<String>, Option<String>, Option<i64>) {
+    let rel = rel_path.trim_matches('/');
+    let base = scan_dir.trim_matches('/');
+    let rel = if base.is_empty() {
+        rel
+    } else {
+        rel.strip_prefix(base)
+            .map(|r| r.trim_start_matches('/'))
+            .unwrap_or(rel)
+    };
+    let mut dirs: Vec<&str> = rel
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .collect();
+    dirs.pop(); // the file itself
+
+    static DISC_DIR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)^(?:disc|disk|cd)[\s._-]*(\d{1,2})$").unwrap()
+    });
+    let mut disc = None;
+    if let Some(n) = dirs
+        .last()
+        .and_then(|d| DISC_DIR.captures(d))
+        .and_then(|c| {
+            c[1].parse::<i64>()
+                .ok()
+        })
+    {
+        disc = Some(n);
+        dirs.pop();
+    }
+    match dirs.as_slice() {
+        [artist, album, ..] => (
+            Some((*artist).to_string()),
+            Some((*album).to_string()),
+            disc,
+        ),
+        [album] => (None, Some((*album).to_string()), disc),
+        _ => (None, None, disc),
+    }
 }
 
 async fn scan_addon(
@@ -1785,37 +1865,12 @@ async fn scan_addon(
                 }
             };
 
-            // Jellyfin music layout: {Artist}/{Album}/{NN - Title}, album-only
-            // folders ({Album}/{Track}) and loose tracks; optional "Disc N"
-            // subfolders inside the album are skipped. Without embedded tags
-            // the folder names are the source of truth for artist/album.
-            let (artist, album) = if media_kind == "track" {
-                let mut dirs = &path_components[..path_components
-                    .len()
-                    .saturating_sub(1)];
-                if dirs
-                    .last()
-                    .is_some_and(|d| {
-                        let lower = d.to_lowercase();
-                        lower.starts_with("disc ")
-                            || lower.starts_with("cd ")
-                            || lower == "disc"
-                    })
-                {
-                    dirs = &dirs[..dirs
-                        .len()
-                        .saturating_sub(1)];
-                }
-                match dirs {
-                    [artist_dir, album_dir, ..] => (
-                        Some((*artist_dir).to_string()),
-                        Some((*album_dir).to_string()),
-                    ),
-                    [album_dir] => (None, Some((*album_dir).to_string())),
-                    _ => (None, None),
-                }
+            // Jellyfin music layout, see `music_layout`. Without embedded tags the
+            // folder names are the source of truth for artist/album.
+            let (artist, album, disc_number) = if media_kind == "track" {
+                music_layout(&entry_rel, &list_from)
             } else {
-                (None, None)
+                (None, None, None)
             };
 
             // The local lister reports neither length nor mtime, so probing falls
@@ -1850,8 +1905,8 @@ async fn scan_addon(
 
             let insert_result = sqlx::query(
                 "INSERT INTO opendal_files \
-                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at, artist, album) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at, artist, album, disc_number) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(id) DO UPDATE SET \
                    path = excluded.path, \
                    name = excluded.name, media_kind = excluded.media_kind, \
@@ -1861,6 +1916,7 @@ async fn scan_addon(
                    track_number = excluded.track_number, \
                    year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at, \
                    artist = excluded.artist, album = excluded.album, \
+                   disc_number = excluded.disc_number, \
                    probe_data = CASE WHEN ? IS NOT NULL AND ? IS NOT opendal_files.probe_version THEN NULL ELSE opendal_files.probe_data END",
             )
             .bind(row_id)
@@ -1878,6 +1934,7 @@ async fn scan_addon(
             .bind(&now)
             .bind(artist.as_deref())
             .bind(album.as_deref())
+            .bind(disc_number)
             .bind(probe_version.as_deref())
             .bind(probe_version.as_deref())
             .execute(&ctx.db)
@@ -4894,5 +4951,126 @@ mod tests {
             }
             other => panic!("expected Local descriptor, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn music_layout_follows_jellyfin_folders() {
+        let l = |p: &str, d: &str| music_layout(p, d);
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            l("Steely Dan/Two Against Nature/03 - Two.flac", "/"),
+            (some("Steely Dan"), some("Two Against Nature"), None)
+        );
+        // album-only folder and a loose track
+        assert_eq!(l("Album/01 Song.flac", "/"), (None, some("Album"), None));
+        assert_eq!(l("Song.flac", "/"), (None, None, None));
+        // WebDAV paths are relative to the operator root, not the scan directory
+        assert_eq!(
+            l("Music/Steely Dan/Two Against Nature/03.flac", "/Music/"),
+            (some("Steely Dan"), some("Two Against Nature"), None)
+        );
+        // `Disc N` / `CD N` folders carry the disc number; look-alike album names do not
+        assert_eq!(
+            l("Artist/Album/Disc 2/01.flac", "/"),
+            (some("Artist"), some("Album"), Some(2))
+        );
+        assert_eq!(
+            l("Artist/Album/CD1/01.flac", "/"),
+            (some("Artist"), some("Album"), Some(1))
+        );
+        assert_eq!(
+            l("Artist/CD Singles/01 Song.flac", "/"),
+            (some("Artist"), some("CD Singles"), None)
+        );
+        assert_eq!(
+            l("Disc World/01 Song.flac", "/"),
+            (None, some("Disc World"), None)
+        );
+    }
+
+    /// A `Disc N` folder is not an album: both discs share the album, and each
+    /// track carries its disc number so clients can tell `01` on disc 1 from
+    /// `01` on disc 2.
+    #[tokio::test]
+    async fn opendal_track_catalog_keeps_disc_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = [
+            "Artist/Album/Disc 1/01 Song.flac",
+            "Artist/Album/Disc 2/01 Song.flac",
+        ];
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, _) = index_track_fixtures(ctx, dir.path(), &fixtures).await;
+
+        let catalog: Vec<db::Media> = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+        let albums = catalog
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Album)
+            .count();
+        assert_eq!(albums, 1, "both discs belong to one album");
+        let mut discs: Vec<(Option<i64>, Option<i64>)> = catalog
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Track)
+            .map(|m| (m.parent_idx, m.idx))
+            .collect();
+        discs.sort();
+        assert_eq!(discs, vec![(Some(1), Some(1)), (Some(2), Some(1))]);
+    }
+
+    /// Every music addon supports every track, so a track's stored stream must
+    /// only be served by the addon that indexed that file.
+    #[tokio::test]
+    async fn opendal_track_stream_belongs_to_the_indexing_addon() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon_a, _) =
+            index_track_fixtures(ctx, dir_a.path(), &["Artist/Album/Song.flac"]).await;
+        let (addon_b, _) = index_track_fixtures(
+            ctx,
+            dir_b.path(),
+            &["Other/Elsewhere/Different.flac"],
+        )
+        .await;
+
+        let catalog: Vec<db::Media> = addon_a
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+        let track = catalog
+            .iter()
+            .find(|m| m.kind == db::MediaKind::Track)
+            .unwrap();
+
+        assert_eq!(
+            addon_a
+                .get_streams(track, ctx, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            addon_b
+                .get_streams(track, ctx, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "another addon must not serve this addon's file"
+        );
     }
 }
