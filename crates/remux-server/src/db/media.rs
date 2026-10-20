@@ -2752,7 +2752,13 @@ impl Media {
             .filter(|item| match item.validate() {
                 Ok(()) => true,
                 Err(e) => {
-                    error!(error = %e, "skipping media item with invalid UUID");
+                    error!(
+                        error = %e,
+                        id = %item.id,
+                        kind = ?item.kind,
+                        title = %item.title,
+                        "skipping invalid media item"
+                    );
                     false
                 }
             })
@@ -7830,6 +7836,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     Vec<sdks::stremio::Episode>,
                 > = episodes
                     .iter()
+                    .filter(|ep| has_episode_number(ep))
                     .filter_map(|ep| {
                         ep.season
                             .map(|s| (s, ep.clone()))
@@ -7920,6 +7927,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
+                    .filter(|ep| has_episode_number(ep))
                     .filter_map(|ep| {
                         ep.season
                             .map(|s| (s, ep.clone()))
@@ -8097,10 +8105,15 @@ pub fn stremio_meta_season_episodes(
     };
 
     let mut out = Vec::new();
+    let mut unnumbered = 0usize;
     for ep in videos
         .iter()
         .filter(|e| e.season == Some(season_idx))
     {
+        if !has_episode_number(ep) {
+            unnumbered += 1;
+            continue;
+        }
         out.push(stremio_meta_episode(
             ep,
             series_id,
@@ -8109,7 +8122,25 @@ pub fn stremio_meta_season_episodes(
             series_external_ids,
         )?);
     }
+    if unnumbered > 0 {
+        debug!(
+            season_idx,
+            unnumbered, "skipped addon videos without an episode number"
+        );
+    }
     Ok(out)
+}
+
+/// Whether an addon video says which episode it is.
+///
+/// Stremio's `episode` is the only field we trust for numbering. Cinemeta
+/// serves some series as a bare IMDb listing with `number` but no `episode`,
+/// and its numbering there doesn't line up with our seasons. Such a video
+/// can't become an episode row: it has no index to store, and every one of
+/// them would derive the same id from episode 0.
+fn has_episode_number(ep: &crate::sdks::stremio::Episode) -> bool {
+    ep.episode
+        .is_some()
 }
 
 /// Build a single episode `Media` from one Stremio `videos[]` entry.
@@ -9484,6 +9515,63 @@ mod tests {
                 .as_deref(),
             Some("tt0045373:0:1"),
             "the stremio id is still what the row is keyed on"
+        );
+    }
+
+    /// Cinemeta serves some series (Smosh Mouth, tt28761786) as a bare IMDb
+    /// listing: every video has `number` but no `episode`. Those can't be
+    /// stored as episodes, and must not reach `upsert` where each one failed
+    /// validation and logged an error on every refresh.
+    #[test]
+    fn videos_without_an_episode_number_are_not_turned_into_episodes() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt28761786",
+            "imdb_id": "tt28761786",
+            "type": "series",
+            "name": "Smosh Mouth",
+            "videos": [
+                { "id": "tt28761786:1:0", "season": 1, "number": 0,
+                  "name": "SmoshCast is BACK" },
+                { "id": "tt28761786:1:1", "season": 1, "number": 1 },
+                { "id": "tt28761786:1:2", "season": 1, "number": 2, "episode": 2 },
+            ],
+        }))
+        .expect("fixture meta");
+        let ext = ExternalIds {
+            imdb: NonEmptyString::try_new("tt28761786".to_string()).ok(),
+            ..Default::default()
+        };
+
+        let episodes = stremio_meta_season_episodes(
+            &meta,
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            1,
+            &ext,
+        )
+        .expect("converts");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].idx, Some(2));
+        assert!(
+            episodes
+                .iter()
+                .all(|e| e
+                    .validate()
+                    .is_ok())
+        );
+
+        let medias = stremio_meta_to_medias(meta).expect("converts");
+        let episodes: Vec<&Media> = medias
+            .iter()
+            .filter(|m| m.kind == MediaKind::Episode)
+            .collect();
+        assert_eq!(episodes.len(), 1);
+        assert!(
+            episodes
+                .iter()
+                .all(|e| e
+                    .validate()
+                    .is_ok())
         );
     }
 
