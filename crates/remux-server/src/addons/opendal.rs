@@ -431,25 +431,131 @@ impl CatalogAddon for OpendalAddon {
                 .collect()
             }
             "track" => {
-                sqlx::query_as::<_, (Option<String>,)>(
-                    "SELECT title FROM opendal_files \
-                     WHERE addon_id = ? AND media_kind = 'track'",
+                #[derive(sqlx::FromRow)]
+                struct FileRow {
+                    path: String,
+                    title: Option<String>,
+                    track_number: Option<i64>,
+                    artist: Option<String>,
+                    album: Option<String>,
+                }
+                let files: Vec<FileRow> = sqlx::query_as(
+                    "SELECT path, title, track_number, artist, album FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'track' ORDER BY artist, album, track_number",
                 )
                 .bind(self.addon_id)
                 .fetch_all(&ctx.db)
-                .await?
-                .into_iter()
-                .filter_map(|(title,)| title)
-                .map(|title| db::Media {
-                    id: common::get_stable_uuid(format!(
+                .await?;
+
+                // Jellyfin music hierarchy: Artist -> Album -> Track. Ids are
+                // derived from the file path / names so same-titled tracks in
+                // different albums never collide and survive reimports.
+                let mut seen_artists: std::collections::HashSet<String> =
+                    Default::default();
+                let mut seen_albums: std::collections::HashSet<String> =
+                    Default::default();
+                let mut out: Vec<db::Media> = Vec::with_capacity(files.len() * 2);
+
+                for f in &files {
+                    if let Some(artist) = &f.artist {
+                        let artist_key = format!("{}:artist:{}", self.addon_id, artist);
+                        if seen_artists.insert(artist_key.clone()) {
+                            out.push(db::Media {
+                                id: common::get_stable_uuid(artist_key.clone()),
+                                title: artist.clone(),
+                                kind: db::MediaKind::Artist,
+                                external_ids: db::ExternalIds {
+                                    custom_stremio_id: Some(artist_key),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    if let Some(album) = &f.album {
+                        let album_key = format!(
+                            "{}:album:{}:{}",
+                            self.addon_id,
+                            f.artist.as_deref().unwrap_or(""),
+                            album
+                        );
+                        if seen_albums.insert(album_key.clone()) {
+                            let artist_id = f
+                                .artist
+                                .as_ref()
+                                .map(|a| {
+                                    common::get_stable_uuid(format!(
+                                        "{}:artist:{}",
+                                        self.addon_id, a
+                                    ))
+                                });
+                            out.push(db::Media {
+                                id: common::get_stable_uuid(album_key.clone()),
+                                title: album.clone(),
+                                kind: db::MediaKind::Album,
+                                parent_id: artist_id,
+                                grandparent_id: artist_id,
+                                external_ids: db::ExternalIds {
+                                    custom_stremio_id: Some(album_key),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    let track_key = format!(
                         "{}:track:{}",
-                        self.addon_id, title
-                    )),
-                    title: title.clone(),
-                    kind: db::MediaKind::Track,
-                    ..Default::default()
-                })
-                .collect()
+                        self.addon_id, f.path
+                    );
+                    let album_id = f.album.as_ref().map(|album| {
+                        common::get_stable_uuid(format!(
+                            "{}:album:{}:{}",
+                            self.addon_id,
+                            f.artist.as_deref().unwrap_or(""),
+                            album
+                        ))
+                    });
+                    let artist_id = f.artist.as_ref().map(|a| {
+                        common::get_stable_uuid(format!(
+                            "{}:artist:{}",
+                            self.addon_id, a
+                        ))
+                    });
+                    let descriptor = if self.backend == "local" {
+                        crate::stream::StreamDescriptor::Local(
+                            std::path::PathBuf::from(&f.path),
+                        )
+                    } else {
+                        crate::stream::StreamDescriptor::Opendal {
+                            addon_id: self.addon_id,
+                            path: f
+                                .path
+                                .clone(),
+                        }
+                    };
+                    out.push(db::Media {
+                        id: common::get_stable_uuid(track_key.clone()),
+                        title: f
+                            .title
+                            .clone()
+                            .unwrap_or_default(),
+                        kind: db::MediaKind::Track,
+                        idx: f.track_number,
+                        parent_id: album_id,
+                        grandparent_id: artist_id,
+                        stream_info: Some(crate::stream::StreamInfo {
+                            descriptor,
+                            name: Some(f.path.clone()),
+                            ..Default::default()
+                        }),
+                        external_ids: db::ExternalIds {
+                            custom_stremio_id: Some(track_key),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                }
+                out
             }
             _ => {
                 sqlx::query_as::<_, (String, Option<String>)>(
@@ -670,6 +776,11 @@ impl StreamAddon for OpendalAddon {
         _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
+            // Local tracks carry their own descriptor (path) on the media row;
+            // fall back to a title+artist+album match for legacy rows.
+            if let Some(si) = &media.stream_info {
+                return Ok(vec![si.clone()]);
+            }
             sqlx::query_as(
                 "SELECT path, name, title, imdb_id, season, episode, track_number, year, size, probe_data \
                  FROM opendal_files \
@@ -1674,6 +1785,39 @@ async fn scan_addon(
                 }
             };
 
+            // Jellyfin music layout: {Artist}/{Album}/{NN - Title}, album-only
+            // folders ({Album}/{Track}) and loose tracks; optional "Disc N"
+            // subfolders inside the album are skipped. Without embedded tags
+            // the folder names are the source of truth for artist/album.
+            let (artist, album) = if media_kind == "track" {
+                let mut dirs = &path_components[..path_components
+                    .len()
+                    .saturating_sub(1)];
+                if dirs
+                    .last()
+                    .is_some_and(|d| {
+                        let lower = d.to_lowercase();
+                        lower.starts_with("disc ")
+                            || lower.starts_with("cd ")
+                            || lower == "disc"
+                    })
+                {
+                    dirs = &dirs[..dirs
+                        .len()
+                        .saturating_sub(1)];
+                }
+                match dirs {
+                    [artist_dir, album_dir, ..] => (
+                        Some((*artist_dir).to_string()),
+                        Some((*album_dir).to_string()),
+                    ),
+                    [album_dir] => (None, Some((*album_dir).to_string())),
+                    _ => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
             // The local lister reports neither length nor mtime, so probing falls
             // back to a stat to detect changed files.
             let mut meta = entry
@@ -1706,8 +1850,8 @@ async fn scan_addon(
 
             let insert_result = sqlx::query(
                 "INSERT INTO opendal_files \
-                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at, artist, album) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(id) DO UPDATE SET \
                    path = excluded.path, \
                    name = excluded.name, media_kind = excluded.media_kind, \
@@ -1716,6 +1860,7 @@ async fn scan_addon(
                    season = excluded.season, episode = excluded.episode, \
                    track_number = excluded.track_number, \
                    year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at, \
+                   artist = excluded.artist, album = excluded.album, \
                    probe_data = CASE WHEN ? IS NOT NULL AND ? IS NOT opendal_files.probe_version THEN NULL ELSE opendal_files.probe_data END",
             )
             .bind(row_id)
@@ -1731,6 +1876,8 @@ async fn scan_addon(
             .bind(year)
             .bind(size)
             .bind(&now)
+            .bind(artist.as_deref())
+            .bind(album.as_deref())
             .bind(probe_version.as_deref())
             .bind(probe_version.as_deref())
             .execute(&ctx.db)
@@ -4477,5 +4624,275 @@ mod tests {
             .await
             .unwrap();
         assert!(!stored_probe(ctx, db_addon.id).await);
+    }
+
+    // -----------------------------------------------------------------------
+    // Local music (Jellyfin layout): Artist/Album/Track folders, album-only
+    // folders and loose tracks. See
+    // https://jellyfin.org/docs/general/server/media/music/
+    // -----------------------------------------------------------------------
+
+    async fn index_track_fixtures(
+        ctx: &crate::AppContext,
+        dir: &std::path::Path,
+        fixtures: &[&str],
+    ) -> (OpendalAddon, Addon) {
+        write_files(
+            dir,
+            &fixtures
+                .iter()
+                .map(|p| (*p, b"fake" as &[u8]))
+                .collect::<Vec<_>>(),
+        );
+        let (addon, db_addon) = make_local_addon(ctx, dir, "track").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+        (addon, db_addon)
+    }
+
+    /// Scan parses artist/album from the Jellyfin folder layout and track
+    /// number + title from the filename.
+    #[tokio::test]
+    async fn opendal_track_scan_parses_jellyfin_music_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = [
+            // {Artist}/{Album}/{NN - Title}
+            "Steely Dan/Two Against Nature/03 - Two Against Nature.flac",
+            // album-only folder; without embedded tags the folder name is the album
+            "Incubus - Morning View XXIII (2024) [FLAC]/03. Wish You Were Here.flac",
+            // {Artist}/{Album}/{NN Title}
+            "Various Artists/Now That's What I Call Music/01 Uptown Funk.mp3",
+            // loose track at the root
+            "Loose Track.mp3",
+        ];
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (_, db_addon) = index_track_fixtures(ctx, dir.path(), &fixtures).await;
+
+        #[derive(Debug, sqlx::FromRow)]
+        struct Row {
+            path: String,
+            title: Option<String>,
+            track_number: Option<i64>,
+            artist: Option<String>,
+            album: Option<String>,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT path, title, track_number, artist, album FROM opendal_files              WHERE addon_id = ? AND media_kind = 'track' ORDER BY path",
+        )
+        .bind(db_addon.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            4,
+            "every fixture file must be indexed; got: {rows:?}"
+        );
+        for r in &rows {
+            let rel = r
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap();
+            match rel {
+                "03 - Two Against Nature.flac" => {
+                    assert_eq!(
+                        r.artist
+                            .as_deref(),
+                        Some("Steely Dan")
+                    );
+                    assert_eq!(
+                        r.album
+                            .as_deref(),
+                        Some("Two Against Nature")
+                    );
+                    assert_eq!(
+                        r.title
+                            .as_deref(),
+                        Some("Two Against Nature")
+                    );
+                    assert_eq!(r.track_number, Some(3));
+                }
+                "03. Wish You Were Here.flac" => {
+                    // album-only folder: the folder name is the album; artist is
+                    // unknown without embedded tags
+                    assert_eq!(
+                        r.album
+                            .as_deref(),
+                        Some("Incubus - Morning View XXIII (2024) [FLAC]")
+                    );
+                    assert_eq!(r.artist, None);
+                    assert_eq!(
+                        r.title
+                            .as_deref(),
+                        Some("Wish You Were Here")
+                    );
+                    assert_eq!(r.track_number, Some(3));
+                }
+                "01 Uptown Funk.mp3" => {
+                    assert_eq!(
+                        r.artist
+                            .as_deref(),
+                        Some("Various Artists")
+                    );
+                    assert_eq!(
+                        r.album
+                            .as_deref(),
+                        Some("Now That's What I Call Music")
+                    );
+                    assert_eq!(
+                        r.title
+                            .as_deref(),
+                        Some("Uptown Funk")
+                    );
+                    assert_eq!(r.track_number, Some(1));
+                }
+                "Loose Track.mp3" => {
+                    assert_eq!(r.artist, None);
+                    assert_eq!(r.album, None);
+                    assert_eq!(
+                        r.title
+                            .as_deref(),
+                        Some("Loose Track")
+                    );
+                    assert_eq!(r.track_number, None);
+                }
+                other => panic!("unexpected fixture path: {other}"),
+            }
+        }
+    }
+
+    /// Catalog builds the Artist -> Album -> Track hierarchy with per-file ids:
+    /// tracks with the same title in different albums/artists must not collide.
+    #[tokio::test]
+    async fn opendal_track_catalog_builds_music_hierarchy() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = [
+            "Artist A/Album One/Intro.flac",
+            "Artist A/Album Two/Intro.flac",
+            "Artist B/Album One/Intro.flac",
+        ];
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, _) = index_track_fixtures(ctx, dir.path(), &fixtures).await;
+
+        let catalog: Vec<db::Media> = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+
+        let tracks: Vec<&db::Media> = catalog
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Track)
+            .collect();
+        let albums: Vec<&db::Media> = catalog
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Album)
+            .collect();
+        let artists: Vec<&db::Media> = catalog
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Artist)
+            .collect();
+
+        assert_eq!(
+            tracks.len(),
+            3,
+            "each file must produce its own track; got: {:?}",
+            tracks
+                .iter()
+                .map(|m| &m.title)
+                .collect::<Vec<_>>()
+        );
+        let track_ids: std::collections::HashSet<_> = tracks
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            track_ids.len(),
+            3,
+            "same-titled tracks in different albums/artists must have distinct ids"
+        );
+
+        assert_eq!(albums.len(), 3, "one album row per distinct artist+album");
+        assert_eq!(artists.len(), 2, "one artist row per distinct artist");
+
+        for t in &tracks {
+            assert!(
+                t.parent_id
+                    .is_some(),
+                "track must link to its album"
+            );
+            assert!(
+                t.grandparent_id
+                    .is_some(),
+                "track must link to its artist"
+            );
+        }
+    }
+
+    /// Streams resolve to the exact file for the track, not a same-titled file
+    /// from another album.
+    #[tokio::test]
+    async fn opendal_track_streams_resolve_exact_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = [
+            "Artist A/Album One/Intro.flac",
+            "Artist A/Album Two/Intro.flac",
+            "Artist B/Album One/Intro.flac",
+        ];
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, _) = index_track_fixtures(ctx, dir.path(), &fixtures).await;
+
+        let catalog: Vec<db::Media> = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+
+        let artist_a_id: uuid::Uuid = catalog
+            .iter()
+            .find(|m| m.kind == db::MediaKind::Artist && m.title == "Artist A")
+            .expect("Artist A row in catalog")
+            .id;
+        let target = catalog
+            .iter()
+            .find(|m| {
+                m.kind == db::MediaKind::Track
+                    && m.title == "Intro"
+                    && m.grandparent_id == Some(artist_a_id)
+            })
+            .expect("track under Artist A");
+
+        let streams = addon
+            .get_streams(target, ctx, None)
+            .await
+            .unwrap();
+        assert_eq!(streams.len(), 1, "exactly one stream for the track");
+        match &streams[0].descriptor {
+            crate::stream::StreamDescriptor::Local(p) => {
+                assert!(
+                    p.to_string_lossy()
+                        .ends_with("Artist A/Album One/Intro.flac"),
+                    "must resolve the exact file; got: {p:?}"
+                );
+            }
+            other => panic!("expected Local descriptor, got {other:?}"),
+        }
     }
 }
