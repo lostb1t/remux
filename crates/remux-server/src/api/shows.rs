@@ -68,6 +68,12 @@ pub async fn shows_episodes(
     ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin returns every episode unless the client sets a limit; drop the
+    // default that `GetItemsQuery` applies to omitted limits.
+    if q.limit == Some(api::DEFAULT_ITEMS_LIMIT) {
+        q.limit = None;
+    }
+
     // Filter episodes directly so seasons without release dates (notably specials)
     // do not disappear during a season-item lookup.
     if q.season_id

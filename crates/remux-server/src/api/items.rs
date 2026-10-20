@@ -497,7 +497,11 @@ pub async fn get_items(
             let remaining = relations
                 .len()
                 .saturating_sub(start);
-            let slice = match q.limit {
+            // Jellyfin returns the whole playlist unless the client sets a limit.
+            let limit = q
+                .limit
+                .filter(|l| *l != api::DEFAULT_ITEMS_LIMIT);
+            let slice = match limit {
                 Some(limit) => {
                     &relations[start.min(relations.len())..]
                         [..(limit as usize).min(remaining)]
