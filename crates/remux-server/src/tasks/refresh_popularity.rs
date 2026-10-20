@@ -20,23 +20,40 @@ const RETRY_DELAYS: [Duration; 4] = [
     Duration::from_secs(120),
 ];
 
+/// A page is only worth waiting for when more than this share of it came back
+/// unavailable. A few titles that fail on their own (a bad id, one poisoned
+/// record) must not stall the whole run while the backend is healthy.
+const BACKOFF_FAILURE_SHARE: f64 = 0.10;
+
+/// Total time one run may spend sleeping between retry rounds, across all
+/// pages. Once spent, unavailable titles are only counted and logged.
+const BACKOFF_WAIT_BUDGET: Duration = Duration::from_secs(10 * 60);
+
 /// Looks up every item, then re-queues the ones that came back
 /// [`MetricsLookup::Unavailable`] after each pause in `delays`, with a
-/// quarter of the concurrency. Returns what was found plus how many items
-/// were still unavailable when the delays ran out.
+/// quarter of the original concurrency every round. Retries only happen while
+/// more than [`BACKOFF_FAILURE_SHARE`] of `items` is still unavailable and the
+/// next pause fits in `wait_budget`, which is shared across calls. Returns
+/// what was found plus how many items were still unavailable at the end.
 async fn lookup_with_backoff<T, F, Fut>(
     items: Vec<T>,
     concurrency: usize,
     delays: &[Duration],
+    wait_budget: &mut Duration,
     lookup: F,
 ) -> (Vec<(T, MediaMetrics)>, usize)
 where
     F: Fn(&T) -> Fut,
     Fut: Future<Output = MetricsLookup>,
 {
+    let page_len = items.len();
+    let first_round = concurrency.max(1);
+    let retry_round = first_round
+        .div_ceil(4)
+        .max(1);
+    let mut round_concurrency = first_round;
     let mut found = Vec::new();
     let mut pending = items;
-    let mut concurrency = concurrency.max(1);
     let mut delays = delays.iter();
     loop {
         let results: Vec<_> = stream::iter(pending)
@@ -47,7 +64,7 @@ where
                     (item, result)
                 }
             })
-            .buffer_unordered(concurrency)
+            .buffer_unordered(round_concurrency)
             .collect()
             .await;
         pending = Vec::new();
@@ -58,10 +75,11 @@ where
                 MetricsLookup::Unavailable => pending.push(item),
             }
         }
-        let Some(delay) = delays
+        let widespread = pending.len() as f64 > page_len as f64 * BACKOFF_FAILURE_SHARE;
+        let delay = delays
             .next()
-            .filter(|_| !pending.is_empty())
-        else {
+            .filter(|delay| widespread && **delay <= *wait_budget);
+        let Some(delay) = delay else {
             return (found, pending.len());
         };
         warn!(
@@ -69,9 +87,15 @@ where
             retry_in_secs = delay.as_secs(),
             "RemuxDB metrics unavailable; backing off before retrying"
         );
+        *wait_budget -= *delay;
         tokio::time::sleep(*delay).await;
-        concurrency = concurrency.div_ceil(4);
+        round_concurrency = retry_round;
     }
+}
+
+/// More than half of a page still unavailable after the retries.
+fn is_outage(gave_up: usize, page_len: usize) -> bool {
+    gave_up * 2 > page_len
 }
 
 #[async_trait]
@@ -120,6 +144,7 @@ impl Task for RefreshPopularityTask {
         const PAGE_SIZE: u32 = 250;
         let mut offset = 0;
         let mut completed = 0_i64;
+        let mut wait_budget = BACKOFF_WAIT_BUDGET;
         loop {
             let page =
                 db::Media::list_for_popularity_sync(&ctx.db, PAGE_SIZE, offset).await?;
@@ -130,8 +155,12 @@ impl Task for RefreshPopularityTask {
             completed += page.len() as i64;
 
             let page_len = page.len();
-            let (synced, gave_up) =
-                lookup_with_backoff(page, concurrency, &RETRY_DELAYS, |media| {
+            let (synced, gave_up) = lookup_with_backoff(
+                page,
+                concurrency,
+                &RETRY_DELAYS,
+                &mut wait_budget,
+                |media| {
                     let base_url = base_url.to_string();
                     let client_id = client_id.clone();
                     let imdb_id = media
@@ -149,8 +178,9 @@ impl Task for RefreshPopularityTask {
                             None => MetricsLookup::Missing,
                         }
                     }
-                })
-                .await;
+                },
+            )
+            .await;
             if gave_up > 0 {
                 warn!(
                     gave_up,
@@ -159,7 +189,7 @@ impl Task for RefreshPopularityTask {
             }
             // A page that mostly failed means the backend is down, not flaky;
             // stop instead of waiting out the same delays for every page.
-            let outage = gave_up * 2 > page_len;
+            let outage = is_outage(gave_up, page_len);
             persist_metrics(&ctx.db, synced).await?;
             if outage {
                 anyhow::bail!("RemuxDB is unavailable; metrics sync stopped early");
@@ -340,9 +370,14 @@ mod tests {
         let (calls, lookup) = flaky(2);
         let delays = [Duration::ZERO; 3];
 
-        let (found, gave_up) =
-            lookup_with_backoff((0..20).collect::<Vec<u32>>(), 4, &delays, lookup)
-                .await;
+        let (found, gave_up) = lookup_with_backoff(
+            (0..20).collect::<Vec<u32>>(),
+            4,
+            &delays,
+            &mut Duration::MAX,
+            lookup,
+        )
+        .await;
 
         assert_eq!(found.len(), 20);
         assert_eq!(gave_up, 0);
@@ -360,8 +395,14 @@ mod tests {
         let (calls, lookup) = flaky(usize::MAX);
         let delays = [Duration::ZERO; 2];
 
-        let (found, gave_up) =
-            lookup_with_backoff(vec![1_u32, 2, 3], 2, &delays, lookup).await;
+        let (found, gave_up) = lookup_with_backoff(
+            vec![1_u32, 2, 3],
+            2,
+            &delays,
+            &mut Duration::MAX,
+            lookup,
+        )
+        .await;
 
         assert!(found.is_empty());
         assert_eq!(gave_up, 3);
@@ -379,16 +420,171 @@ mod tests {
     async fn missing_titles_are_not_retried() {
         let calls = std::sync::atomic::AtomicUsize::new(0);
 
-        let (found, gave_up) =
-            lookup_with_backoff(vec![1_u32], 1, &[Duration::ZERO; 3], |_| {
+        let (found, gave_up) = lookup_with_backoff(
+            vec![1_u32],
+            1,
+            &[Duration::ZERO; 3],
+            &mut Duration::MAX,
+            |_| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 std::future::ready(MetricsLookup::Missing)
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert!(found.is_empty());
         assert_eq!(gave_up, 0);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Items in `bad` always answer 503, everything else succeeds at once.
+    fn some_always_down(
+        bad: std::ops::Range<u32>,
+    ) -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        impl Fn(&u32) -> std::future::Ready<MetricsLookup>,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let lookup = move |item: &u32| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(if bad.contains(item) {
+                MetricsLookup::Unavailable
+            } else {
+                MetricsLookup::Found(empty_metrics())
+            })
+        };
+        (calls, lookup)
+    }
+
+    #[tokio::test]
+    async fn a_few_failures_on_a_page_are_not_retried() {
+        // 10 of 100 is exactly the threshold, not above it
+        let (calls, lookup) = some_always_down(0..10);
+        let mut budget = Duration::from_secs(60);
+
+        let (found, gave_up) = lookup_with_backoff(
+            (0..100).collect::<Vec<u32>>(),
+            4,
+            &[Duration::from_secs(5); 3],
+            &mut budget,
+            lookup,
+        )
+        .await;
+
+        assert_eq!(found.len(), 90);
+        assert_eq!(gave_up, 10);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 100);
+        // nothing was slept, so nothing was spent
+        assert_eq!(budget, Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn widespread_failures_are_retried() {
+        let (calls, lookup) = some_always_down(0..11);
+
+        let (_, gave_up) = lookup_with_backoff(
+            (0..100).collect::<Vec<u32>>(),
+            4,
+            &[Duration::ZERO; 2],
+            &mut Duration::MAX,
+            lookup,
+        )
+        .await;
+
+        assert_eq!(gave_up, 11);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            100 + 2 * 11
+        );
+    }
+
+    #[tokio::test]
+    async fn the_wait_budget_is_shared_and_stops_further_backoff() {
+        let delays = [Duration::from_millis(10); 4];
+        let mut budget = Duration::from_millis(25);
+        let (calls, lookup) = some_always_down(0..u32::MAX);
+
+        // two sleeps fit in the budget, the third would not
+        let (_, gave_up) =
+            lookup_with_backoff(vec![1_u32, 2], 2, &delays, &mut budget, &lookup).await;
+        assert_eq!(gave_up, 2);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2 * 3);
+        assert_eq!(budget, Duration::from_millis(5));
+
+        // the next page gets one pass and no waiting at all
+        let (_, gave_up) =
+            lookup_with_backoff(vec![3_u32, 4], 2, &delays, &mut budget, &lookup).await;
+        assert_eq!(gave_up, 2);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2 * 3 + 2);
+        assert_eq!(budget, Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn retry_rounds_use_a_quarter_of_the_original_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let active = AtomicUsize::new(0);
+        // highest number of lookups in flight, per round (40 items each)
+        let peaks = std::sync::Mutex::new(vec![0_usize; 4]);
+        let started = AtomicUsize::new(0);
+
+        let (_, gave_up) = lookup_with_backoff(
+            (0..40).collect::<Vec<u32>>(),
+            16,
+            &[Duration::ZERO; 3],
+            &mut Duration::MAX,
+            |_| {
+                let round = started.fetch_add(1, SeqCst) / 40;
+                let now = active.fetch_add(1, SeqCst) + 1;
+                {
+                    let mut peaks = peaks
+                        .lock()
+                        .unwrap();
+                    peaks[round] = peaks[round].max(now);
+                }
+                let active = &active;
+                async move {
+                    tokio::task::yield_now().await;
+                    active.fetch_sub(1, SeqCst);
+                    MetricsLookup::Unavailable
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(gave_up, 40);
+        // 16, then ceil(16 / 4) = 4 every round, not 4, 1, 1
+        assert_eq!(
+            *peaks
+                .lock()
+                .unwrap(),
+            vec![16, 4, 4, 4]
+        );
+    }
+
+    #[test]
+    fn a_page_that_mostly_failed_stops_the_run() {
+        assert!(is_outage(126, 250));
+        assert!(is_outage(250, 250));
+        assert!(!is_outage(125, 250));
+        assert!(!is_outage(0, 250));
+    }
+
+    #[tokio::test]
+    async fn a_mostly_failing_page_reports_an_outage_after_the_retries() {
+        let (_, lookup) = some_always_down(0..60);
+        let page_len = 100;
+
+        let (_, gave_up) = lookup_with_backoff(
+            (0..page_len as u32).collect::<Vec<u32>>(),
+            4,
+            &[Duration::ZERO; 2],
+            &mut Duration::MAX,
+            lookup,
+        )
+        .await;
+
+        assert!(is_outage(gave_up, page_len));
     }
 
     fn metrics_with_sources(sources: Vec<(&str, f64)>) -> MediaMetrics {

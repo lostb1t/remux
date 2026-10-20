@@ -342,6 +342,11 @@ fn classify_metrics(result: Result<MediaMetrics, ClientError>) -> MetricsLookup 
             debug!(%error, "remuxdb: metrics temporarily unavailable");
             MetricsLookup::Unavailable
         }
+        // 400 means RemuxDB does not understand the id; same as the probe path.
+        Err(error @ ClientError::Http { status: 400, .. }) => {
+            debug!(%error, "remuxdb: metrics request rejected");
+            MetricsLookup::Missing
+        }
         Err(error) => {
             warn!(%error, "remuxdb: metrics fetch failed");
             MetricsLookup::Missing
