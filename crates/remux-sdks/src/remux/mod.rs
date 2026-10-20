@@ -3507,6 +3507,28 @@ pub struct UserPolicy {
     pub sync_play_access: SyncPlayUserAccessType,
 }
 
+impl UserPolicy {
+    /// Whether this policy hides any content from the user: filter rules, a
+    /// parental rating limit, or blocked/allowed tags. `CollectionId` rules
+    /// only hide collection rows, not content, so they don't count.
+    pub fn restricts_content(&self) -> bool {
+        self.filter_rules
+            .iter()
+            .flat_map(|f| &f.groups)
+            .flat_map(|g| &g.rules)
+            .any(|r| !matches!(r, FilterRule::CollectionId { .. }))
+            || self
+                .max_parental_rating
+                .is_some()
+            || !self
+                .blocked_tags
+                .is_empty()
+            || !self
+                .allowed_tags
+                .is_empty()
+    }
+}
+
 fn default_true() -> bool {
     true
 }

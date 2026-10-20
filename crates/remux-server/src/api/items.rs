@@ -1712,6 +1712,18 @@ async fn item_for_user(
     .into_iter()
     .next()
     .context_not_found("item not found")?;
+    // A title hidden from the user's library must not open by id either.
+    if media
+        .is_hidden_by_policy(
+            &state
+                .ctx
+                .db,
+            &session.user,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
 
     db::Media::preload_playlist_runtimes(
         &state
@@ -3151,6 +3163,14 @@ pub async fn items_similar(
         &filter,
     )
     .await?;
+    let hidden = db::Media::hidden_by_policy(
+        &state
+            .ctx
+            .db,
+        &session.user,
+        &result.records,
+    )
+    .await?;
 
     // Reorder results to match score order.
     let score_map: std::collections::HashMap<Uuid, i64> = scored_ids
@@ -3159,6 +3179,7 @@ pub async fn items_similar(
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
+        .filter(|m| !hidden.contains(&m.id))
         .map(|m| api::db_media_to_item(m, false))
         .collect();
     items.sort_by_key(|item| {
@@ -7350,5 +7371,198 @@ mod tests {
             .unwrap();
             assert_eq!(people, vec![person.id], "the old People must survive");
         }
+    }
+
+    async fn set_policy_filter(db: &sqlx::SqlitePool, filter: CollectionFilter) {
+        let mut user = db::User::get_by_username(db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut policy = user
+            .policy
+            .map(|p| p.0)
+            .unwrap_or_default();
+        policy.filter_rules = Some(filter);
+        user.policy = Some(sqlx::types::Json(policy));
+        user.save(db)
+            .await
+            .unwrap();
+    }
+
+    /// What the policy hides from listings must not open, play or show up as
+    /// similar by id either (containers still open), and loosening the policy
+    /// brings it back.
+    #[tokio::test]
+    async fn policy_hidden_item_cannot_be_opened_or_played() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+        let mut movie =
+            insert_media(db, "Restricted Movie", db::MediaKind::Movie, "tt9000001")
+                .await;
+        movie.certification_age = Some(16);
+        movie
+            .save(db)
+            .await
+            .unwrap();
+        let mut allowed =
+            insert_media(db, "Allowed Movie", db::MediaKind::Movie, "tt9000002").await;
+        allowed.certification_age = Some(0);
+        allowed
+            .save(db)
+            .await
+            .unwrap();
+        add_genre(db, movie.id, "Drama").await;
+        add_genre(db, allowed.id, "Drama").await;
+        let collection = insert_smart_collection_with_filter(
+            db,
+            "Movies",
+            db::CollectionMediaKind::Movie,
+            None,
+        )
+        .await;
+        let get = |path: String| {
+            server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+        let similar_ids = |body: serde_json::Value| -> Vec<String> {
+            body["Items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|i| i["Id"].as_str())
+                .map(str::to_string)
+                .collect()
+        };
+        let movie_id = movie
+            .id
+            .simple()
+            .to_string();
+
+        set_policy_filter(db, parental_rating_filter(0)).await;
+        let body = get(format!("/items/{}/similar", allowed.id))
+            .await
+            .json();
+        assert!(!similar_ids(body).contains(&movie_id));
+        for path in [
+            format!("/items/{}", movie.id),
+            format!("/users/{user_id}/items/{}", movie.id),
+            format!("/items/{}/playbackinfo", movie.id),
+        ] {
+            get(path)
+                .expect_failure()
+                .await
+                .assert_status(http::StatusCode::NOT_FOUND);
+        }
+        get(format!("/items/{}", collection.id))
+            .await
+            .assert_status_ok();
+
+        set_policy_filter(db, parental_rating_filter(16)).await;
+        get(format!("/items/{}", movie.id))
+            .await
+            .assert_status_ok();
+        let body = get(format!("/items/{}/similar", allowed.id))
+            .await
+            .json();
+        assert!(similar_ids(body).contains(&movie_id));
+
+        // Jellyfin's own parental control setting is enforced the same way.
+        set_max_parental_rating(db, 12).await;
+        get(format!("/items/{}", movie.id))
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::NOT_FOUND);
+    }
+
+    /// Not just age: blocked tags, allowed tags and any other policy filter
+    /// rule (here genre) hide an item by id exactly like they hide it from
+    /// listings.
+    #[tokio::test]
+    async fn policy_tags_and_filter_rules_hide_items_by_id() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let tagged =
+            insert_media(db, "Tagged Movie", db::MediaKind::Movie, "tt9000003").await;
+        let drama =
+            insert_media(db, "Drama Movie", db::MediaKind::Movie, "tt9000004").await;
+        let other =
+            insert_media(db, "Other Movie", db::MediaKind::Movie, "tt9000005").await;
+        super::set_tags(db, tagged.id, &["blocked-tag".to_string()])
+            .await
+            .unwrap();
+        super::set_tags(db, other.id, &["allowed-tag".to_string()])
+            .await
+            .unwrap();
+        add_genre(db, drama.id, "Drama").await;
+
+        let set_policy = |change: fn(&mut crate::api::UserPolicy)| async move {
+            let mut user = db::User::get_by_username(db, "test")
+                .await
+                .unwrap()
+                .unwrap();
+            let mut policy = crate::api::UserPolicy::default();
+            change(&mut policy);
+            user.policy = Some(sqlx::types::Json(policy));
+            user.save(db)
+                .await
+                .unwrap();
+        };
+        // Whether tagged / drama / other open by id.
+        let (server, auth) = (&server, &auth);
+        let assert_visible = |expected: [bool; 3]| async move {
+            for (id, visible) in [tagged.id, drama.id, other.id]
+                .into_iter()
+                .zip(expected)
+            {
+                let request = server
+                    .get(&format!("/items/{id}"))
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(auth).unwrap(),
+                    );
+                if visible {
+                    request
+                        .await
+                        .assert_status_ok();
+                } else {
+                    request
+                        .expect_failure()
+                        .await
+                        .assert_status(http::StatusCode::NOT_FOUND);
+                }
+            }
+        };
+
+        set_policy(|p| p.blocked_tags = vec!["blocked-tag".to_string()]).await;
+        assert_visible([false, true, true]).await;
+
+        set_policy(|p| p.allowed_tags = vec!["allowed-tag".to_string()]).await;
+        assert_visible([false, false, true]).await;
+
+        set_policy(|p| {
+            p.filter_rules = Some(CollectionFilter {
+                groups: vec![FilterGroup {
+                    rules: vec![FilterRule::Genre {
+                        op: SetOp::IsNot,
+                        values: vec!["Drama".to_string()],
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        })
+        .await;
+        assert_visible([true, false, true]).await;
     }
 }
