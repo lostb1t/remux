@@ -1833,6 +1833,21 @@ async fn item_for_user(
                 .is_empty()
         })
         .cloned();
+    // Same language PlaybackInfo uses, so DefaultAudioStreamIndex agrees.
+    let original_language = if want_streams {
+        media
+            .inherited_original_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .log_err("failed to load inherited original language")
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
     if want_streams && media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
     } else if want_streams
@@ -1920,9 +1935,7 @@ async fn item_for_user(
                     server_config
                         .preferred_metadata_language
                         .as_deref(),
-                    media
-                        .original_language
-                        .as_deref(),
+                    original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
                 )
@@ -2004,9 +2017,7 @@ async fn item_for_user(
                     server_config
                         .preferred_metadata_language
                         .as_deref(),
-                    media
-                        .original_language
-                        .as_deref(),
+                    original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
                 )
@@ -2112,9 +2123,7 @@ async fn item_for_user(
                     server_config
                         .preferred_metadata_language
                         .as_deref(),
-                    media
-                        .original_language
-                        .as_deref(),
+                    original_language.as_deref(),
                     None,
                     None,
                     remembered_audio,
