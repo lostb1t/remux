@@ -1389,7 +1389,7 @@ mod tests {
     async fn a_series_that_already_knows_its_tmdb_id_asks_nobody() {
         let server = httpmock::MockServer::start();
         let find = server.mock(|when, then| {
-            when.path_contains("/find/");
+            when.path_includes("/find/");
             then.status(200)
                 .json_body(serde_json::json!({"tv_results": [], "movie_results": []}));
         });
@@ -1802,7 +1802,7 @@ mod tests {
                 }));
         });
         let episode_lookup = tmdb.mock(|when, then| {
-            when.path_contains("/season/");
+            when.path_includes("/season/");
             then.status(200)
                 .json_body(serde_json::json!({ "id": 1, "external_ids": {} }));
         });
@@ -2671,6 +2671,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_external_ids_fills_missing_episode_ids() {
+        // A previous test caches this same path on a pooled mock server.
+        crate::sdks::clear_http_cache();
         let tmdb = httpmock::MockServer::start();
         let request = tmdb.mock(|when, then| {
             when.path("/tv/1438/season/1/episode/1");

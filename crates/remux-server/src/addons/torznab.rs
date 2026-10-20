@@ -538,11 +538,9 @@ fn item_matches_title(item: &TorznabItem, search: &MediaSearch) -> bool {
 
 fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
     let mut reader = Reader::from_reader(bytes);
-    reader
-        .config_mut()
-        .trim_text(true);
 
     let mut buf = Vec::new();
+    let mut text = String::new();
     let mut items = Vec::new();
     let mut item = None::<TorznabItem>;
     let mut current_field = None::<Field>;
@@ -553,11 +551,20 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                 .name()
                 .as_ref()
             {
-                b"item" => item = Some(TorznabItem::default()),
-                b"title" if item.is_some() => current_field = Some(Field::Title),
-                b"category" if item.is_some() => current_field = Some(Field::Category),
-                b"size" if item.is_some() => current_field = Some(Field::Size),
-                b"enclosure" if item.is_some() => {
+                "item" => item = Some(TorznabItem::default()),
+                "title" if item.is_some() => {
+                    current_field = Some(Field::Title);
+                    text.clear();
+                }
+                "category" if item.is_some() => {
+                    current_field = Some(Field::Category);
+                    text.clear();
+                }
+                "size" if item.is_some() => {
+                    current_field = Some(Field::Size);
+                    text.clear();
+                }
+                "enclosure" if item.is_some() => {
                     if let Some(cur) = item.as_mut() {
                         for attr in e
                             .attributes()
@@ -567,18 +574,20 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                             if attr
                                 .key
                                 .as_ref()
-                                == b"url"
+                                == "url"
                             {
                                 cur.enclosure_url = Some(
-                                    attr.decode_and_unescape_value(reader.decoder())?
-                                        .into_owned(),
+                                    attr.normalized_value(
+                                        quick_xml::XmlVersion::Implicit1_0,
+                                    )?
+                                    .into_owned(),
                                 );
                             }
                         }
                     }
                 }
-                b"torznab:attr" if item.is_some() => {
-                    apply_torznab_attr(&reader, &mut item, e.attributes())?;
+                "torznab:attr" if item.is_some() => {
+                    apply_torznab_attr(&mut item, e.attributes())?;
                 }
                 _ => {}
             },
@@ -586,7 +595,7 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                 .name()
                 .as_ref()
             {
-                b"enclosure" if item.is_some() => {
+                "enclosure" if item.is_some() => {
                     if let Some(cur) = item.as_mut() {
                         for attr in e
                             .attributes()
@@ -596,35 +605,40 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                             if attr
                                 .key
                                 .as_ref()
-                                == b"url"
+                                == "url"
                             {
                                 cur.enclosure_url = Some(
-                                    attr.decode_and_unescape_value(reader.decoder())?
-                                        .into_owned(),
+                                    attr.normalized_value(
+                                        quick_xml::XmlVersion::Implicit1_0,
+                                    )?
+                                    .into_owned(),
                                 );
                             }
                         }
                     }
                 }
-                b"torznab:attr" if item.is_some() => {
-                    apply_torznab_attr(&reader, &mut item, e.attributes())?;
+                "torznab:attr" if item.is_some() => {
+                    apply_torznab_attr(&mut item, e.attributes())?;
                 }
                 _ => {}
             },
             Event::Text(e) => {
-                if let (Some(cur), Some(field)) =
-                    (item.as_mut(), current_field.as_ref())
-                {
-                    let text = e
-                        .unescape()?
-                        .into_owned();
-                    match field {
-                        Field::Title => cur.title = text,
-                        Field::Category => cur.category = Some(text),
-                        Field::Size => {
-                            cur.size = text
-                                .parse()
-                                .ok()
+                if current_field.is_some() {
+                    text.push_str(&e.xml_content(quick_xml::XmlVersion::Implicit1_0));
+                }
+            }
+            Event::GeneralRef(r) => {
+                if current_field.is_some() {
+                    if let Ok(Some(c)) = r.resolve_char_ref() {
+                        text.push(c);
+                    } else {
+                        match &*r {
+                            "amp" => text.push('&'),
+                            "lt" => text.push('<'),
+                            "gt" => text.push('>'),
+                            "quot" => text.push('"'),
+                            "apos" => text.push('\''),
+                            _ => {}
                         }
                     }
                 }
@@ -633,12 +647,30 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                 .name()
                 .as_ref()
             {
-                b"item" => {
+                "item" => {
                     if let Some(cur) = item.take() {
                         items.push(cur);
                     }
                 }
-                b"title" | b"category" | b"size" => current_field = None,
+                "title" | "category" | "size" => {
+                    if let (Some(cur), Some(field)) =
+                        (item.as_mut(), current_field.as_ref())
+                    {
+                        let value = text
+                            .trim()
+                            .to_string();
+                        match field {
+                            Field::Title => cur.title = value,
+                            Field::Category => cur.category = Some(value),
+                            Field::Size => {
+                                cur.size = value
+                                    .parse()
+                                    .ok()
+                            }
+                        }
+                    }
+                    current_field = None;
+                }
                 _ => {}
             },
             Event::Eof => break,
@@ -651,7 +683,6 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
 }
 
 fn apply_torznab_attr<'a>(
-    reader: &Reader<&[u8]>,
     item: &mut Option<TorznabItem>,
     mut attributes: quick_xml::events::attributes::Attributes<'a>,
 ) -> Result<()> {
@@ -664,15 +695,15 @@ fn apply_torznab_attr<'a>(
             .key
             .as_ref()
         {
-            b"name" => {
+            "name" => {
                 name = Some(
-                    attr.decode_and_unescape_value(reader.decoder())?
+                    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
                         .into_owned(),
                 )
             }
-            b"value" => {
+            "value" => {
                 value = Some(
-                    attr.decode_and_unescape_value(reader.decoder())?
+                    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
                         .into_owned(),
                 )
             }

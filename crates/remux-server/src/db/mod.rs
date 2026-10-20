@@ -422,7 +422,7 @@ pub async fn migrate_channel_ids(pool: &SqlitePool) -> Result<()> {
                     }
                     sql.push(')');
 
-                    let mut q = sqlx::query(&sql);
+                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                     for (old, new) in chunk {
                         q = q
                             .bind(old)
@@ -515,7 +515,7 @@ trait QueryBuilderExt<'q> {
             + 'q;
 }
 
-impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
+impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<sqlx::Sqlite> {
     fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
     where
         T: Send
