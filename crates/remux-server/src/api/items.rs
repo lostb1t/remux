@@ -925,6 +925,31 @@ pub async fn items(
     session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    // Jellyfin lists the root (the user's views) when nothing narrows the query,
+    // instead of walking the whole library.
+    if !q.recursive
+        && q.parent_id
+            .is_none()
+        && q.ids
+            .is_none()
+        && q.search_term
+            .is_none()
+        && q.include_item_types
+            .is_none()
+        && q.media_types
+            .is_none()
+    {
+        return Ok(super::users::userviews(
+            State(state),
+            session,
+            Query(super::users::UserViewsQuery {
+                include_hidden: None,
+            }),
+        )
+        .await?
+        .into_response());
+    }
+
     //trace!(?q);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
@@ -945,7 +970,8 @@ pub async fn items(
             .start_index
             .unwrap_or_else(|| 0),
         ..Default::default()
-    }))
+    })
+    .into_response())
 }
 
 /// Return the virtual root folder
@@ -5183,6 +5209,78 @@ mod tests {
                 .iter()
                 .any(|item| item["Id"].as_str() == Some(group_id.as_str())),
             "a group container with no sub-collections yet must still appear in /UserViews; got: {body}"
+        );
+    }
+
+    // Like Jellyfin, a bare /Items lists the root (the user's views), not the library.
+    #[tokio::test]
+    async fn bare_items_lists_user_views_unless_recursive() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let mut group = db::Media {
+            title: "Root view".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_media_kind: Some(db::CollectionMediaKind::Collection),
+            promoted: true,
+            ..Default::default()
+        };
+        group
+            .save(db)
+            .await
+            .unwrap();
+        let (id, external_ids) =
+            make_content_ids(db::MediaKind::Movie, "tt-bare-items");
+        let mut movie = db::Media {
+            id,
+            title: "Some movie".to_string(),
+            kind: db::MediaKind::Movie,
+            external_ids,
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        let names = |body: &serde_json::Value| -> Vec<String> {
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| {
+                    i["Name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        };
+        let get = |path: &'static str| {
+            let req = server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                );
+            async move {
+                req.await
+                    .json::<serde_json::Value>()
+            }
+        };
+
+        let bare = names(&get("/items").await);
+        assert!(bare.contains(&"Root view".to_string()), "got: {bare:?}");
+        assert!(!bare.contains(&"Some movie".to_string()), "got: {bare:?}");
+
+        let recursive = names(&get("/items?recursive=true").await);
+        assert!(
+            recursive.contains(&"Some movie".to_string()),
+            "got: {recursive:?}"
         );
     }
 

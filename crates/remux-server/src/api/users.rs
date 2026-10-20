@@ -1337,8 +1337,8 @@ pub async fn users_items_latest(
 }
 
 #[query]
-struct UserViewsQuery {
-    include_hidden: Option<bool>,
+pub(crate) struct UserViewsQuery {
+    pub(crate) include_hidden: Option<bool>,
 }
 
 /// The userview population in default (admin-controlled) order: promoted,
