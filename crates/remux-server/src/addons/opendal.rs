@@ -458,70 +458,53 @@ impl CatalogAddon for OpendalAddon {
                 let mut out: Vec<db::Media> = Vec::with_capacity(files.len() * 2);
 
                 for f in &files {
-                    if let Some(artist) = &f.artist {
-                        let artist_key = format!("{}:artist:{}", self.addon_id, artist);
-                        if seen_artists.insert(artist_key.clone()) {
+                    let artist_key = f
+                        .artist
+                        .as_deref()
+                        .map(|a| music_artist_key(self.addon_id, a));
+                    let album_key = f
+                        .album
+                        .as_deref()
+                        .map(|album| {
+                            music_album_key(self.addon_id, f.artist.as_deref(), album)
+                        });
+                    let artist_id = artist_key
+                        .as_ref()
+                        .map(|k| common::get_stable_uuid(k.clone()));
+                    let album_id = album_key
+                        .as_ref()
+                        .map(|k| common::get_stable_uuid(k.clone()));
+                    if let (Some(artist), Some(key)) = (&f.artist, &artist_key) {
+                        if seen_artists.insert(key.clone()) {
                             out.push(db::Media {
-                                id: common::get_stable_uuid(artist_key.clone()),
+                                id: common::get_stable_uuid(key.clone()),
                                 title: artist.clone(),
                                 kind: db::MediaKind::Artist,
                                 external_ids: db::ExternalIds {
-                                    custom_stremio_id: Some(artist_key),
+                                    custom_stremio_id: Some(key.clone()),
                                     ..Default::default()
                                 },
                                 ..Default::default()
                             });
                         }
                     }
-                    if let Some(album) = &f.album {
-                        let album_key = format!(
-                            "{}:album:{}:{}",
-                            self.addon_id,
-                            f.artist.as_deref().unwrap_or(""),
-                            album
-                        );
-                        if seen_albums.insert(album_key.clone()) {
-                            let artist_id = f
-                                .artist
-                                .as_ref()
-                                .map(|a| {
-                                    common::get_stable_uuid(format!(
-                                        "{}:artist:{}",
-                                        self.addon_id, a
-                                    ))
-                                });
+                    if let (Some(album), Some(key)) = (&f.album, &album_key) {
+                        if seen_albums.insert(key.clone()) {
                             out.push(db::Media {
-                                id: common::get_stable_uuid(album_key.clone()),
+                                id: common::get_stable_uuid(key.clone()),
                                 title: album.clone(),
                                 kind: db::MediaKind::Album,
                                 parent_id: artist_id,
                                 grandparent_id: artist_id,
                                 external_ids: db::ExternalIds {
-                                    custom_stremio_id: Some(album_key),
+                                    custom_stremio_id: Some(key.clone()),
                                     ..Default::default()
                                 },
                                 ..Default::default()
                             });
                         }
                     }
-                    let track_key = format!(
-                        "{}:track:{}",
-                        self.addon_id, f.path
-                    );
-                    let album_id = f.album.as_ref().map(|album| {
-                        common::get_stable_uuid(format!(
-                            "{}:album:{}:{}",
-                            self.addon_id,
-                            f.artist.as_deref().unwrap_or(""),
-                            album
-                        ))
-                    });
-                    let artist_id = f.artist.as_ref().map(|a| {
-                        common::get_stable_uuid(format!(
-                            "{}:artist:{}",
-                            self.addon_id, a
-                        ))
-                    });
+                    let track_key = format!("{}:track:{}", self.addon_id, f.path);
                     let descriptor = if self.backend == "local" {
                         crate::stream::StreamDescriptor::Local(
                             std::path::PathBuf::from(&f.path),
@@ -1252,6 +1235,20 @@ fn split_subtitle_stem(stem: &str) -> (String, Option<String>, bool, bool) {
     };
 
     (parts[..suffix_start].join("."), lang, is_forced, is_hi)
+}
+
+/// Stable key of a local music artist; the id and `custom_stremio_id` derive
+/// from it.
+fn music_artist_key(addon_id: Uuid, artist: &str) -> String {
+    format!("{addon_id}:artist:{artist}")
+}
+
+/// Stable key of a local music album. The artist's length comes first so names
+/// containing `:` can't make two different artist/album pairs share a key
+/// (`A:B` + `C` versus `A` + `B:C`).
+fn music_album_key(addon_id: Uuid, artist: Option<&str>, album: &str) -> String {
+    let artist = artist.unwrap_or("");
+    format!("{addon_id}:album:{}:{artist}:{album}", artist.len())
 }
 
 /// Artist, album and disc number of a music file from the Jellyfin folder
@@ -5071,6 +5068,117 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "another addon must not serve this addon's file"
+        );
+    }
+
+    #[test]
+    fn music_album_keys_are_unambiguous() {
+        let addon = Uuid::nil();
+        assert_ne!(
+            music_album_key(addon, Some("A:B"), "C"),
+            music_album_key(addon, Some("A"), "B:C")
+        );
+        assert_ne!(
+            music_album_key(addon, None, "A:B"),
+            music_album_key(addon, Some("A"), "B")
+        );
+        assert_eq!(
+            music_album_key(addon, Some("A"), "B"),
+            music_album_key(addon, Some("A"), "B")
+        );
+    }
+
+    /// Playback resolves from the row the import persisted, not from the
+    /// in-memory catalog item: the stored track keeps its stream, so two
+    /// identically titled tracks in different albums play their own files.
+    #[tokio::test]
+    async fn opendal_persisted_tracks_resolve_their_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, db_addon) = index_track_fixtures(
+            ctx,
+            dir.path(),
+            &["Artist/Album One/Intro.flac", "Artist/Album Two/Intro.flac"],
+        )
+        .await;
+
+        let collection_id = Uuid::new_v4();
+        let catalog = crate::addons::ResolvedCatalog {
+            provider_catalog_id: "files".into(),
+            catalog_id: format!("addon:{}:files", db_addon.id),
+            collection_id,
+            name: "files".into(),
+            media_kind: Some(db::MediaKind::Track),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "files".into(),
+            ..Default::default()
+        }
+        .save(&ctx.db)
+        .await
+        .unwrap();
+        let stream = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::tasks::catalog_import_shared::import_catalog_items(
+            ctx,
+            &catalog,
+            &catalog.catalog_id,
+            100,
+            stream,
+            &noop_progress(),
+        )
+        .await
+        .unwrap();
+
+        let track_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM media WHERE CAST(kind AS TEXT) = 'track'",
+        )
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(track_ids.len(), 2, "both same-titled tracks are persisted");
+
+        let mut resolved = Vec::new();
+        for id in track_ids {
+            let track = db::Media::get_by_id(&ctx.db, &id)
+                .await
+                .unwrap()
+                .unwrap();
+            let streams = addon
+                .get_streams(&track, ctx, None)
+                .await
+                .unwrap();
+            assert_eq!(streams.len(), 1, "one stream per persisted track");
+            match &streams[0].descriptor {
+                crate::stream::StreamDescriptor::Local(p) => {
+                    resolved.push(
+                        p.to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+                other => panic!("expected Local descriptor, got {other:?}"),
+            }
+        }
+        resolved.sort();
+        assert!(
+            resolved[0].ends_with("Artist/Album One/Intro.flac"),
+            "{resolved:?}"
+        );
+        assert!(
+            resolved[1].ends_with("Artist/Album Two/Intro.flac"),
+            "{resolved:?}"
         );
     }
 }
