@@ -1398,6 +1398,7 @@ pub struct MediaFilter {
     pub name_less_than: Option<String>,
     pub title_contains: Option<String>,
     pub index_number: Option<i64>,
+    pub parent_index_number: Option<i64>,
     pub has_trailer: Option<bool>,
     /// GetItemsQuery.tags — item must have ANY of these tags
     pub tags: Option<Vec<String>>,
@@ -4628,6 +4629,10 @@ impl Media {
                 qb.push(" AND idx = ")
                     .push_bind(idx);
             }
+            if let Some(idx) = &filter.parent_index_number {
+                qb.push(" AND parent_idx = ")
+                    .push_bind(idx);
+            }
 
             if let Some(true) = &filter.has_trailer {
                 qb.push(" AND json_array_length(trailers) > 0");
@@ -6575,6 +6580,7 @@ impl Media {
                     .search_term
                     .clone(),
                 index_number: filter.index_number,
+                parent_index_number: filter.parent_index_number,
                 has_trailer: filter.has_trailer,
                 tags: filter
                     .tags
