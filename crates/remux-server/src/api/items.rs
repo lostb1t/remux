@@ -3128,6 +3128,7 @@ pub async fn items_similar(
             .ctx
             .db,
         &id,
+        &session.user,
         limit,
         offset,
     )
@@ -3163,15 +3164,6 @@ pub async fn items_similar(
         &filter,
     )
     .await?;
-    let hidden = db::Media::hidden_by_policy(
-        &state
-            .ctx
-            .db,
-        &session.user,
-        &result.records,
-    )
-    .await?;
-
     // Reorder results to match score order.
     let score_map: std::collections::HashMap<Uuid, i64> = scored_ids
         .into_iter()
@@ -3179,7 +3171,6 @@ pub async fn items_similar(
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
-        .filter(|m| !hidden.contains(&m.id))
         .map(|m| api::db_media_to_item(m, false))
         .collect();
     items.sort_by_key(|item| {

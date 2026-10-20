@@ -3405,6 +3405,7 @@ impl Media {
     pub async fn get_similar_by_genres(
         db: &SqlitePool,
         source_id: &Uuid,
+        user: &super::User,
         limit: u32,
         offset: u32,
     ) -> Result<(Vec<(Uuid, i64)>, i64)> {
@@ -3423,6 +3424,12 @@ impl Media {
         if matches!(kind, MediaKind::Episode) {
             return Ok((vec![], 0));
         }
+
+        // The user's policy decides which titles may show up. It goes into the
+        // query that picks the page, so hidden titles never take a slot and the
+        // total leaves them out. Containers are exempt (AGENTS.md).
+        let policy = user_policy_filter(user)
+            .filter(|_| !kinds_are_container_only(std::slice::from_ref(&kind)));
 
         // Collect genre IDs shared with the source item (both genre + music_genre).
         let genre_ids: Vec<Uuid> = sqlx::query_scalar(
@@ -3457,7 +3464,13 @@ impl Media {
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        count_qb.push(") GROUP BY mr.left_media_id) sub");
+        count_qb.push(")");
+        if let Some(policy) = &policy {
+            count_qb.push(" AND m.id IN (SELECT media.id FROM media WHERE 1=1");
+            push_policy_conditions(&mut count_qb, policy);
+            count_qb.push(")");
+        }
+        count_qb.push(" GROUP BY mr.left_media_id) sub");
         let total: i64 = count_qb
             .build_query_scalar()
             .fetch_one(db)
@@ -3473,7 +3486,13 @@ impl Media {
         for gid in &genre_ids {
             sep.push_bind(*gid);
         }
-        qb.push(") GROUP BY mr.left_media_id ORDER BY score DESC LIMIT ");
+        qb.push(")");
+        if let Some(policy) = &policy {
+            qb.push(" AND m.id IN (SELECT media.id FROM media WHERE 1=1");
+            push_policy_conditions(&mut qb, policy);
+            qb.push(")");
+        }
+        qb.push(" GROUP BY mr.left_media_id ORDER BY score DESC LIMIT ");
         qb.push_bind(limit as i64);
         qb.push(" OFFSET ");
         qb.push_bind(offset as i64);
@@ -3528,12 +3547,7 @@ impl Media {
         user: &super::User,
         items: &[Media],
     ) -> Result<HashSet<Uuid>> {
-        let Some(policy) = user
-            .policy
-            .as_ref()
-            .map(|p| &p.0)
-            .filter(|p| p.restricts_content())
-        else {
+        let Some(policy_filter) = user_policy_filter(user) else {
             return Ok(HashSet::new());
         };
 
@@ -3568,24 +3582,7 @@ impl Media {
                         .map(|(_, title)| *title)
                         .collect(),
                 ),
-                user_id: Some(user.id),
-                policy_filter: policy
-                    .filter_rules
-                    .clone(),
-                max_parental_rating: policy.max_parental_rating,
-                blocked_tags: Some(
-                    policy
-                        .blocked_tags
-                        .clone(),
-                )
-                .filter(|tags| !tags.is_empty()),
-                allowed_tags: Some(
-                    policy
-                        .allowed_tags
-                        .clone(),
-                )
-                .filter(|tags| !tags.is_empty()),
-                ..Default::default()
+                ..policy_filter
             },
         )
         .await?
@@ -4817,74 +4814,10 @@ impl Media {
             let container_only = filter
                 .kind
                 .as_deref()
-                .map_or(false, |ks| {
-                    !ks.is_empty()
-                        && ks
-                            .iter()
-                            .all(|k| {
-                                matches!(
-                                    k,
-                                    MediaKind::Collection
-                                        | MediaKind::Folder
-                                        | MediaKind::Playlist
-                                )
-                            })
-                });
+                .map_or(false, kinds_are_container_only);
 
-            let has_policy = filter
-                .max_parental_rating
-                .is_some()
-                || filter
-                    .blocked_tags
-                    .as_ref()
-                    .map_or(false, |v| !v.is_empty())
-                || filter
-                    .allowed_tags
-                    .as_ref()
-                    .map_or(false, |v| !v.is_empty())
-                || filter
-                    .policy_filter
-                    .is_some();
-
-            if !container_only && has_policy {
-                if let Some(max_rating) = filter.max_parental_rating {
-                    qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= ")
-                        .push_bind(max_rating)
-                        .push("");
-                }
-
-                if let Some(blocked) = &filter.blocked_tags {
-                    if !blocked.is_empty() {
-                        qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-                        let mut sep = qb.separated(", ");
-                        for t in blocked {
-                            sep.push_bind(t);
-                        }
-                        qb.push("))");
-                    }
-                }
-
-                if let Some(allowed) = &filter.allowed_tags {
-                    if !allowed.is_empty() {
-                        qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
-                        let mut sep = qb.separated(", ");
-                        for t in allowed {
-                            sep.push_bind(t);
-                        }
-                        qb.push("))");
-                    }
-                }
-
-                if let Some(ref f) = filter.policy_filter {
-                    apply_policy_filter_rules(
-                        qb,
-                        f,
-                        filter
-                            .user_id
-                            .as_ref(),
-                        false,
-                    );
-                }
+            if !container_only {
+                push_policy_conditions(qb, filter);
             }
 
             // Hide specific collections from browse views per the user's
@@ -8270,6 +8203,85 @@ pub fn push_release_date_filter(
         .push(format!(
             " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
         ));
+    }
+}
+
+/// The policy part of a filter for `user`: rating, tag and filter-rule limits,
+/// plus the user id the rules are evaluated for. `None` when the policy doesn't
+/// restrict content (no policy, or one that only hides collections).
+fn user_policy_filter(user: &super::User) -> Option<MediaFilter> {
+    let policy = user
+        .policy
+        .as_ref()
+        .map(|p| &p.0)
+        .filter(|p| p.restricts_content())?;
+    Some(MediaFilter {
+        user_id: Some(user.id),
+        policy_filter: policy
+            .filter_rules
+            .clone(),
+        max_parental_rating: policy.max_parental_rating,
+        blocked_tags: Some(
+            policy
+                .blocked_tags
+                .clone(),
+        )
+        .filter(|tags| !tags.is_empty()),
+        allowed_tags: Some(
+            policy
+                .allowed_tags
+                .clone(),
+        )
+        .filter(|tags| !tags.is_empty()),
+        ..Default::default()
+    })
+}
+
+/// Pushes the `AND ...` clauses for the policy fields of `filter` (rating, tags,
+/// smart policy rules) on a query over `media`. They are written against the
+/// table name `media`, so a query that aliases it wraps them in a subquery
+/// (see `get_similar_by_genres`). Callers must skip container-only queries.
+fn push_policy_conditions(
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    filter: &MediaFilter,
+) {
+    if let Some(max_rating) = filter.max_parental_rating {
+        qb.push(" AND COALESCE(certification_age, (SELECT p.certification_age FROM media p WHERE p.id = COALESCE(media.grandparent_id, media.parent_id))) <= ")
+            .push_bind(max_rating)
+            .push("");
+    }
+
+    if let Some(blocked) = &filter.blocked_tags {
+        if !blocked.is_empty() {
+            qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+            let mut sep = qb.separated(", ");
+            for t in blocked {
+                sep.push_bind(t.clone());
+            }
+            qb.push("))");
+        }
+    }
+
+    if let Some(allowed) = &filter.allowed_tags {
+        if !allowed.is_empty() {
+            qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+            let mut sep = qb.separated(", ");
+            for t in allowed {
+                sep.push_bind(t.clone());
+            }
+            qb.push("))");
+        }
+    }
+
+    if let Some(ref f) = filter.policy_filter {
+        apply_policy_filter_rules(
+            qb,
+            f,
+            filter
+                .user_id
+                .as_ref(),
+            false,
+        );
     }
 }
 
@@ -12688,6 +12700,100 @@ mod genre_ids_filter_tests {
             hidden,
             HashSet::from([adult.id, adult_stream.id, remote.id])
         );
+    }
+
+    /// Similar titles apply the user's policy in the query that picks the page:
+    /// hidden titles take no slot, so a page stays full, and the total leaves
+    /// them out.
+    #[tokio::test]
+    async fn similar_by_genres_applies_policy_before_paging() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let mut genre = Media {
+            kind: MediaKind::Genre,
+            ..Default::default()
+        };
+        genre
+            .save(&db)
+            .await
+            .unwrap();
+        let mut source = Media {
+            kind: MediaKind::Movie,
+            certification_age: Some(0),
+            external_ids: ExternalIds {
+                tmdb: Some(9_000_200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        source
+            .save(&db)
+            .await
+            .unwrap();
+        let mut movies = vec![source.id];
+        let mut kids = HashSet::new();
+        // Adult titles come first, so they would fill the page if they were
+        // dropped only after it was cut.
+        for (i, age) in [16, 16, 16, 0, 0, 0]
+            .into_iter()
+            .enumerate()
+        {
+            let mut m = Media {
+                kind: MediaKind::Movie,
+                certification_age: Some(age),
+                external_ids: ExternalIds {
+                    tmdb: Some(9_000_201 + i as i64),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            m.save(&db)
+                .await
+                .unwrap();
+            if age == 0 {
+                kids.insert(m.id);
+            }
+            movies.push(m.id);
+        }
+        let links: Vec<MediaRelation> = movies
+            .iter()
+            .map(|id| MediaRelation {
+                left_media_id: *id,
+                right_media_id: genre.id,
+                ..Default::default()
+            })
+            .collect();
+        MediaRelation::upsert(&db, &links)
+            .await
+            .unwrap();
+
+        let mut user = crate::db::User {
+            policy: Some(sqlx::types::Json(crate::api::UserPolicy::default())),
+            ..Default::default()
+        };
+        let (page, total) = Media::get_similar_by_genres(&db, &source.id, &user, 3, 0)
+            .await
+            .unwrap();
+        assert_eq!((page.len(), total), (3, 6), "unrestricted user");
+
+        user.policy
+            .as_mut()
+            .unwrap()
+            .0
+            .max_parental_rating = Some(12);
+        let (page, total) = Media::get_similar_by_genres(&db, &source.id, &user, 3, 0)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = page
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, kids, "the page holds only visible titles");
+        assert_eq!(total, 3, "the total leaves out hidden titles");
     }
 
     /// A filter without a limit can match more rows than SQLite allows bound
