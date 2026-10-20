@@ -73,7 +73,9 @@ pub async fn shows_episodes(
     if q.season_id
         .is_none()
     {
-        q.parent_index_number = q.season;
+        q.parent_index_number = q
+            .parent_index_number
+            .or(q.season);
     }
 
     // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
@@ -2460,6 +2462,8 @@ pub(crate) mod test {
                 expected_by_season[&0].clone(),
             ),
             ("?Season=99", Vec::new()),
+            // An explicit ParentIndexNumber is kept when Season is absent.
+            ("?ParentIndexNumber=1", expected_by_season[&1].clone()),
             (
                 "",
                 [
