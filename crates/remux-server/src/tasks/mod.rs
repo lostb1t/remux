@@ -17,7 +17,7 @@ use crate::{AppContext, db, ws};
 use remux_sdks::remux::TaskTriggerInfoType;
 use strum_macros::{Display, EnumString};
 
-mod catalog_import_shared;
+pub(crate) mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;

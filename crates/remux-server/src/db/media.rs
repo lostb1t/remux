@@ -2381,11 +2381,15 @@ impl Media {
                 .grandparent_id
                 .is_none()
                 .then_some("grandparent_id"),
-            MediaKind::Artist => self
+            MediaKind::Artist => (self
                 .external_ids
                 .deezer_artist
                 .is_none()
-                .then_some("deezer_artist"),
+                && self
+                    .external_ids
+                    .custom_stremio_id
+                    .is_none())
+            .then_some("deezer_artist"),
             MediaKind::Album => (self
                 .external_ids
                 .deezer_album
@@ -2393,6 +2397,10 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .custom_stremio_id
                     .is_none())
             .then_some("deezer_album or youtube_id"),
             MediaKind::Track => (self
@@ -2402,6 +2410,10 @@ impl Media {
                 && self
                     .external_ids
                     .youtube_id
+                    .is_none()
+                && self
+                    .external_ids
+                    .custom_stremio_id
                     .is_none())
             .then_some("deezer_track or youtube_id"),
             _ => None,
