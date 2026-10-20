@@ -2347,6 +2347,25 @@ async fn prune_stale_paths(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, atomic::AtomicU64};
+
+    use chrono::Utc;
+    use futures::StreamExt;
+    use regex::Regex;
+    use remux_sdks::stremio::ResourceType;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        Config,
+        addons::{Addon, AddonPresetRef},
+        api,
+        common::{self, ProgressReporter},
+        db,
+        integration_test::{new_test_server, new_test_server_with_config},
+        sdks,
+        stream::StreamDescriptor,
+    };
 
     #[test]
     fn webdav_dir_path_always_ends_with_slash() {
@@ -2401,12 +2420,49 @@ mod tests {
                 let routes = routes.clone();
                 let log = log.clone();
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; 8192];
-                    let n = sock
-                        .read(&mut buf)
-                        .await
+                    // Read the headers up to the blank line, then any body the
+                    // Content-Length announces, so the request is fully consumed.
+                    let mut data: Vec<u8> = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    let header_end = loop {
+                        if let Some(p) = data
+                            .windows(4)
+                            .position(|w| w == b"\r\n\r\n")
+                        {
+                            break p + 4;
+                        }
+                        match sock
+                            .read(&mut chunk)
+                            .await
+                        {
+                            Ok(0) | Err(_) => break data.len(),
+                            Ok(n) => data.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&data[..header_end]).to_string();
+                    let content_length = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| {
+                                    v.trim()
+                                        .parse::<usize>()
+                                        .ok()
+                                })
+                                .flatten()
+                        })
                         .unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    while data.len() < header_end + content_length {
+                        match sock
+                            .read(&mut chunk)
+                            .await
+                        {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => data.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let req = head;
                     let path = req
                         .split_whitespace()
                         .nth(1)
@@ -2513,26 +2569,6 @@ mod tests {
                 .contains(&"/".to_string())
         );
     }
-
-    use std::sync::{Arc, atomic::AtomicU64};
-
-    use chrono::Utc;
-    use futures::StreamExt;
-    use regex::Regex;
-    use remux_sdks::stremio::ResourceType;
-    use uuid::Uuid;
-
-    use super::*;
-    use crate::{
-        Config,
-        addons::{Addon, AddonPresetRef},
-        api,
-        common::{self, ProgressReporter},
-        db,
-        integration_test::{new_test_server, new_test_server_with_config},
-        sdks,
-        stream::StreamDescriptor,
-    };
 
     fn tmdb_test_client(base_url: &str) -> Option<sdks::RestClient<sdks::BearerAuth>> {
         Some(
