@@ -1392,15 +1392,10 @@ async fn scan_addon(
     let mut probe_jobs: Vec<ProbeJob> = Vec::new();
 
     for (operator, list_from, path_prefix) in scan_roots {
-        let mut lister = operator
-            .lister_with(&list_from)
-            .recursive(true)
-            .await?;
+        let (mut single, mut lister) =
+            open_scan_source(&operator, &list_from, is_local).await?;
 
-        while let Some(entry) = lister
-            .try_next()
-            .await?
-        {
+        while let Some(entry) = next_scan_entry(&mut single, &mut lister).await? {
             // The lister classifies entries from a raw readdir() call, which does not
             // follow symlinks and reports them as EntryMode::Unknown. Resolve those
             // via stat() (which does follow symlinks) so symlinked media files staged
@@ -2163,6 +2158,107 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
     info!(addon = %addon.name, stored, "opendal: probing complete");
 }
 
+/// Directory form of a configured WebDAV path (always with a trailing slash).
+///
+/// opendal's WebDAV backend cannot list recursively on its own, so it falls back to a
+/// client-side walk. For a path *without* a trailing slash that walk starts from the
+/// path's parent and only prefix-filters the results afterwards, which for a top-level
+/// folder means crawling the entire share once per configured path.
+fn webdav_dir_path(path: &str) -> String {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{trimmed}/")
+    }
+}
+
+/// An entry produced by a scan: either from a lister or a path that is a single file.
+struct ScanEntry {
+    path: String,
+    metadata: opendal::Metadata,
+}
+
+impl From<opendal::Entry> for ScanEntry {
+    fn from(entry: opendal::Entry) -> Self {
+        let (path, metadata) = entry.into_parts();
+        Self { path, metadata }
+    }
+}
+
+impl ScanEntry {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn name(&self) -> &str {
+        self.path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+    }
+
+    fn metadata(&self) -> &opendal::Metadata {
+        &self.metadata
+    }
+}
+
+/// Opens one configured scan path. A WebDAV path that points at a single file yields
+/// just that entry; anything else is walked as a directory from its own root.
+async fn open_scan_source(
+    operator: &opendal::Operator,
+    list_from: &str,
+    is_local: bool,
+) -> Result<(Option<ScanEntry>, Option<opendal::Lister>)> {
+    if is_local {
+        let lister = operator
+            .lister_with(list_from)
+            .recursive(true)
+            .await?;
+        return Ok((None, Some(lister)));
+    }
+    let dir = webdav_dir_path(list_from);
+    if dir != "/"
+        && let Ok(meta) = operator
+            .stat(dir.trim_end_matches('/'))
+            .await
+        && meta.mode() == EntryMode::FILE
+    {
+        let rel = dir
+            .trim_matches('/')
+            .to_string();
+        return Ok((
+            Some(ScanEntry {
+                path: rel,
+                metadata: meta,
+            }),
+            None,
+        ));
+    }
+    let lister = operator
+        .lister_with(&dir)
+        .recursive(true)
+        .await?;
+    Ok((None, Some(lister)))
+}
+
+async fn next_scan_entry(
+    single: &mut Option<ScanEntry>,
+    lister: &mut Option<opendal::Lister>,
+) -> Result<Option<ScanEntry>> {
+    if let Some(entry) = single.take() {
+        return Ok(Some(entry));
+    }
+    match lister {
+        Some(l) => Ok(l
+            .try_next()
+            .await?
+            .map(ScanEntry::from)),
+        None => Ok(None),
+    }
+}
+
 fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
     let endpoint = cfg["endpoint"]
         .as_str()
@@ -2251,6 +2347,173 @@ async fn prune_stale_paths(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn webdav_dir_path_always_ends_with_slash() {
+        assert_eq!(webdav_dir_path("/"), "/");
+        assert_eq!(webdav_dir_path(""), "/");
+        assert_eq!(
+            webdav_dir_path("/Romeria (2025) [Bluray 1080p][Esp]"),
+            "/Romeria (2025) [Bluray 1080p][Esp]/"
+        );
+        assert_eq!(webdav_dir_path("/a/b/"), "/a/b/");
+    }
+
+    fn propfind_body(entries: &[(&str, bool)]) -> String {
+        let mut out =
+            String::from(r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">"#);
+        for (href, dir) in entries {
+            let rt = if *dir {
+                "<D:resourcetype><D:collection/></D:resourcetype>"
+            } else {
+                "<D:resourcetype/><D:getcontentlength>5</D:getcontentlength>"
+            };
+            out.push_str(&format!(
+                "<D:response><D:href>{href}</D:href><D:propstat><D:prop>{rt}<D:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</D:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+            ));
+        }
+        out.push_str("</D:multistatus>");
+        out
+    }
+
+    /// Minimal PROPFIND server: records every requested path.
+    async fn mock_webdav(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let base = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .unwrap()
+        );
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener
+                    .accept()
+                    .await
+                    .unwrap();
+                let routes = routes.clone();
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock
+                        .read(&mut buf)
+                        .await
+                        .unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_string();
+                    log.lock()
+                        .unwrap()
+                        .push(path.clone());
+                    let (status, body) = match routes
+                        .iter()
+                        .find(|(p, _)| *p == path)
+                    {
+                        Some((_, b)) => ("207 Multi-Status", b.clone()),
+                        None => ("404 Not Found", String::new()),
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock
+                        .write_all(resp.as_bytes())
+                        .await;
+                });
+            }
+        });
+        (base, hits)
+    }
+
+    // A top-level WebDAV path configured without a trailing slash used to make opendal
+    // walk the whole share from the parent ("/") and prefix-filter afterwards.
+    #[tokio::test]
+    async fn webdav_scan_path_does_not_walk_the_whole_share() {
+        let (base, hits) = mock_webdav(vec![
+            (
+                "/",
+                propfind_body(&[
+                    ("/", true),
+                    ("/Movie%20A/", true),
+                    ("/Movie%20B/", true),
+                ]),
+            ),
+            (
+                "/Movie%20A/",
+                propfind_body(&[("/Movie%20A/", true), ("/Movie%20A/a.mkv", false)]),
+            ),
+            ("/c.mkv", propfind_body(&[("/c.mkv", false)])),
+        ])
+        .await;
+        let op = opendal::Operator::new(
+            opendal::services::Webdav::default().endpoint(&base),
+        )
+        .unwrap()
+        .finish();
+
+        let (mut single, mut lister) = open_scan_source(&op, "/Movie A", false)
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(e) = next_scan_entry(&mut single, &mut lister)
+            .await
+            .unwrap()
+        {
+            if e.metadata()
+                .mode()
+                == EntryMode::FILE
+            {
+                seen.push(
+                    e.path()
+                        .to_string(),
+                );
+            }
+        }
+        assert_eq!(seen, vec!["Movie A/a.mkv"]);
+        assert!(
+            hits.lock()
+                .unwrap()
+                .iter()
+                .all(|p| p.starts_with("/Movie%20A")),
+            "crawled outside the configured path: {:?}",
+            hits.lock()
+                .unwrap()
+        );
+
+        // A path that is itself a file is indexed as that one file.
+        let (mut single, mut lister) = open_scan_source(&op, "/c.mkv", false)
+            .await
+            .unwrap();
+        let first = next_scan_entry(&mut single, &mut lister)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.path(), "c.mkv");
+        assert_eq!(first.name(), "c.mkv");
+        assert!(
+            next_scan_entry(&mut single, &mut lister)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !hits
+                .lock()
+                .unwrap()
+                .contains(&"/".to_string())
+        );
+    }
+
     use std::sync::{Arc, atomic::AtomicU64};
 
     use chrono::Utc;
