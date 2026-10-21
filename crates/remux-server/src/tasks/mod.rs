@@ -47,7 +47,7 @@ use purge_music::PurgeMusicTask;
 use purge_shows::PurgeShowsTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_iptv::RefreshIptvTask;
-use refresh_library::RefreshLibraryTask;
+use refresh_library::{RefreshCatalogsTask, RefreshIndexesTask, RefreshLibraryTask};
 use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
 
@@ -302,6 +302,12 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(RefreshLibraryTask))
+            .await?;
+        service
+            .register_task(Arc::new(RefreshCatalogsTask))
+            .await?;
+        service
+            .register_task(Arc::new(RefreshIndexesTask))
             .await?;
         service
             .register_task(Arc::new(RefreshAllMetaTask))
@@ -567,4 +573,71 @@ pub(super) fn iter_dir(
         .into_iter()
         .flatten()
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn registry_lists_phase_tasks_without_default_triggers() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let service = TaskService::new(
+            guard
+                .0
+                .clone(),
+        )
+        .await
+        .unwrap();
+        let handlers = service
+            .get_task_handlers()
+            .await;
+
+        for (key, name) in [
+            ("refreshlibrary", "Refresh Library"),
+            ("refreshcatalogs", "Refresh Catalogs"),
+            ("refreshindexes", "Refresh File Indexes"),
+        ] {
+            let view = handlers
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} is not registered"));
+            assert_eq!(
+                view.task
+                    .name(),
+                name
+            );
+            assert_eq!(
+                view.task
+                    .category(),
+                TaskCategory::Library
+            );
+            assert!(
+                !view
+                    .task
+                    .destructive()
+            );
+        }
+
+        // The new tasks must not change anything for existing users: no
+        // trigger rows are created for them.
+        let triggers = db::TaskTrigger::get_all(
+            &guard
+                .0
+                .db,
+        )
+        .await
+        .unwrap();
+        assert!(
+            triggers
+                .iter()
+                .all(|t| !matches!(
+                    t.task_id
+                        .to_lowercase()
+                        .as_str(),
+                    "refreshcatalogs" | "refreshindexes"
+                ))
+        );
+    }
 }
