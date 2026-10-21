@@ -56,6 +56,7 @@ where
     let mut round_concurrency = first_round;
     let mut found = Vec::new();
     let mut missing = Vec::new();
+    let mut rejected = 0_usize;
     let mut pending = items;
     let mut delays = delays.iter();
     loop {
@@ -74,7 +75,11 @@ where
         for (item, result) in results {
             match result {
                 MetricsLookup::Found(metrics) => found.push((item, metrics)),
-                MetricsLookup::Missing => missing.push(item),
+                MetricsLookup::NotFound => missing.push(item),
+                // Neither stamped nor retried: a blocked or malformed answer
+                // says nothing about the title, and a systemic failure must
+                // not push every title into the weekly tier.
+                MetricsLookup::Rejected => rejected += 1,
                 MetricsLookup::Unavailable => pending.push(item),
             }
         }
@@ -83,6 +88,12 @@ where
             .next()
             .filter(|delay| widespread && **delay <= *wait_budget);
         let Some(delay) = delay else {
+            if rejected > 0 {
+                warn!(
+                    rejected,
+                    "RemuxDB rejected metrics requests; not marking those titles as synced"
+                );
+            }
             return (found, missing, pending.len());
         };
         warn!(
@@ -170,7 +181,7 @@ impl Task for RefreshPopularityTask {
                                 )
                                 .await
                             }
-                            None => MetricsLookup::Missing,
+                            None => MetricsLookup::NotFound,
                         }
                     }
                 },
@@ -440,7 +451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_titles_are_not_retried() {
+    async fn not_found_titles_are_not_retried() {
         let calls = std::sync::atomic::AtomicUsize::new(0);
 
         let (found, _missing, gave_up) = lookup_with_backoff(
@@ -450,7 +461,7 @@ mod tests {
             &mut Duration::MAX,
             |_| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                std::future::ready(MetricsLookup::Missing)
+                std::future::ready(MetricsLookup::NotFound)
             },
         )
         .await;
@@ -923,5 +934,59 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A rejected answer (a Cloudflare 403, say) is not evidence that RemuxDB
+    /// lacks the title: only the not-found ids come back to be stamped, and
+    /// neither kind is retried.
+    #[tokio::test]
+    async fn only_not_found_titles_are_stamped() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let unknown =
+            seed(ctx, "tt5000001", db::MediaKind::Movie, OLD, None, None).await;
+        let blocked =
+            seed(ctx, "tt5000002", db::MediaKind::Movie, OLD, None, None).await;
+        let page = db::Media::list_for_popularity_sync(&ctx.db, &[unknown, blocked])
+            .await
+            .unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+
+        let (found, not_found, gave_up) = lookup_with_backoff(
+            page,
+            2,
+            &[Duration::ZERO; 3],
+            &mut Duration::MAX,
+            |media| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(if media.id == unknown {
+                    MetricsLookup::NotFound
+                } else {
+                    MetricsLookup::Rejected
+                })
+            },
+        )
+        .await;
+
+        assert!(found.is_empty());
+        assert_eq!(gave_up, 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let ids: Vec<_> = not_found
+            .iter()
+            .map(|media| media.id)
+            .collect();
+        assert_eq!(ids, vec![unknown]);
+
+        mark_synced(&ctx.db, &ids)
+            .await
+            .unwrap();
+
+        let due =
+            db::Media::popularity_sync_ids(&ctx.db, chrono::Utc::now().naive_utc())
+                .await
+                .unwrap();
+        assert_eq!(due, vec![blocked]);
     }
 }
