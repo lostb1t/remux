@@ -1390,6 +1390,7 @@ async fn scan_addon(
         None
     };
     let mut probe_jobs: Vec<ProbeJob> = Vec::new();
+    let mut path_id_memo = PathIdMemo::default();
 
     for (operator, list_from, path_prefix) in scan_roots {
         let (mut single, mut lister) =
@@ -1464,13 +1465,13 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    MediaResolveService::resolve_imdb_from_ids(
+                                    resolve_path_ids(
+                                        &mut path_id_memo,
                                         &jellyfin_ids,
                                         true,
                                         client,
                                     )
                                     .await
-                                    .map(Into::into)
                                 } else {
                                     jellyfin_ids
                                         .imdb
@@ -1507,13 +1508,13 @@ async fn scan_addon(
                                 Some(id)
                             } else if !jellyfin_ids.is_empty() {
                                 if let Some(client) = tmdb {
-                                    MediaResolveService::resolve_imdb_from_ids(
+                                    resolve_path_ids(
+                                        &mut path_id_memo,
                                         &jellyfin_ids,
                                         false,
                                         client,
                                     )
                                     .await
-                                    .map(Into::into)
                                 } else {
                                     jellyfin_ids
                                         .imdb
@@ -1770,13 +1771,13 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            MediaResolveService::resolve_imdb_from_ids(
+                            resolve_path_ids(
+                                &mut path_id_memo,
                                 &jellyfin_ids,
                                 true,
                                 client,
                             )
                             .await
-                            .map(Into::into)
                         } else {
                             jellyfin_ids
                                 .imdb
@@ -1820,13 +1821,13 @@ async fn scan_addon(
                         Some(id)
                     } else if !jellyfin_ids.is_empty() {
                         if let Some(client) = tmdb {
-                            MediaResolveService::resolve_imdb_from_ids(
+                            resolve_path_ids(
+                                &mut path_id_memo,
                                 &jellyfin_ids,
                                 false,
                                 client,
                             )
                             .await
-                            .map(Into::into)
                         } else {
                             jellyfin_ids
                                 .imdb
@@ -2278,6 +2279,42 @@ fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
         builder = builder.password(p);
     }
     Ok(opendal::Operator::new(builder)?.finish())
+}
+
+/// What this scan already learned about a path's tmdb/tvdb id, per kind. A
+/// show's folder id sits on every file under it, so without this a miss (say
+/// a series id sent to the movie endpoint) is asked again for every file.
+#[derive(Default)]
+struct PathIdMemo(
+    std::collections::HashMap<(bool, Option<i64>, Option<i64>), Option<String>>,
+);
+
+async fn resolve_path_ids(
+    memo: &mut PathIdMemo,
+    ids: &db::ExternalIds,
+    is_tv: bool,
+    client: &sdks::RestClient<sdks::BearerAuth>,
+) -> Option<String> {
+    if let Some(imdb) = &ids.imdb {
+        return Some(
+            imdb.clone()
+                .into(),
+        );
+    }
+    let key = (is_tv, ids.tmdb, ids.tvdb);
+    if let Some(known) = memo
+        .0
+        .get(&key)
+    {
+        return known.clone();
+    }
+    let resolved: Option<String> =
+        MediaResolveService::resolve_imdb_from_ids(ids, is_tv, client)
+            .await
+            .map(Into::into);
+    memo.0
+        .insert(key, resolved.clone());
+    resolved
 }
 
 async fn fetch_existing_imdb(
@@ -4108,6 +4145,42 @@ mod tests {
                 f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
             );
         }
+    }
+
+    // A show's tmdb id sits on every file in its folder. Under a movie addon it
+    // goes to the movie endpoint and 404s; that miss must be asked once per
+    // scan, not once per file.
+    #[tokio::test]
+    async fn opendal_movie_scan_asks_a_missing_tmdb_id_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for e in 1..=3 {
+            let full = dir
+                .path()
+                .join(format!(
+                    "Some Show (2005) [tmdbid-2710]/Season 01/Some.Show.S01E0{e}.mkv"
+                ));
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake ep").unwrap();
+        }
+
+        let tmdb = httpmock::MockServer::start();
+        let movie = tmdb.mock(|when, then| {
+            when.path("/movie/2710");
+            then.status(404);
+        });
+
+        let (ctx, _guard) = test_server_with_tmdb(&tmdb).await;
+        let (addon, db_addon) = make_local_addon(&ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(&ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        assert_eq!(movie.hits(), 1);
     }
 
     // -----------------------------------------------------------------------
