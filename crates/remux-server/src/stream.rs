@@ -436,6 +436,12 @@ pub struct StreamInfo {
     pub probe_data: Option<crate::api::MediaSourceInfo>,
 }
 
+/// Sizes shown to three significant digits ("11.9 GB") are off by up to 1/200.
+const LISTED_SIZE_PRECISION_DIVISOR: u64 = 200;
+/// ±0.005 GiB: sizes shown in GiB to two decimals ("0.68 GB") are off by up to
+/// half a step, which exceeds 1/200 below 1 GiB.
+const LISTED_SIZE_ROUNDING_FLOOR: u64 = (1 << 30) / 200;
+
 impl StreamInfo {
     pub fn is_p2p(&self) -> bool {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
@@ -478,6 +484,35 @@ impl StreamInfo {
                 .as_deref()
                 .map(|hash| (hash, self.torrent_file_idx)),
         }
+    }
+
+    /// Whether a probed file of `probed_size` bytes can't be the listed one,
+    /// i.e. a resolver failover served another release. remux's own torrent
+    /// engine never fails over to another release.
+    pub fn is_other_file(&self, probed_size: Option<i64>) -> bool {
+        let (Some(listed), Some(probed)) = (
+            self.size
+                .filter(|&s| s > 0),
+            probed_size.filter(|&s| s > 0),
+        ) else {
+            return false;
+        };
+        let tolerance = (listed.max(probed) as u64 / LISTED_SIZE_PRECISION_DIVISOR)
+            .max(LISTED_SIZE_ROUNDING_FLOOR);
+        !self.is_p2p()
+            && listed.abs_diff(probed) > tolerance
+            && (probed > listed || !self.may_list_release())
+    }
+
+    /// NZBs and torrents without a file index may list the whole release,
+    /// which no file in it can exceed.
+    fn may_list_release(&self) -> bool {
+        self.usenet_guid
+            .is_some()
+            || self
+                .nzb_url
+                .is_some()
+            || matches!(self.torrent_identity(), Some((_, None)))
     }
 
     pub fn resolution_tag(&self) -> Option<String> {
@@ -905,8 +940,8 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, TrackerUrl, is_tracker_url,
-        mime_from_path,
+        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, StreamInfo, TrackerUrl,
+        is_tracker_url, mime_from_path,
     };
     use std::path::Path;
 
@@ -1140,5 +1175,60 @@ mod tests {
         resp.text()
             .await
             .expect("body should drain");
+    }
+
+    #[test]
+    fn is_other_file_only_when_listing_rounding_cannot_explain_the_size() {
+        let indexed = StreamInfo {
+            torrent_info_hash: Some("abc123".into()),
+            torrent_file_idx: Some(0),
+            ..Default::default()
+        };
+        let unindexed = StreamInfo {
+            torrent_info_hash: Some("abc123".into()),
+            ..Default::default()
+        };
+        let nzb = StreamInfo {
+            nzb_url: Some("https://indexer.example/api?t=get&id=1".into()),
+            ..Default::default()
+        };
+        let p2p = StreamInfo {
+            descriptor: StreamDescriptor::Torrent {
+                info_hash: "abc123".into(),
+                file_hint: None,
+                file_idx: None,
+                trackers: vec![],
+            },
+            ..Default::default()
+        };
+        let (listed, smaller, larger) = (12_811_223_977, 8_657_935_338, 19_000_000_000);
+        let cases = [
+            (&indexed, listed, smaller, true),
+            (&indexed, listed, larger, true),
+            // 0.33% off: within three-significant-digit rounding.
+            (&indexed, listed, listed - 42_000_000, false),
+            // 0.53% off, but within the 0.005 GiB rounding floor.
+            (&indexed, 730_144_440, 734_003_200, false),
+            (&indexed, 730_144_440, 740_000_000, true),
+            // May list the whole release: only a larger file contradicts it.
+            (&unindexed, listed, smaller, false),
+            (&unindexed, listed, larger, true),
+            (&nzb, listed, smaller, false),
+            (&nzb, listed, larger, true),
+            (&p2p, listed, larger, false),
+        ];
+        for (si, listed, probed, other) in cases {
+            let si = StreamInfo {
+                size: Some(listed),
+                ..si.clone()
+            };
+            assert_eq!(
+                si.is_other_file(Some(probed)),
+                other,
+                "{listed} vs {probed}"
+            );
+            assert!(!si.is_other_file(None));
+        }
+        assert!(!indexed.is_other_file(Some(smaller)));
     }
 }

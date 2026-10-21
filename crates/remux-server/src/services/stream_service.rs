@@ -1,8 +1,10 @@
 use crate::{
-    AppContext, api, db,
+    AppContext, api,
+    common::{TickUnit, ToRunTimeTicks},
+    db,
     db::PreProbeQualityExt,
     device_profile::SourceRankingContext,
-    playback::probe::{probe_stream, resolve_stream_root},
+    playback::probe::{ProbeOutcome, probe_stream, resolve_stream_root},
 };
 use remux_sdks::{
     remux::{MediaStreamType, StreamFilter, VideoRangeType},
@@ -765,16 +767,6 @@ impl StreamService {
             // gets its refresh when a client requests that stream directly.
             let skip_probe =
                 preferred_probe_id.is_some_and(|preferred| stream.id != preferred);
-            // A filename guess is never a completed probe — it must not skip
-            // submitting a freshly-probed result to RemuxDB.
-            let was_cached = stream
-                .probe_data
-                .as_ref()
-                .is_some_and(|pd| {
-                    pd.video_stream()
-                        .is_some()
-                        && !pd.is_filename_guess()
-                });
             let timeout_secs = if stream
                 .stream_info
                 .as_ref()
@@ -797,6 +789,9 @@ impl StreamService {
                 &self
                     .ctx
                     .db,
+                &self
+                    .ctx
+                    .store,
             )
             .await;
             let mut external_subtitles = match subtitle_fetches.remove(&stream.id) {
@@ -805,7 +800,7 @@ impl StreamService {
                     .unwrap_or_default(),
                 None => Vec::new(),
             };
-            let (mut source, effective_stream) =
+            let (mut source, effective_stream, outcome) =
                 probed.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             // The probe failed over to another release, whose subtitles are
             // for a different file than the ones just fetched.
@@ -896,14 +891,25 @@ impl StreamService {
                 .map_or(false, |it| {
                     matches!(it.kind, db::MediaKind::Movie | db::MediaKind::Episode)
                 });
-            if was_cached {
-                debug!(id = %effective_stream.id, "remuxdb: skipping (probe cache hit)");
+            let item_runtime = item
+                .as_ref()
+                .and_then(|it| it.runtime);
+            if outcome == ProbeOutcome::Cached {
+                debug!(id = %effective_stream.id, "remuxdb: skipping (cached probe or filename guess)");
             } else if !remuxdb_enabled {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (disabled)");
             } else if !is_remuxdb_kind {
                 debug!(id = %effective_stream.id, kind = ?item.as_ref().map(|it| &it.kind), "remuxdb: skipping (not movie/episode)");
             } else if source.is_filename_guess() {
                 debug!(id = %effective_stream.id, "remuxdb: skipping (filename guess, not a real probe)");
+            } else if effective_stream
+                .stream_info
+                .as_ref()
+                .is_some_and(|si| si.is_other_file(source.size))
+            {
+                debug!(id = %effective_stream.id, "remuxdb: skipping (probed file is not the listed release)");
+            } else if implausible_runtime(item_runtime, source.run_time_ticks) {
+                debug!(id = %effective_stream.id, runtime_secs = ?item_runtime, probed_ticks = ?source.run_time_ticks, "remuxdb: skipping (probed duration implausible for the item)");
             } else if let Some(url) = self
                 .ctx
                 .config
@@ -1157,6 +1163,25 @@ pub(crate) struct StreamSelection {
     pub restrict_resolution: bool,
     /// True when the client named a specific stream — keep its UUID, don't override to item_id.
     pub specific_requested: bool,
+}
+
+/// Probed durations outside 2/3..2x the item's runtime are of another title:
+/// RemuxDB has such entries (a 92 min file for 169 min Interstellar), while
+/// extended cuts stay within ~1.4x.
+const MIN_RUNTIME_RATIO: f64 = 2.0 / 3.0;
+const MAX_RUNTIME_RATIO: f64 = 2.0;
+
+fn implausible_runtime(runtime_secs: Option<i64>, probed_ticks: Option<i64>) -> bool {
+    let (Some(runtime), Some(probed)) = (
+        runtime_secs
+            .filter(|&s| s > 0)
+            .and_then(|s| s.to_ticks(TickUnit::Seconds)),
+        probed_ticks.filter(|&t| t > 0),
+    ) else {
+        return false;
+    };
+    let ratio = probed as f64 / runtime as f64;
+    !(MIN_RUNTIME_RATIO..=MAX_RUNTIME_RATIO).contains(&ratio)
 }
 
 fn media_info_from_probe(
@@ -1766,6 +1791,33 @@ mod tests {
             ..Default::default()
         });
         assert!(media_info_from_probe(&probe_with_size(1), &stream, None).is_err());
+    }
+
+    #[test]
+    fn implausible_runtime_bounds() {
+        const SEC: i64 = 10_000_000;
+        let cases = [
+            // Other films stored under Interstellar and Inception.
+            (Some(169 * 60), Some(5496 * SEC), true),
+            (Some(148 * 60), Some(5244 * SEC), true),
+            (Some(148 * 60), Some(17_790 * SEC), true),
+            // An extended cut.
+            (Some(150 * 60), Some(210 * 60 * SEC), false),
+            (Some(150 * 60), Some(101 * 60 * SEC), false),
+            (Some(150 * 60), Some(99 * 60 * SEC), true),
+            (Some(150 * 60), Some(300 * 60 * SEC), false),
+            (Some(150 * 60), Some(301 * 60 * SEC), true),
+            (None, Some(5496 * SEC), false),
+            (Some(0), Some(5496 * SEC), false),
+            (Some(169 * 60), None, false),
+        ];
+        for (runtime, probed, implausible) in cases {
+            assert_eq!(
+                implausible_runtime(runtime, probed),
+                implausible,
+                "{runtime:?} vs {probed:?}"
+            );
+        }
     }
 
     /// A probe fallback must reach the stream request that follows PlaybackInfo.
