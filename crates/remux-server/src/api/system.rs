@@ -785,7 +785,10 @@ pub async fn get_utc_time() -> impl IntoResponse {
 
 /// Restart the server (Admin only)
 #[post("/system/restart")]
-pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResponse> {
+pub async fn system_restart(
+    State(state): State<AppState>,
+    session: auth::AdminSession,
+) -> Result<impl IntoResponse> {
     info!(
         "Server restart requested by user: {}",
         session
@@ -793,8 +796,23 @@ pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResp
             .username
     );
 
-    // Trigger actual server restart
-    restart_server().await?;
+    // Exit runs no destructors, so stop ffmpeg first. Not after the spawn:
+    // the successor binds the port once this process exits.
+    state
+        .ctx
+        .sessions
+        .stop_all()
+        .await;
+
+    // Returns only if the new process could not be spawned: this one keeps
+    // serving, so it must transcode again.
+    if let Err(e) = restart_server().await {
+        state
+            .ctx
+            .sessions
+            .reopen();
+        return Err(e);
+    }
 
     Ok(Json(json!({
         "Message": "Server restart initiated",
@@ -836,7 +854,10 @@ async fn restart_server() -> Result<()> {
 
 /// Shutdown the server (Admin only)
 #[post("/system/shutdown")]
-pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoResponse> {
+pub async fn system_shutdown(
+    State(state): State<AppState>,
+    session: auth::AdminSession,
+) -> Result<impl IntoResponse> {
     info!(
         "Server shutdown requested by user: {}",
         session
@@ -844,7 +865,13 @@ pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoRes
             .username
     );
 
-    // Trigger actual server shutdown
+    // Exit runs no destructors, so stop ffmpeg first.
+    state
+        .ctx
+        .sessions
+        .stop_all()
+        .await;
+
     shutdown_server().await?;
 
     Ok(Json(json!({

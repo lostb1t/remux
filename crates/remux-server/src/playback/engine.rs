@@ -1353,6 +1353,10 @@ pub async fn start_transcode(
         let mut s = session
             .write()
             .await;
+        // Stopped before it started: don't recreate the removed output dir.
+        if s.stopped {
+            return Ok(());
+        }
         s.state = TranscodeState::Running;
         let _ = s
             .state_tx
@@ -1386,6 +1390,14 @@ pub async fn start_transcode(
                 let mut s = session_clone
                     .write()
                     .await;
+                // Stopped between runs: don't respawn, and wake a stop that
+                // signalled the run that had just exited.
+                if s.stopped {
+                    debug!(session_id = %s.id, "transcode stopped before ffmpeg spawn");
+                    s.wait_done
+                        .notify_one();
+                    break;
+                }
                 s.start_time_secs = params
                     .start_time_ticks
                     .map(|t| (t / 10_000_000) as u32)
@@ -3003,6 +3015,7 @@ mod tests {
     fn hevc_session(video_codec: &str, tag: Option<&str>) -> TranscodeSession {
         TranscodeSession {
             id: "play-session".into(),
+            user_id: Uuid::nil(),
             item_id: Uuid::nil(),
             media_source_id: Uuid::nil(),
             output_dir: PathBuf::from("/tmp/test_master"),
@@ -3022,6 +3035,7 @@ mod tests {
             transcode_reasons: TranscodeReasons::default(),
             kill_tx: None,
             wait_done: Arc::new(tokio::sync::Notify::new()),
+            stopped: false,
             last_segment_index: Arc::new(AtomicU32::new(0)),
             start_time_secs: 0,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
@@ -3231,6 +3245,7 @@ mod tests {
     fn resumed_vod_playlist_advertises_start_offset_and_full_seek_map() {
         let session = TranscodeSession {
             id: "play-session".into(),
+            user_id: Uuid::nil(),
             item_id: Uuid::nil(),
             media_source_id: Uuid::nil(),
             output_dir: PathBuf::from("/tmp/test_playlist"),
@@ -3250,6 +3265,7 @@ mod tests {
             transcode_reasons: TranscodeReasons::default(),
             kill_tx: None,
             wait_done: Arc::new(tokio::sync::Notify::new()),
+            stopped: false,
             last_segment_index: Arc::new(AtomicU32::new(0)),
             start_time_secs: 30,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),

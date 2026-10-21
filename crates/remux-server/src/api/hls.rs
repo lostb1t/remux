@@ -27,14 +27,8 @@ use crate::{
         hw_accel,
         session::{SegmentContainer, TranscodeSession, TranscodeState},
     },
-    playback_session::{FfmpegTrack, ServedPlayback},
+    playback_session::{FfmpegTrack, ServedPlayback, TRANSCODE_CREATE_LOCKS},
 };
-
-/// Serializes the lookup-or-create-transcode sequence per play_session_id so
-/// two racing requests for the same session can't each spawn their own
-/// ffmpeg process.
-static TRANSCODE_CREATE_LOCKS: crate::keyed_lock::KeyedLock<String> =
-    crate::keyed_lock::KeyedLock::new();
 
 enum HlsSessionResult {
     Transcode(Arc<tokio::sync::RwLock<TranscodeSession>>, String),
@@ -77,7 +71,7 @@ async fn create_hls_session(
     state: &AppState,
     auth: &auth::AuthSession,
     id: Uuid,
-    q: &api::HlsVideoQuery,
+    q: &mut api::HlsVideoQuery,
 ) -> Result<HlsSessionResult> {
     let play_session_id = q
         .play_session_id
@@ -87,6 +81,15 @@ async fn create_hls_session(
                 .as_simple()
                 .to_string()
         });
+    // Serialize the whole stop/lookup/create/attach sequence per
+    // play_session_id, from before the first await: the lookup-or-create path
+    // awaits DB queries and filesystem ops, so two requests racing for the
+    // same session would otherwise each spawn their own ffmpeg process, and
+    // a stop arriving meanwhile would miss the transcode being created.
+    let _create_guard = TRANSCODE_CREATE_LOCKS
+        .lock(play_session_id.clone())
+        .await;
+    let id = version_as_source(state, auth, id, q).await;
 
     debug!("Using play session ID: {}", play_session_id);
 
@@ -142,16 +145,6 @@ async fn create_hls_session(
     // StartTimeTicks.  In that case we must stop the old transcode job and
     // restart from the requested position — otherwise the player waits for
     // segments that the old job will never produce at the new offset.
-    //
-    // Serialize the whole stop/lookup/create/attach sequence per
-    // play_session_id: the lookup-or-create path below awaits DB queries and
-    // filesystem ops with no lock held, so two requests racing for the same
-    // session would otherwise both see no existing transcode and each spawn
-    // their own ffmpeg process, with the loser's session silently overwritten
-    // (and its ffmpeg process orphaned) by attach_transcode.
-    let _create_guard = TRANSCODE_CREATE_LOCKS
-        .lock(play_session_id.clone())
-        .await;
     let requested_start_secs = q
         .start_time_ticks
         .filter(|&t| t > 0)
@@ -632,6 +625,8 @@ async fn create_hls_session(
         };
         let session = TranscodeSession::new(
             play_session_id.clone(),
+            auth.user
+                .id,
             id,
             media_source_id,
             input_url.clone(),
@@ -674,10 +669,21 @@ async fn create_hls_session(
             session.source_audio_index = source_audio.map(|s| s.index as i32);
             session.hevc_in_ts = hevc_in_ts;
         }
-        state
+        if !state
             .ctx
             .sessions
-            .attach_transcode(&play_session_id, session.clone());
+            .attach_transcode(
+                &play_session_id,
+                &auth
+                    .device
+                    .id,
+                session.clone(),
+            )
+            .await
+        {
+            return Err(anyhow::anyhow!("shutting down")
+                .context_internal("server is shutting down"));
+        }
 
         // Start transcoding in background
         let _session_clone = session.clone();
@@ -867,8 +873,7 @@ pub async fn master_hls_video(
     Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
-    let id = version_as_source(&state, &auth, id, &mut q).await;
-    let session = match create_hls_session(&state, &auth, id, &q).await {
+    let session = match create_hls_session(&state, &auth, id, &mut q).await {
         Ok(HlsSessionResult::Transcode(session, _)) => session,
         Ok(HlsSessionResult::Forbidden(detail)) => {
             return Err(anyhow::anyhow!("Forbidden").context_forbidden(detail));
@@ -902,8 +907,7 @@ pub async fn live_hls_video(
     Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("live_hls_video: item_id={}, q={:?}", id, q);
-    let id = version_as_source(&state, &auth, id, &mut q).await;
-    let play_session_id = match create_hls_session(&state, &auth, id, &q).await? {
+    let play_session_id = match create_hls_session(&state, &auth, id, &mut q).await? {
         HlsSessionResult::Transcode(_, play_session_id) => play_session_id,
         HlsSessionResult::Forbidden(detail) => {
             return Err(anyhow::anyhow!("Forbidden").context_forbidden(detail));
@@ -2491,6 +2495,7 @@ mod tests {
             "ps".into(),
             uuid::Uuid::nil(),
             uuid::Uuid::nil(),
+            uuid::Uuid::nil(),
             "http://example.invalid/video".into(),
             dir.to_path_buf(),
             "copy".into(),
@@ -2525,7 +2530,13 @@ mod tests {
             crate::playback_session::PlaybackSessionManager::new(&dir),
         );
         let locks = std::sync::Arc::new(crate::keyed_lock::KeyedLock::<String>::new());
-        sessions.attach_transcode("ps", transcode_for_test(&dir.join("old"), Some(1)));
+        sessions
+            .attach_transcode(
+                "ps",
+                "device",
+                transcode_for_test(&dir.join("old"), Some(1)),
+            )
+            .await;
         let created = std::sync::Arc::new(AtomicUsize::new(0));
 
         // Every request takes the create lock, restarts on a switch and builds
@@ -2545,7 +2556,12 @@ mod tests {
                     created.fetch_add(1, Ordering::SeqCst);
                     tokio::task::yield_now().await;
                     sessions
-                        .attach_transcode("ps", transcode_for_test(&new_dir, Some(2)));
+                        .attach_transcode(
+                            "ps",
+                            "device",
+                            transcode_for_test(&new_dir, Some(2)),
+                        )
+                        .await;
                 }
             })
         };

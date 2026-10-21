@@ -139,8 +139,31 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config) -> Result<()> {
     let addr = std::net::SocketAddr::new(config.host, config.port);
-    let (router, _) = init_app_from_filesystem(config).await?;
-    bind_and_serve(router, addr).await
+    let (router, ctx) = init_app_from_filesystem(config).await?;
+    tokio::select! {
+        result = bind_and_serve(router, addr) => result,
+        Ok(()) = shutdown_signal() => {
+            // HLS ffmpeg writes to files and never notices remux exiting.
+            info!("shutting down: stopping playback sessions");
+            ctx.sessions
+                .stop_all()
+                .await;
+            Ok(())
+        }
+    }
+}
+
+/// Resolves on Ctrl-C, SIGTERM on Unix, or console close on Windows.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(windows)]
+    let mut terminate = tokio::signal::windows::ctrl_close()?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 pub async fn bind_and_serve(router: Router, addr: std::net::SocketAddr) -> Result<()> {
