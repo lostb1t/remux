@@ -5303,8 +5303,8 @@ mod tests {
         assert_eq!(calls(&empty), 2, "an empty answer tripped the breaker");
     }
 
-    /// A TMDB result (tmdb id only) and a Stremio result for the same title
-    /// (imdb id plus `moviedb_id`) collapse to the first occurrence.
+    /// A TMDB result and a Stremio result for the same title (a `tmdb:` id, as
+    /// AIOStreams' search sends) collapse to the first occurrence.
     #[tokio::test]
     async fn search_dedupes_tmdb_and_stremio_copies() {
         let tmdb = db::Media {
@@ -5319,10 +5319,9 @@ mod tests {
         };
         let meta: remux_sdks::stremio::Meta =
             serde_json::from_value(serde_json::json!({
-                "id": "tt1375666",
+                "id": "tmdb:27205",
                 "type": "movie",
                 "name": "Inception (Stremio)",
-                "moviedb_id": 27205,
             }))
             .unwrap();
         let stremio = db::Media::try_from(meta).unwrap();
