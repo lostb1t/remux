@@ -1982,6 +1982,7 @@ impl AddonService {
                         }
                         fetch_meta_with_retry(
                             meta_addon.as_ref(),
+                            &addon,
                             media_ref,
                             ctx,
                             config,
@@ -3744,24 +3745,44 @@ impl RemoteMediaStream for AddonCatalogStream {
 /// the same timeout, so a genuinely hung addon costs at most twice the cap.
 async fn fetch_meta_with_retry(
     addon: &dyn MetaAddon,
+    addon_name: &str,
     media: &db::Media,
     ctx: &AppContext,
     config: &api::ServerConfiguration,
     timeout: Duration,
 ) -> Result<Option<db::Media>> {
-    const ATTEMPTS: usize = 2;
-    for attempt in 1..=ATTEMPTS {
-        match tokio::time::timeout(timeout, addon.meta_fetch(media, ctx, config)).await
-        {
-            Ok(result) => return result,
-            Err(_) if attempt < ATTEMPTS => {
-                debug!(
-                    id = %media.id,
-                    timeout = ?timeout,
-                    "addon meta_fetch timed out, retrying once"
-                );
-            }
-            Err(_) => {}
+    if let Ok(result) =
+        tokio::time::timeout(timeout, addon.meta_fetch(media, ctx, config)).await
+    {
+        return result;
+    }
+
+    // The cooldown can have started while the first attempt was waiting.
+    // Same reasoning as the check before the first attempt: a retry that
+    // would only sit out the cooldown is a guaranteed timeout, so don't.
+    let cooldown = addon
+        .rate_limit_cooldown()
+        .await;
+    if cooldown >= timeout {
+        debug!(
+            id = %media.id,
+            addon = %addon_name,
+            cooldown = ?cooldown,
+            "not retrying addon meta_fetch: shared rate limit cooldown exceeds timeout"
+        );
+    } else {
+        let started = std::time::Instant::now();
+        let retried =
+            tokio::time::timeout(timeout, addon.meta_fetch(media, ctx, config)).await;
+        info!(
+            id = %media.id,
+            addon = %addon_name,
+            outcome = if retried.is_ok() { "recovered" } else { "failed again" },
+            elapsed = ?started.elapsed(),
+            "addon meta_fetch timed out, retried once"
+        );
+        if let Ok(result) = retried {
+            return result;
         }
     }
     addon.on_meta_fetch_timeout(media);
@@ -4926,6 +4947,7 @@ mod tests {
 
         let patch = fetch_meta_with_retry(
             &addon,
+            "stalls-once",
             &media,
             ctx,
             &config,
@@ -4976,6 +4998,7 @@ mod tests {
         let addon = Hangs(Default::default());
         let err = fetch_meta_with_retry(
             &addon,
+            "hangs",
             &db::Media::default(),
             ctx,
             &config,
@@ -4990,6 +5013,75 @@ mod tests {
         assert_eq!(
             addon
                 .0
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn no_retry_when_the_rate_limit_cooldown_outlasts_the_timeout() {
+        struct Cooling {
+            calls: std::sync::atomic::AtomicUsize,
+            timeouts: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl MetaAddon for Cooling {
+            async fn supports(&self, _media: &db::Media) -> bool {
+                true
+            }
+            async fn meta_fetch(
+                &self,
+                _media: &db::Media,
+                _ctx: &AppContext,
+                _config: &crate::api::ServerConfiguration,
+            ) -> Result<Option<db::Media>> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::pending().await
+            }
+            fn on_meta_fetch_timeout(&self, _media: &db::Media) {
+                self.timeouts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            async fn rate_limit_cooldown(&self) -> Duration {
+                Duration::from_secs(60)
+            }
+        }
+
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let addon = Cooling {
+            calls: Default::default(),
+            timeouts: Default::default(),
+        };
+        let err = fetch_meta_with_retry(
+            &addon,
+            "cooling",
+            &db::Media::default(),
+            ctx,
+            &config,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("timed out")
+        );
+        assert_eq!(
+            addon
+                .calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the retry must be skipped during a cooldown"
+        );
+        assert_eq!(
+            addon
+                .timeouts
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
