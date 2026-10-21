@@ -256,6 +256,19 @@ impl AddonPreset for OpendalWebdavPreset {
                     default: None,
                     kind: AddonOptionType::StringList,
                 },
+                AddonOption {
+                    id: "incremental_scan".to_string(),
+                    name: "Incremental rescans".to_string(),
+                    description: Some(
+                        "Skip top-level folders whose modified time has not changed since they were indexed. \
+                         Only for servers that update a folder's mtime when anything below it changes; \
+                         everything is still walked in full once a week."
+                            .to_string(),
+                    ),
+                    required: false,
+                    default: Some(serde_json::Value::Bool(false)),
+                    kind: AddonOptionType::Boolean,
+                },
             ],
         }
     }
@@ -1392,9 +1405,26 @@ async fn scan_addon(
     let mut probe_jobs: Vec<ProbeJob> = Vec::new();
     let mut path_id_memo = PathIdMemo::default();
 
+    // Debrid-style WebDAV shares only ever add folders, so a folder that has not
+    // changed since it was indexed is not walked again. This is opt-in
+    // (`incremental_scan: true` in the addon config): many servers only bump a
+    // directory's mtime for direct children, so a change deep in a tree may not be
+    // seen until the weekly full walk. Local scans never skip.
+    let incremental = if is_local || cfg["incremental_scan"].as_bool() != Some(true) {
+        None
+    } else {
+        IncrementalIndex::load(ctx, addon.id).await?
+    };
+
     for (operator, list_from, path_prefix) in scan_roots {
-        let (mut single, mut lister) =
-            open_scan_source(&operator, &list_from, is_local).await?;
+        let (mut single, mut lister) = open_scan_source(
+            &operator,
+            &list_from,
+            is_local,
+            incremental.as_ref(),
+            &mut seen_ids,
+        )
+        .await?;
 
         while let Some(entry) = next_scan_entry(&mut single, &mut lister).await? {
             // The lister classifies entries from a raw readdir() call, which does not
@@ -2205,19 +2235,142 @@ impl ScanEntry {
     }
 }
 
+/// How far before the newest indexed row a folder's mtime must fall to count as
+/// unchanged. Covers a change landing between listing a folder and writing its
+/// rows, and clock skew between this server and the share.
+const INCREMENTAL_SLACK: chrono::Duration = chrono::Duration::hours(1);
+
+/// A full walk is forced when the stalest row was last seen longer ago than this.
+const FULL_WALK_INTERVAL: chrono::Duration = chrono::Duration::days(7);
+
+/// One indexed row, as far as the skip decision is concerned.
+struct IndexedRow {
+    id: Uuid,
+    path: String,
+    scanned_at: chrono::NaiveDateTime,
+    /// A non-track row that never got an IMDB id.
+    unresolved: bool,
+}
+
+/// What a previous scan stored, used to decide which top-level folders to skip.
+struct IncrementalIndex {
+    /// Rows grouped by the first component of their stored path.
+    by_top: std::collections::HashMap<String, Vec<IndexedRow>>,
+}
+
+fn first_component(path: &str) -> &str {
+    path.trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default()
+}
+
+impl IncrementalIndex {
+    /// `None` when skipping is not safe or not wanted for this addon:
+    /// - rows from `.strm` files store the target URL as their path, so they cannot
+    ///   be attributed to a folder;
+    /// - the last full walk is too old. Many servers only bump a directory's mtime
+    ///   for its direct children, so a change deep in a tree can go unseen; a
+    ///   periodic full walk heals that. Walking a folder refreshes `scanned_at` of
+    ///   every row in it, so the oldest `scanned_at` of the addon is when the last
+    ///   full walk finished at the latest. That needs no extra state or migration.
+    async fn load(ctx: &AppContext, addon_id: Uuid) -> Result<Option<Self>> {
+        let raw: Vec<(Uuid, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, path, scanned_at, media_kind, imdb_id FROM opendal_files \
+             WHERE addon_id = ?",
+        )
+        .bind(addon_id)
+        .fetch_all(&ctx.db)
+        .await?;
+        let mut by_top: std::collections::HashMap<String, Vec<IndexedRow>> =
+            Default::default();
+        let mut oldest: Option<chrono::NaiveDateTime> = None;
+        for (id, path, scanned_at, media_kind, imdb_id) in raw {
+            if path.starts_with("http://") || path.starts_with("https://") {
+                return Ok(None);
+            }
+            let Ok(at) = chrono::NaiveDateTime::parse_from_str(
+                &scanned_at,
+                "%Y-%m-%d %H:%M:%S%.f",
+            ) else {
+                return Ok(None);
+            };
+            oldest = Some(oldest.map_or(at, |o| o.min(at)));
+            // Files that cannot be resolved are normally not stored at all, so a
+            // row with no id is the only trace of a failed resolution there can be.
+            let unresolved = media_kind != "track"
+                && imdb_id
+                    .as_deref()
+                    .is_none_or(str::is_empty);
+            by_top
+                .entry(first_component(&path).to_string())
+                .or_default()
+                .push(IndexedRow {
+                    id,
+                    path,
+                    scanned_at: at,
+                    unresolved,
+                });
+        }
+        if oldest.is_some_and(|o| o < Utc::now().naive_utc() - FULL_WALK_INTERVAL) {
+            return Ok(None);
+        }
+        Ok(Some(Self { by_top }))
+    }
+
+    /// Ids of the folder's rows when the folder can be skipped: it already has rows,
+    /// none of them failed to resolve, and its mtime is known and not newer than the
+    /// newest of them.
+    fn unchanged_rows(
+        &self,
+        dir_path: &str,
+        modified: Option<chrono::DateTime<Utc>>,
+    ) -> Option<Vec<Uuid>> {
+        let modified = modified?.naive_utc();
+        let bucket = self
+            .by_top
+            .get(first_component(dir_path))?;
+        let mut newest: Option<chrono::NaiveDateTime> = None;
+        let mut ids = Vec::new();
+        for row in bucket
+            .iter()
+            .filter(|r| {
+                r.path
+                    .starts_with(dir_path)
+            })
+        {
+            if row.unresolved {
+                return None;
+            }
+            ids.push(row.id);
+            newest = Some(newest.map_or(row.scanned_at, |n| n.max(row.scanned_at)));
+        }
+        (modified <= newest? - INCREMENTAL_SLACK).then_some(ids)
+    }
+}
+
+type EntryStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = opendal::Result<opendal::Entry>> + Send>,
+>;
+
 /// Opens one configured scan path. A WebDAV path that points at a single file yields
-/// just that entry; anything else is walked as a directory from its own root.
+/// just that entry; anything else is walked as a directory from its own root. With an
+/// index, the directory is listed one level deep and only folders that are new or
+/// changed are walked; the rows of skipped folders are added to `seen_ids` so they
+/// are not pruned.
 async fn open_scan_source(
     operator: &opendal::Operator,
     list_from: &str,
     is_local: bool,
-) -> Result<(Option<ScanEntry>, Option<opendal::Lister>)> {
+    index: Option<&IncrementalIndex>,
+    seen_ids: &mut Vec<Uuid>,
+) -> Result<(Option<ScanEntry>, Option<EntryStream>)> {
     if is_local {
         let lister = operator
             .lister_with(list_from)
             .recursive(true)
             .await?;
-        return Ok((None, Some(lister)));
+        return Ok((None, Some(Box::pin(lister))));
     }
     let dir = webdav_dir_path(list_from);
     if dir != "/"
@@ -2237,16 +2390,75 @@ async fn open_scan_source(
             None,
         ));
     }
-    let lister = operator
+    let Some(index) = index else {
+        let lister = operator
+            .lister_with(&dir)
+            .recursive(true)
+            .await?;
+        return Ok((None, Some(Box::pin(lister))));
+    };
+
+    let mut top = operator
         .lister_with(&dir)
-        .recursive(true)
         .await?;
-    Ok((None, Some(lister)))
+    let mut direct = Vec::new();
+    let mut walks = Vec::new();
+    let mut skipped = 0usize;
+    while let Some(entry) = top
+        .try_next()
+        .await?
+    {
+        if entry
+            .metadata()
+            .mode()
+            != EntryMode::DIR
+        {
+            direct.push(entry);
+            continue;
+        }
+        match index.unchanged_rows(
+            entry.path(),
+            entry
+                .metadata()
+                .last_modified(),
+        ) {
+            Some(ids) => {
+                skipped += 1;
+                seen_ids.extend(ids);
+            }
+            None => {
+                walks.push(
+                    operator
+                        .lister_with(entry.path())
+                        .recursive(true)
+                        .await?,
+                );
+            }
+        }
+    }
+    debug!(
+        path = list_from,
+        skipped,
+        walked = walks.len(),
+        "opendal: incremental scan"
+    );
+    use futures::StreamExt as _;
+    Ok((
+        None,
+        Some(Box::pin(
+            futures::stream::iter(
+                direct
+                    .into_iter()
+                    .map(Ok),
+            )
+            .chain(futures::stream::iter(walks).flatten()),
+        )),
+    ))
 }
 
 async fn next_scan_entry(
     single: &mut Option<ScanEntry>,
-    lister: &mut Option<opendal::Lister>,
+    lister: &mut Option<EntryStream>,
 ) -> Result<Option<ScanEntry>> {
     if let Some(entry) = single.take() {
         return Ok(Some(entry));
@@ -2554,9 +2766,10 @@ mod tests {
         .unwrap()
         .finish();
 
-        let (mut single, mut lister) = open_scan_source(&op, "/Movie A", false)
-            .await
-            .unwrap();
+        let (mut single, mut lister) =
+            open_scan_source(&op, "/Movie A", false, None, &mut Vec::new())
+                .await
+                .unwrap();
         let mut seen = Vec::new();
         while let Some(e) = next_scan_entry(&mut single, &mut lister)
             .await
@@ -2584,9 +2797,10 @@ mod tests {
         );
 
         // A path that is itself a file is indexed as that one file.
-        let (mut single, mut lister) = open_scan_source(&op, "/c.mkv", false)
-            .await
-            .unwrap();
+        let (mut single, mut lister) =
+            open_scan_source(&op, "/c.mkv", false, None, &mut Vec::new())
+                .await
+                .unwrap();
         let first = next_scan_entry(&mut single, &mut lister)
             .await
             .unwrap()
@@ -5552,5 +5766,351 @@ mod tests {
             resolved[1].ends_with("Artist/Album Two/Intro.flac"),
             "{resolved:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental WebDAV scans: a folder that has not changed since it was
+    // indexed is not listed again.
+    // -----------------------------------------------------------------------
+
+    const OLD: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
+    const FUTURE: &str = "Fri, 01 Jan 2100 00:00:00 GMT";
+    const MOVIE: &str = "%5Bimdbid-tt0133093%5D%20The%20Matrix%20(1999).mkv";
+    const MOVIE2: &str = "%5Bimdbid-tt0106977%5D%20Heat%20(1995).mkv";
+
+    type DavRoutes = Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+    type DavHits = Arc<std::sync::Mutex<Vec<String>>>;
+
+    fn dav_entry(href: &str, dir: bool, modified: &str) -> String {
+        let rt = if dir {
+            "<D:resourcetype><D:collection/></D:resourcetype>"
+        } else {
+            "<D:resourcetype/><D:getcontentlength>5</D:getcontentlength>"
+        };
+        format!(
+            "<D:response><D:href>{href}</D:href><D:propstat><D:prop>{rt}<D:getlastmodified>{modified}</D:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+        )
+    }
+
+    fn dav_body(entries: &[String]) -> String {
+        format!(
+            r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">{}</D:multistatus>"#,
+            entries.concat()
+        )
+    }
+
+    /// PROPFIND mock whose routes can be edited between scans. Records every
+    /// requested path.
+    async fn mutable_webdav() -> (String, DavRoutes, DavHits) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let base = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .unwrap()
+        );
+        let routes: DavRoutes = Default::default();
+        let hits: DavHits = Default::default();
+        let (r, h) = (routes.clone(), hits.clone());
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener
+                    .accept()
+                    .await
+                    .unwrap();
+                let (routes, hits) = (r.clone(), h.clone());
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock
+                        .read(&mut buf)
+                        .await
+                        .unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_string();
+                    hits.lock()
+                        .unwrap()
+                        .push(path.clone());
+                    let body = routes
+                        .lock()
+                        .unwrap()
+                        .get(&path)
+                        .cloned();
+                    let (status, body) = match body {
+                        Some(b) => ("207 Multi-Status", b),
+                        None => ("404 Not Found", String::new()),
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock
+                        .write_all(resp.as_bytes())
+                        .await;
+                });
+            }
+        });
+        (base, routes, hits)
+    }
+
+    /// Registers a folder's own listing and returns its entry for the root listing.
+    fn set_dav_dir(
+        routes: &DavRoutes,
+        name: &str,
+        modified: &str,
+        files: &[&str],
+    ) -> String {
+        let mut entries = vec![dav_entry(&format!("/{name}/"), true, modified)];
+        entries.extend(
+            files
+                .iter()
+                .map(|f| dav_entry(&format!("/{name}/{f}"), false, modified)),
+        );
+        routes
+            .lock()
+            .unwrap()
+            .insert(format!("/{name}/"), dav_body(&entries));
+        dav_entry(&format!("/{name}/"), true, modified)
+    }
+
+    fn set_dav_root(routes: &DavRoutes, dirs: &[String]) {
+        let mut entries = vec![dav_entry("/", true, OLD)];
+        entries.extend_from_slice(dirs);
+        routes
+            .lock()
+            .unwrap()
+            .insert("/".to_string(), dav_body(&entries));
+    }
+
+    async fn make_webdav_addon(ctx: &AppContext, endpoint: &str) -> Addon {
+        let now = Utc::now().naive_utc();
+        let addon = Addon {
+            id: Uuid::new_v4(),
+            name: "test-webdav".to_string(),
+            preset: AddonPresetRef {
+                kind: "opendal-webdav".to_string(),
+                config: serde_json::json!({
+                    "media_kind": "movie",
+                    "endpoint": endpoint,
+                    "paths": ["/"],
+                    "incremental_scan": true,
+                })
+                .into(),
+            },
+            resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: true,
+            http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+        addon
+    }
+
+    async fn indexed_paths(ctx: &AppContext, addon: &Addon) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT path FROM opendal_files WHERE addon_id = ? ORDER BY path",
+        )
+        .bind(addon.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap()
+    }
+
+    /// Two folders indexed by a first scan; the request log is cleared after it.
+    async fn scanned_share() -> (
+        crate::integration_test::TestGuard,
+        Addon,
+        DavRoutes,
+        DavHits,
+    ) {
+        let (base, routes, hits) = mutable_webdav().await;
+        let a = set_dav_dir(&routes, "A", OLD, &[MOVIE]);
+        let b = set_dav_dir(&routes, "B", OLD, &[MOVIE2]);
+        set_dav_root(&routes, &[a, b]);
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let addon = make_webdav_addon(&guard.0, &base).await;
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexed_paths(&guard.0, &addon)
+                .await
+                .len(),
+            2
+        );
+        hits.lock()
+            .unwrap()
+            .clear();
+        (guard, addon, routes, hits)
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_skips_unchanged_folders() {
+        let (guard, addon, _routes, hits) = scanned_share().await;
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            *hits
+                .lock()
+                .unwrap(),
+            vec!["/".to_string()],
+            "unchanged folders must not be listed"
+        );
+        assert_eq!(
+            indexed_paths(&guard.0, &addon)
+                .await
+                .len(),
+            2,
+            "rows of skipped folders must survive the prune"
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_indexes_new_folder() {
+        let (guard, addon, routes, hits) = scanned_share().await;
+        let a = set_dav_dir(&routes, "A", OLD, &[MOVIE]);
+        let b = set_dav_dir(&routes, "B", OLD, &[MOVIE2]);
+        let c = set_dav_dir(&routes, "C", OLD, &[MOVIE]);
+        set_dav_root(&routes, &[a, b, c]);
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        let hits = hits
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(hits.contains(&"/C/".to_string()), "{hits:?}");
+        assert!(!hits.contains(&"/A/".to_string()), "{hits:?}");
+        assert!(!hits.contains(&"/B/".to_string()), "{hits:?}");
+        assert_eq!(
+            indexed_paths(&guard.0, &addon)
+                .await
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_prunes_removed_folder() {
+        let (guard, addon, routes, _hits) = scanned_share().await;
+        let a = set_dav_dir(&routes, "A", OLD, &[MOVIE]);
+        set_dav_root(&routes, &[a]);
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexed_paths(&guard.0, &addon).await,
+            vec!["A/[imdbid-tt0133093] The Matrix (1999).mkv".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_walks_folder_with_newer_mtime() {
+        let (guard, addon, routes, hits) = scanned_share().await;
+        let a = set_dav_dir(&routes, "A", FUTURE, &[MOVIE, MOVIE2]);
+        let b = set_dav_dir(&routes, "B", OLD, &[MOVIE2]);
+        set_dav_root(&routes, &[a, b]);
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        let hits = hits
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(hits.contains(&"/A/".to_string()), "{hits:?}");
+        assert!(!hits.contains(&"/B/".to_string()), "{hits:?}");
+        assert_eq!(
+            indexed_paths(&guard.0, &addon)
+                .await
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_walks_everything_by_default() {
+        let (guard, mut addon, _routes, hits) = scanned_share().await;
+        addon
+            .preset
+            .config = serde_json::json!({
+            "media_kind": "movie",
+            "endpoint": addon.preset.config.expose()["endpoint"],
+            "paths": ["/"],
+        })
+        .into();
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        let hits = hits
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(hits.contains(&"/A/".to_string()), "{hits:?}");
+        assert!(hits.contains(&"/B/".to_string()), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_walks_everything_after_a_week() {
+        let (guard, addon, _routes, hits) = scanned_share().await;
+        sqlx::query("UPDATE opendal_files SET scanned_at = ? WHERE path LIKE 'A/%'")
+            .bind((Utc::now().naive_utc() - chrono::Duration::days(8)).to_string())
+            .execute(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        let hits = hits
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(hits.contains(&"/A/".to_string()), "{hits:?}");
+        assert!(hits.contains(&"/B/".to_string()), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn webdav_rescan_walks_folder_with_unresolved_row() {
+        let (guard, addon, _routes, hits) = scanned_share().await;
+        sqlx::query("UPDATE opendal_files SET imdb_id = NULL WHERE path LIKE 'A/%'")
+            .execute(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        let hits = hits
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(hits.contains(&"/A/".to_string()), "{hits:?}");
+        assert!(!hits.contains(&"/B/".to_string()), "{hits:?}");
     }
 }
