@@ -1399,24 +1399,6 @@ fn select_candidates(
         .collect()
 }
 
-fn probe_attempt_timeout(primary: &db::Media, configured_secs: u64) -> u64 {
-    if primary
-        .stream_info
-        .as_ref()
-        .is_some_and(|info| info.is_p2p())
-    {
-        // PlaybackInfo clients currently allow about 90 seconds for the entire
-        // request, while the server can try the primary plus three fallback
-        // streams. A 30-second P2P attempt can therefore consume the whole
-        // client budget before the later candidates are reached. Real-device
-        // rotations also show viable fallback torrents becoming probeable well
-        // inside this window once the dead candidate is skipped.
-        configured_secs.min(15)
-    } else {
-        configured_secs
-    }
-}
-
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
 /// Returns a 500 error if all candidates fail to probe.
@@ -1459,11 +1441,7 @@ where
         .collect();
     let total_available = probe_pool.len();
     let mut attempts = 0usize;
-    // Torrent startup depends on piece availability and can otherwise hold
-    // PlaybackInfo for the full configured 60s per candidate. Keep real P2P
-    // probing, but restore the bounded per-attempt wait used before #422.
     for (stream, url_opt) in all_to_try {
-        let effective_timeout = probe_attempt_timeout(&stream, timeout_secs);
         let is_retry = stream.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
@@ -1486,7 +1464,7 @@ where
         let db2 = db.clone();
         let f = probe_fn.clone();
         let probe_result = tokio::time::timeout(
-            std::time::Duration::from_secs(effective_timeout),
+            std::time::Duration::from_secs(timeout_secs),
             tokio::task::spawn_blocking(move || f(url2)),
         )
         .await;
@@ -1562,7 +1540,7 @@ where
                 warn!(url = %url, error = %e, "probe task panicked");
             }
             Err(_) => {
-                warn!(url = %url, timeout = effective_timeout, "probe timed out");
+                warn!(url = %url, timeout = timeout_secs, "probe timed out");
             }
         }
     }
@@ -1974,16 +1952,6 @@ mod probe_tests {
             .collect();
         let result = select_candidates(&primary, &all, true, 1, false, 3000);
         assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn p2p_probe_timeout_is_capped_without_changing_http_timeout() {
-        assert_eq!(probe_attempt_timeout(&p2p_media(), 60), 15);
-        assert_eq!(probe_attempt_timeout(&p2p_media(), 10), 10);
-        assert_eq!(
-            probe_attempt_timeout(&http_media("http://example.com"), 60),
-            60
-        );
     }
 
     #[tokio::test]
