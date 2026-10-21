@@ -2254,15 +2254,8 @@ struct IndexedRow {
 
 /// What a previous scan stored, used to decide which top-level folders to skip.
 struct IncrementalIndex {
-    /// Rows grouped by the first component of their stored path.
-    by_top: std::collections::HashMap<String, Vec<IndexedRow>>,
-}
-
-fn first_component(path: &str) -> &str {
-    path.trim_start_matches('/')
-        .split('/')
-        .next()
-        .unwrap_or_default()
+    /// Sorted by stored path, so the rows below one folder are a contiguous slice.
+    rows: Vec<IndexedRow>,
 }
 
 impl IncrementalIndex {
@@ -2282,8 +2275,7 @@ impl IncrementalIndex {
         .bind(addon_id)
         .fetch_all(&ctx.db)
         .await?;
-        let mut by_top: std::collections::HashMap<String, Vec<IndexedRow>> =
-            Default::default();
+        let mut rows: Vec<IndexedRow> = Vec::with_capacity(raw.len());
         let mut oldest: Option<chrono::NaiveDateTime> = None;
         for (id, path, scanned_at, media_kind, imdb_id) in raw {
             if path.starts_with("http://") || path.starts_with("https://") {
@@ -2302,20 +2294,21 @@ impl IncrementalIndex {
                 && imdb_id
                     .as_deref()
                     .is_none_or(str::is_empty);
-            by_top
-                .entry(first_component(&path).to_string())
-                .or_default()
-                .push(IndexedRow {
-                    id,
-                    path,
-                    scanned_at: at,
-                    unresolved,
-                });
+            rows.push(IndexedRow {
+                id,
+                path,
+                scanned_at: at,
+                unresolved,
+            });
         }
         if oldest.is_some_and(|o| o < Utc::now().naive_utc() - FULL_WALK_INTERVAL) {
             return Ok(None);
         }
-        Ok(Some(Self { by_top }))
+        rows.sort_unstable_by(|a, b| {
+            a.path
+                .cmp(&b.path)
+        });
+        Ok(Some(Self { rows }))
     }
 
     /// Ids of the folder's rows when the folder can be skipped: it already has rows,
@@ -2327,14 +2320,18 @@ impl IncrementalIndex {
         modified: Option<chrono::DateTime<Utc>>,
     ) -> Option<Vec<Uuid>> {
         let modified = modified?.naive_utc();
-        let bucket = self
-            .by_top
-            .get(first_component(dir_path))?;
+        let start = self
+            .rows
+            .partition_point(|r| {
+                r.path
+                    .as_str()
+                    < dir_path
+            });
         let mut newest: Option<chrono::NaiveDateTime> = None;
         let mut ids = Vec::new();
-        for row in bucket
+        for row in self.rows[start..]
             .iter()
-            .filter(|r| {
+            .take_while(|r| {
                 r.path
                     .starts_with(dir_path)
             })
@@ -6112,5 +6109,32 @@ mod tests {
             .clone();
         assert!(hits.contains(&"/A/".to_string()), "{hits:?}");
         assert!(!hits.contains(&"/B/".to_string()), "{hits:?}");
+    }
+
+    #[test]
+    fn incremental_index_finds_only_rows_below_the_folder() {
+        let at = Utc::now().naive_utc() - chrono::Duration::days(1);
+        let row = |path: &str| IndexedRow {
+            id: Uuid::new_v4(),
+            path: path.to_string(),
+            scanned_at: at,
+            unresolved: false,
+        };
+        let (a, ab, b) = (
+            row("Movies/A/x.mkv"),
+            row("Movies/AB/x.mkv"),
+            row("Movies/B/x.mkv"),
+        );
+        let a_id = a.id;
+        let mut rows = vec![b, a, ab];
+        rows.sort_unstable_by(|x, y| {
+            x.path
+                .cmp(&y.path)
+        });
+        let index = IncrementalIndex { rows };
+        let old = Some(Utc::now() - chrono::Duration::days(30));
+        assert_eq!(index.unchanged_rows("Movies/A/", old), Some(vec![a_id]));
+        assert_eq!(index.unchanged_rows("Movies/C/", old), None);
+        assert_eq!(index.unchanged_rows("Movies/A/", None), None);
     }
 }
