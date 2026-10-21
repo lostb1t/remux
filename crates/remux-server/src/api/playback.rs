@@ -43,6 +43,7 @@ use crate::{
 use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::{DeviceProfileExt, SourceRankingContext, SubtitleCodec},
+    errors::LogErr,
     playback::{
         decision::{
             PlaybackConfig, PlaybackPermissions, TranscodeDecision,
@@ -203,15 +204,10 @@ fn apply_item_runtime_fallback(
 }
 
 fn playback_original_language(
-    item: Option<&db::Media>,
+    item_language: Option<String>,
     selected_source_language: Option<String>,
 ) -> Option<String> {
-    item.and_then(|media| {
-        media
-            .original_language
-            .clone()
-    })
-    .or(selected_source_language)
+    item_language.or(selected_source_language)
 }
 
 async fn items_playbackinfo_inner(
@@ -371,8 +367,15 @@ async fn items_playbackinfo_inner(
     }
     let is_track_item = media.is_track();
     let selected_source_language = media
-        .original_language
-        .clone();
+        .inherited_original_language(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .log_err("failed to load inherited original language")
+        .ok()
+        .flatten();
 
     let max_bitrate: Option<i64> = match (
         q.max_streaming_bitrate,
@@ -520,8 +523,23 @@ async fn items_playbackinfo_inner(
     let item_runtime_seconds = subtitle_media
         .as_ref()
         .and_then(|item| item.runtime);
+    // Without a media_source_id, `subtitle_media` is `media`, whose language
+    // is already in `selected_source_language`.
+    let item_language = match &subtitle_media {
+        Some(item) if media_source_id.is_some() => item
+            .inherited_original_language(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await
+            .log_err("failed to load inherited original language")
+            .ok()
+            .flatten(),
+        _ => None,
+    };
     let original_language =
-        playback_original_language(subtitle_media.as_ref(), selected_source_language);
+        playback_original_language(item_language, selected_source_language);
     let is_track = is_track_item
         || subtitle_media
             .as_ref()
@@ -2289,17 +2307,15 @@ mod tests {
 
     #[test]
     fn parent_item_language_overrides_missing_or_stale_source_language() {
-        let parent = crate::db::Media {
-            original_language: Some("en".to_string()),
-            ..Default::default()
-        };
-
         assert_eq!(
-            super::playback_original_language(Some(&parent), None),
+            super::playback_original_language(Some("en".to_string()), None),
             Some("en".to_string())
         );
         assert_eq!(
-            super::playback_original_language(Some(&parent), Some("ru".to_string())),
+            super::playback_original_language(
+                Some("en".to_string()),
+                Some("ru".to_string())
+            ),
             Some("en".to_string())
         );
         assert_eq!(
@@ -4232,6 +4248,105 @@ mod tests {
             body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
             Some(2),
             "PlayDefaultAudioTrack=true should select the track matching original_language=en (index 2)"
+        );
+    }
+
+    /// An episode without its own original_language inherits the series' for PlayDefaultAudioTrack.
+    #[tokio::test]
+    async fn test_play_default_audio_track_inherits_series_original_language() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = chrono::Utc::now().naive_utc();
+
+        let episode = crate::integration_test::seed_episode(ctx).await;
+        sqlx::query("UPDATE media SET original_language = 'en' WHERE id = ?")
+            .bind(episode.grandparent_id)
+            .execute(&ctx.db)
+            .await
+            .expect("set series original_language");
+        // Mark streams fresh so refresh_streams doesn't replace the fixture source.
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now - chrono::Duration::seconds(30))
+            .bind(episode.id)
+            .execute(&ctx.db)
+            .await
+            .expect("set streams_refreshed_at");
+
+        // French is the container default; English is the series' language.
+        let probe = MediaSourceInfo {
+            container: Some(VideoContainer::Mp4),
+            media_streams: vec![
+                MediaStream {
+                    type_: Some(MediaStreamType::Audio),
+                    index: 0,
+                    language: Some("fre".to_string()),
+                    is_default: Some(true),
+                    ..Default::default()
+                },
+                MediaStream {
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    language: Some("eng".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut source = db::Media {
+            title: "1080p".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(episode.id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "test-fixture-episode-orig-lang.mp4".into(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(probe),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        source
+            .save(&ctx.db)
+            .await
+            .expect("save source");
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", episode.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
+            Some(1),
+            "PlaybackInfo"
+        );
+
+        let resp = server
+            .get(&format!("/items/{}", episode.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("Fields", "MediaSources")])
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
+            Some(1),
+            "item details"
         );
     }
 

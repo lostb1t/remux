@@ -85,6 +85,12 @@ pub enum ProgramKind {
     Sports,
 }
 
+/// Titles released within this many days (or not released yet) are synced
+/// from RemuxDB every day. Two years.
+pub const POPULARITY_RECENT_RELEASE_DAYS: i64 = 2 * 365;
+/// Every other title is re-synced once its metrics are this many days old.
+pub const POPULARITY_MAX_AGE_DAYS: i64 = 7;
+
 #[derive(
     Default,
     strum_macros::EnumString,
@@ -2752,7 +2758,13 @@ impl Media {
             .filter(|item| match item.validate() {
                 Ok(()) => true,
                 Err(e) => {
-                    error!(error = %e, "skipping media item with invalid UUID");
+                    error!(
+                        error = %e,
+                        id = %item.id,
+                        kind = ?item.kind,
+                        title = %item.title,
+                        "skipping invalid media item"
+                    );
                     false
                 }
             })
@@ -6112,25 +6124,72 @@ impl Media {
         // digital release is still plausible — otherwise stop selecting it.
         // Movies only: TMDB never sets a digital date on a series row, so
         // series rely on the status branch above instead.
-        const WHERE: &str = r#"
+        //
+        // Backoff: the two "keep retrying" branches used to re-select the
+        // same items every night even though almost nothing changes (on a
+        // large library ~0.1% of nightly re-refreshes changed any core
+        // field). They now only run nightly while a change is plausible, and
+        // otherwise at most once per `REFRESH_BACKOFF_DAYS`.
+        //  - Series: nightly when added recently, when it has no episodes
+        //    yet, or when an episode aired / airs within
+        //    `EPISODE_WINDOW_DAYS` of today. The episode lookup is an index
+        //    range scan on (kind, released_at) plus (kind, grandparent_id).
+        //  - Movies: nightly while recently added or while the release date
+        //    is within `MOVIE_RELEASE_WINDOW_DAYS` of today; the older
+        //    "released within a year" tail is refreshed weekly.
+        // Never-refreshed items are always selected.
+        const REFRESH_BACKOFF_DAYS: u32 = 7;
+        const RECENTLY_ADDED_DAYS: u32 = 7;
+        const EPISODE_WINDOW_DAYS: u32 = 14;
+        const MOVIE_RELEASE_WINDOW_DAYS: u32 = 30;
+        let where_clause = format!(
+            r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
-            OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
+            OR (
+              kind = 'series' AND (status IS NULL OR status != 'ended')
+              AND datetime(created_at) < datetime('now', '-1 hour')
+              AND (
+                datetime(refreshed_at) < datetime('now', '-{REFRESH_BACKOFF_DAYS} days')
+                OR datetime(created_at) >= datetime('now', '-{RECENTLY_ADDED_DAYS} days')
+                OR NOT EXISTS (
+                  SELECT 1 FROM media e
+                  WHERE e.kind = 'episode' AND e.grandparent_id = media.id
+                )
+                OR id IN (
+                  SELECT e.grandparent_id FROM media e
+                  WHERE e.kind = 'episode'
+                    AND e.released_at >= datetime('now', '-{EPISODE_WINDOW_DAYS} days')
+                    AND e.released_at <= datetime('now', '+{EPISODE_WINDOW_DAYS} days')
+                )
+              )
+            )
             OR (
               kind = 'movie'
               AND digital_released_at IS NULL
               AND datetime(created_at) < datetime('now', '-1 hour')
               AND (
-                datetime(created_at) >= datetime('now', '-7 days')
+                datetime(created_at) >= datetime('now', '-{RECENTLY_ADDED_DAYS} days')
                 OR (released_at IS NOT NULL AND datetime(released_at) >= datetime('now', '-365 days'))
               )
+              AND (
+                datetime(refreshed_at) < datetime('now', '-{REFRESH_BACKOFF_DAYS} days')
+                OR datetime(created_at) >= datetime('now', '-{RECENTLY_ADDED_DAYS} days')
+                OR (
+                  released_at IS NOT NULL
+                  AND datetime(released_at) >= datetime('now', '-{MOVIE_RELEASE_WINDOW_DAYS} days')
+                  AND datetime(released_at) <= datetime('now', '+{MOVIE_RELEASE_WINDOW_DAYS} days')
+                )
+              )
             )
-          )"#;
+          )"#
+        );
+        let where_clause = where_clause.as_str();
 
         let total = if total_count {
             let row: (i64,) =
-                sqlx::query_as(&format!("SELECT COUNT(*) FROM media {WHERE}"))
+                sqlx::query_as(&format!("SELECT COUNT(*) FROM media {where_clause}"))
                     .bind(MediaKind::Movie)
                     .bind(MediaKind::Series)
                     .fetch_one(db)
@@ -6144,7 +6203,7 @@ impl Media {
         // processed items shift out of the ORDER BY position causing skips/re-reads.
         let rows = if let Some(cursor) = after_id {
             sqlx::query_as::<_, Self>(&format!(
-                "SELECT * FROM media {WHERE} AND id > ? ORDER BY id LIMIT ?"
+                "SELECT * FROM media {where_clause} AND id > ? ORDER BY id LIMIT ?"
             ))
             .bind(MediaKind::Movie)
             .bind(MediaKind::Series)
@@ -6154,7 +6213,7 @@ impl Media {
             .await?
         } else {
             sqlx::query_as::<_, Self>(&format!(
-                "SELECT * FROM media {WHERE} ORDER BY id LIMIT ?"
+                "SELECT * FROM media {where_clause} ORDER BY id LIMIT ?"
             ))
             .bind(MediaKind::Movie)
             .bind(MediaKind::Series)
@@ -6164,6 +6223,61 @@ impl Media {
         };
 
         Ok((rows, total))
+    }
+
+    /// Picks which titles `RefreshPopularityTask` fetches on this run.
+    ///
+    /// Fetching every title daily took ~40 minutes on a library of ~85k, but
+    /// ratings and popularity of old, dormant titles barely move day to day.
+    /// So the sync is tiered:
+    ///
+    /// * daily: released within [`POPULARITY_RECENT_RELEASE_DAYS`] (this also
+    ///   covers upcoming titles), series that have not ended, titles with an
+    ///   unreleased status, and titles we have no `media_metrics` row for yet.
+    /// * weekly: everything else, once its metrics are older than
+    ///   [`POPULARITY_MAX_AGE_DAYS`]. Oldest first, and capped per run at a
+    ///   seventh of the dormant titles so a first rollout (where every row has
+    ///   about the same age) spreads over a week instead of landing on one day.
+    ///
+    /// `media_metrics.synced_at` is our own clock (RemuxDB's `updated_at` is
+    /// the backend's). Titles RemuxDB does not know get a timestamp-only row
+    /// (see the sync task), otherwise they would count as never synced forever.
+    pub async fn popularity_sync_ids(
+        db: &SqlitePool,
+        now: NaiveDateTime,
+    ) -> Result<Vec<Uuid>> {
+        const TIMESTAMP: &str = "%Y-%m-%d %H:%M:%S";
+        let recent_since = now - Duration::days(POPULARITY_RECENT_RELEASE_DAYS);
+        let stale_before = now - Duration::days(POPULARITY_MAX_AGE_DAYS);
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "WITH candidates AS ( \
+                 SELECT m.id AS id, mm.synced_at AS synced_at, \
+                        COALESCE( \
+                            mm.media_id IS NULL \
+                            OR m.released_at >= ?1 \
+                            OR m.status = 'unreleased' \
+                            OR (m.kind = 'series' AND (m.status IS NULL OR m.status != 'ended')), \
+                            0) AS daily \
+                 FROM media m LEFT JOIN media_metrics mm ON mm.media_id = m.id \
+                 WHERE m.kind IN (?3, ?4) \
+                   AND json_extract(m.external_ids, '$.imdb') IS NOT NULL \
+             ) \
+             SELECT id FROM candidates WHERE daily \
+             UNION ALL \
+             SELECT id FROM ( \
+                 SELECT id FROM candidates \
+                 WHERE NOT daily AND synced_at < ?2 \
+                 ORDER BY synced_at ASC, id \
+                 LIMIT (SELECT (COUNT(*) + 6) / 7 FROM candidates WHERE NOT daily) \
+             )",
+        )
+        .bind(recent_since)
+        .bind(stale_before.format(TIMESTAMP).to_string())
+        .bind(MediaKind::Movie)
+        .bind(MediaKind::Series)
+        .fetch_all(db)
+        .await?;
+        Ok(ids)
     }
 
     /// Minimal per-item projection for `RefreshPopularityTask`, which only
@@ -6179,10 +6293,10 @@ impl Media {
     /// `external_ratings` must be carried because it's replaced whole-column
     /// (also not merged in SQL) — the caller's own merge logic depends on
     /// starting from the real stored value, not an empty default.
+    /// `ids` come from [`Self::popularity_sync_ids`].
     pub async fn list_for_popularity_sync(
         db: &SqlitePool,
-        limit: u32,
-        offset: u32,
+        ids: &[Uuid],
     ) -> Result<Vec<Self>> {
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -6195,17 +6309,21 @@ impl Media {
             external_ratings: Option<ExternalRatings>,
         }
 
-        let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, title, kind, external_ids, external_ratings FROM media \
-             WHERE kind IN (?, ?) AND json_extract(external_ids, '$.imdb') IS NOT NULL \
-             ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(MediaKind::Movie)
-        .bind(MediaKind::Series)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db)
-        .await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT id, title, kind, external_ids, external_ratings FROM media WHERE id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for id in ids {
+            sep.push_bind(id);
+        }
+        qb.push(") ORDER BY id");
+        let rows: Vec<Row> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -6715,6 +6833,31 @@ impl Media {
         } else {
             Ok(None)
         }
+    }
+
+    /// This item's `original_language`, else its series' for a Season/Episode.
+    pub async fn inherited_original_language(
+        &self,
+        db: &SqlitePool,
+    ) -> Result<Option<String>> {
+        if self
+            .original_language
+            .is_some()
+            || !matches!(self.kind, MediaKind::Season | MediaKind::Episode)
+        {
+            return Ok(self
+                .original_language
+                .clone());
+        }
+        let Some(series_id) = self.grandparent_id else {
+            return Ok(None);
+        };
+        let language: Option<Option<String>> =
+            sqlx::query_scalar("SELECT original_language FROM media WHERE id = ?")
+                .bind(series_id)
+                .fetch_optional(db)
+                .await?;
+        Ok(language.flatten())
     }
 
     /// Set only this item's played state — no propagation.
@@ -7823,6 +7966,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     Vec<sdks::stremio::Episode>,
                 > = episodes
                     .iter()
+                    .filter(|ep| has_episode_number(ep))
                     .filter_map(|ep| {
                         ep.season
                             .map(|s| (s, ep.clone()))
@@ -7913,6 +8057,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
+                    .filter(|ep| has_episode_number(ep))
                     .filter_map(|ep| {
                         ep.season
                             .map(|s| (s, ep.clone()))
@@ -8090,10 +8235,15 @@ pub fn stremio_meta_season_episodes(
     };
 
     let mut out = Vec::new();
+    let mut unnumbered = 0usize;
     for ep in videos
         .iter()
         .filter(|e| e.season == Some(season_idx))
     {
+        if !has_episode_number(ep) {
+            unnumbered += 1;
+            continue;
+        }
         out.push(stremio_meta_episode(
             ep,
             series_id,
@@ -8102,7 +8252,25 @@ pub fn stremio_meta_season_episodes(
             series_external_ids,
         )?);
     }
+    if unnumbered > 0 {
+        debug!(
+            season_idx,
+            unnumbered, "skipped addon videos without an episode number"
+        );
+    }
     Ok(out)
+}
+
+/// Whether an addon video says which episode it is.
+///
+/// Stremio's `episode` is the only field we trust for numbering. Cinemeta
+/// serves some series as a bare IMDb listing with `number` but no `episode`,
+/// and its numbering there doesn't line up with our seasons. Such a video
+/// can't become an episode row: it has no index to store, and every one of
+/// them would derive the same id from episode 0.
+fn has_episode_number(ep: &crate::sdks::stremio::Episode) -> bool {
+    ep.episode
+        .is_some()
 }
 
 /// Build a single episode `Media` from one Stremio `videos[]` entry.
@@ -9480,6 +9648,63 @@ mod tests {
         );
     }
 
+    /// Cinemeta serves some series (Smosh Mouth, tt28761786) as a bare IMDb
+    /// listing: every video has `number` but no `episode`. Those can't be
+    /// stored as episodes, and must not reach `upsert` where each one failed
+    /// validation and logged an error on every refresh.
+    #[test]
+    fn videos_without_an_episode_number_are_not_turned_into_episodes() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt28761786",
+            "imdb_id": "tt28761786",
+            "type": "series",
+            "name": "Smosh Mouth",
+            "videos": [
+                { "id": "tt28761786:1:0", "season": 1, "number": 0,
+                  "name": "SmoshCast is BACK" },
+                { "id": "tt28761786:1:1", "season": 1, "number": 1 },
+                { "id": "tt28761786:1:2", "season": 1, "number": 2, "episode": 2 },
+            ],
+        }))
+        .expect("fixture meta");
+        let ext = ExternalIds {
+            imdb: NonEmptyString::try_new("tt28761786".to_string()).ok(),
+            ..Default::default()
+        };
+
+        let episodes = stremio_meta_season_episodes(
+            &meta,
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            1,
+            &ext,
+        )
+        .expect("converts");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].idx, Some(2));
+        assert!(
+            episodes
+                .iter()
+                .all(|e| e
+                    .validate()
+                    .is_ok())
+        );
+
+        let medias = stremio_meta_to_medias(meta).expect("converts");
+        let episodes: Vec<&Media> = medias
+            .iter()
+            .filter(|m| m.kind == MediaKind::Episode)
+            .collect();
+        assert_eq!(episodes.len(), 1);
+        assert!(
+            episodes
+                .iter()
+                .all(|e| e
+                    .validate()
+                    .is_ok())
+        );
+    }
+
     /// `stremio_meta_to_medias` builds episodes by its own route rather than
     /// through `stremio_meta_episode`, so the id has to survive that path too.
     #[test]
@@ -10615,6 +10840,173 @@ mod tests {
         );
     }
 
+    /// Non-ended series and no-digital-date movies used to be re-selected
+    /// every night. They now back off to a weekly refresh unless a change is
+    /// plausible (recent add, nearby episode / release date).
+    #[tokio::test]
+    async fn get_refreshable_backs_off_dormant_items() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+        let days = chrono::Duration::days;
+
+        let make_id = |kind: MediaKind, imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind,
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        // (series imdb, refreshed days ago, optional episode air offset in days)
+        let mut series_ids = Vec::new();
+        for (imdb, refreshed, ep_offset) in [
+            ("tt9991001", Some(2), Some(-100)), // dormant, fresh
+            ("tt9991002", Some(8), Some(-100)), // dormant, stale
+            ("tt9991003", Some(2), Some(5)),    // episode airing in 5 days
+            ("tt9991004", Some(2), Some(-3)),   // episode aired 3 days ago
+            ("tt9991005", Some(2), None),       // no episodes yet
+            ("tt9991006", None, Some(-100)),    // never refreshed
+        ] {
+            let (id, ext) = make_id(MediaKind::Series, imdb);
+            let mut series = Media {
+                id,
+                title: imdb.to_string(),
+                kind: MediaKind::Series,
+                external_ids: ext,
+                status: Some(MediaStatus::Continuing),
+                created_at: now - days(300),
+                refreshed_at: refreshed.map(|d| now - days(d)),
+                ..Default::default()
+            };
+            series
+                .save(db)
+                .await
+                .unwrap();
+            if let Some(off) = ep_offset {
+                let ep_ext = ExternalIds {
+                    imdb: Some(NonEmptyString::try_new(format!("{imdb}0")).unwrap()),
+                    ..Default::default()
+                };
+                let mut ep = Media {
+                    id: uuid::Uuid::from(&MediaIdRaw {
+                        kind: MediaKind::Episode,
+                        external_ids: ep_ext.clone(),
+                        season: Some(1),
+                        episode: Some(1),
+                    }),
+                    title: format!("{imdb} ep"),
+                    kind: MediaKind::Episode,
+                    external_ids: ep_ext,
+                    parent_id: Some(id),
+                    grandparent_id: Some(id),
+                    idx: Some(1),
+                    parent_idx: Some(1),
+                    released_at: Some(now + days(off)),
+                    created_at: now - days(300),
+                    refreshed_at: Some(now - days(2)),
+                    ..Default::default()
+                };
+                ep.save(db)
+                    .await
+                    .unwrap();
+            }
+            series_ids.push(id);
+        }
+
+        let mut movie_ids = Vec::new();
+        // (imdb, created days ago, released days ago, refreshed days ago)
+        for (imdb, created, released, refreshed) in [
+            ("tt9992001", 3, 200, Some(1)),   // added 3 days ago
+            ("tt9992002", 100, 200, Some(1)), // old, refreshed yesterday
+            ("tt9992003", 100, 200, Some(8)), // old, refreshed 8 days ago
+            ("tt9992004", 100, 10, Some(1)),  // released 10 days ago
+            ("tt9992005", 100, 200, None),    // never refreshed
+        ] {
+            let (id, ext) = make_id(MediaKind::Movie, imdb);
+            let mut movie = Media {
+                id,
+                title: imdb.to_string(),
+                kind: MediaKind::Movie,
+                external_ids: ext,
+                released_at: Some(now - days(released)),
+                digital_released_at: None,
+                created_at: now - days(created),
+                refreshed_at: refreshed.map(|d| now - days(d)),
+                ..Default::default()
+            };
+            movie
+                .save(db)
+                .await
+                .unwrap();
+            movie_ids.push(id);
+        }
+
+        let (batch, _) = Media::get_refreshable(db, 100, None, false)
+            .await
+            .unwrap();
+        let ids: HashSet<Uuid> = batch
+            .iter()
+            .map(|m| m.id)
+            .collect();
+
+        assert!(
+            !ids.contains(&series_ids[0]),
+            "dormant series refreshed 2 days ago must not be selected"
+        );
+        assert!(
+            ids.contains(&series_ids[1]),
+            "dormant series refreshed 8 days ago must be selected"
+        );
+        assert!(
+            ids.contains(&series_ids[2]),
+            "series with an episode airing in 5 days must be selected"
+        );
+        assert!(
+            ids.contains(&series_ids[3]),
+            "series with an episode aired 3 days ago must be selected"
+        );
+        assert!(
+            ids.contains(&series_ids[4]),
+            "series with no episodes yet must be selected"
+        );
+        assert!(
+            ids.contains(&series_ids[5]),
+            "never-refreshed series must be selected"
+        );
+
+        assert!(
+            ids.contains(&movie_ids[0]),
+            "movie added 3 days ago with no digital date must be selected"
+        );
+        assert!(
+            !ids.contains(&movie_ids[1]),
+            "old movie without digital date refreshed yesterday must not be selected"
+        );
+        assert!(
+            ids.contains(&movie_ids[2]),
+            "old movie refreshed 8 days ago must be selected"
+        );
+        assert!(
+            ids.contains(&movie_ids[3]),
+            "movie released within the window must be selected"
+        );
+        assert!(
+            ids.contains(&movie_ids[4]),
+            "never-refreshed movie must be selected"
+        );
+    }
+
     /// `list_for_popularity_sync` must carry `title`/`kind`/`external_ratings`
     /// through its minimal projection, not just `id`/`external_ids` — those
     /// fields aren't optional extras: `Media::upsert` overwrites `title`/
@@ -10661,7 +11053,7 @@ mod tests {
             .await
             .unwrap();
 
-        let page = Media::list_for_popularity_sync(db, 10, 0)
+        let page = Media::list_for_popularity_sync(db, &[id])
             .await
             .unwrap();
         let mut fetched = page

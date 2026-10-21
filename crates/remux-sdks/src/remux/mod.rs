@@ -1550,6 +1550,9 @@ pub struct GetItemsQuery {
     pub parent_index_number: Option<i64>,
     pub index_number: Option<i64>,
     pub start_index: Option<u32>,
+    /// Defaults to [`DEFAULT_ITEMS_LIMIT`] when a request omits it, so a bare
+    /// `/items` cannot load the whole library.
+    #[serde(default = "default_items_limit")]
     pub limit: Option<u32>,
     pub search_term: Option<String>,
     /// Emby `AnyProviderIdEquals` — `Tmdb.123,Imdb.tt456,Tvdb.789`.
@@ -3529,6 +3532,12 @@ impl UserPolicy {
                 .allowed_tags
                 .is_empty()
     }
+}
+
+pub const DEFAULT_ITEMS_LIMIT: u32 = 250;
+
+fn default_items_limit() -> Option<u32> {
+    Some(DEFAULT_ITEMS_LIMIT)
 }
 
 fn default_true() -> bool {
@@ -7393,6 +7402,18 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn items_query_limit_defaults_only_when_omitted() {
+        let omitted: GetItemsQuery = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.limit, Some(DEFAULT_ITEMS_LIMIT));
+
+        let explicit: GetItemsQuery = serde_json::from_str(r#"{"Limit":7}"#).unwrap();
+        assert_eq!(explicit.limit, Some(7));
+
+        // Internal constructions are not limited.
+        assert_eq!(GetItemsQuery::default().limit, None);
+    }
 
     #[test]
     fn branding_defaults_to_elegantfin_stylesheets() {

@@ -518,8 +518,25 @@ fn series_is_active(status: &Option<db::MediaStatus>) -> bool {
     )
 }
 
+/// Whether an episode is still recent (or upcoming) enough to be re-fetched on
+/// every pass instead of only until it has been refreshed once.
+///
+/// The row coming out of a tree fetch is freshly parsed, so it usually has no
+/// `digital_released_at` (TMDB episodes only carry their air date in
+/// `released_at`). Look at the stored digital date first, then the fetched one,
+/// then the air date; an episode with no date at all is treated as active.
 fn episode_in_active_window(child: &db::Media) -> bool {
-    match child.digital_released_at {
+    episode_in_active_window_with(child, None)
+}
+
+fn episode_in_active_window_with(
+    child: &db::Media,
+    stored_digital: Option<chrono::NaiveDateTime>,
+) -> bool {
+    match stored_digital
+        .or(child.digital_released_at)
+        .or(child.released_at)
+    {
         None => true,
         Some(dt) => {
             let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(180);
@@ -2581,7 +2598,11 @@ impl AddonService {
         // doc comment for why leaving it behind defeats child_refresh_force.
         let existing_l2: std::collections::HashMap<
             (Uuid, String, i64),
-            (Uuid, Option<chrono::NaiveDateTime>),
+            (
+                Uuid,
+                Option<chrono::NaiveDateTime>,
+                Option<chrono::NaiveDateTime>,
+            ),
         > = sqlx::query_as::<
             _,
             (
@@ -2590,9 +2611,10 @@ impl AddonService {
                 Option<i64>,
                 Uuid,
                 Option<chrono::NaiveDateTime>,
+                Option<chrono::NaiveDateTime>,
             ),
         >(
-            "SELECT parent_id, CAST(kind AS TEXT), idx, id, refreshed_at
+            "SELECT parent_id, CAST(kind AS TEXT), idx, id, refreshed_at, digital_released_at
              FROM media WHERE grandparent_id = ? AND idx IS NOT NULL",
         )
         .bind(actual_root_id)
@@ -2600,8 +2622,8 @@ impl AddonService {
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(pid, k, idx, id, refreshed_at)| {
-            idx.map(|i| ((pid, k, i), (id, refreshed_at)))
+        .filter_map(|(pid, k, idx, id, refreshed_at, digital)| {
+            idx.map(|i| ((pid, k, i), (id, refreshed_at, digital)))
         })
         .collect();
 
@@ -2756,6 +2778,7 @@ impl AddonService {
                         // has no concept of refreshed_at — without adopting it here too,
                         // child_refresh_force below always treats this episode as never
                         // refreshed, refetching it on every single pass.
+                        let mut stored_digital = None;
                         if let Some(idx) = gc.idx {
                             let key = (
                                 actual_child_id,
@@ -2763,17 +2786,21 @@ impl AddonService {
                                     .to_string(),
                                 idx,
                             );
-                            if let Some(&(existing_id, existing_refreshed_at)) =
-                                existing_l2.get(&key)
+                            if let Some(&(
+                                existing_id,
+                                existing_refreshed_at,
+                                existing_digital,
+                            )) = existing_l2.get(&key)
                             {
                                 gc.id = existing_id;
                                 gc.refreshed_at = existing_refreshed_at;
+                                stored_digital = existing_digital;
                             }
                         }
 
                         let in_active_window = is_continuing
                             && matches!(gc.kind, db::MediaKind::Episode)
-                            && episode_in_active_window(&gc);
+                            && episode_in_active_window_with(&gc, stored_digital);
                         if let Some(effective_force) =
                             child_refresh_force(force_refresh, in_active_window, &gc)
                         {
@@ -4177,6 +4204,52 @@ mod tests {
     fn old_released_at_is_inactive() {
         let child = child_with(None, Some(days_ago(200)));
         assert!(!episode_in_active_window(&child));
+    }
+
+    // A freshly fetched TMDB episode carries its air date in `released_at` and
+    // never a digital date, so an old episode must read as inactive from the
+    // air date alone, not be refreshed every night forever.
+    #[test]
+    fn old_air_date_without_digital_date_is_inactive() {
+        let child = db::Media {
+            released_at: Some(days_ago(400)),
+            ..Default::default()
+        };
+        assert!(!episode_in_active_window(&child));
+    }
+
+    #[test]
+    fn recent_air_date_without_digital_date_is_active() {
+        let child = db::Media {
+            released_at: Some(days_ago(10)),
+            ..Default::default()
+        };
+        assert!(episode_in_active_window(&child));
+    }
+
+    #[test]
+    fn upcoming_air_date_without_digital_date_is_active() {
+        let child = db::Media {
+            released_at: Some(days_from_now(7)),
+            ..Default::default()
+        };
+        assert!(episode_in_active_window(&child));
+    }
+
+    // The stored digital date wins over the freshly fetched row, which has none.
+    #[test]
+    fn stored_old_digital_date_makes_fresh_row_inactive() {
+        let child = db::Media::default();
+        assert!(!episode_in_active_window_with(&child, Some(days_ago(300))));
+    }
+
+    #[test]
+    fn stored_recent_digital_date_makes_fresh_row_active() {
+        let child = db::Media {
+            released_at: Some(days_ago(400)),
+            ..Default::default()
+        };
+        assert!(episode_in_active_window_with(&child, Some(days_ago(5))));
     }
 
     // --- series_is_active ---

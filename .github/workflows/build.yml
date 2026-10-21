@@ -288,7 +288,16 @@ jobs:
           cargo set-version "${{ inputs.cargo_version }}"
 
       - name: Install cargo-bundle
-        run: cargo binstall cargo-bundle --no-confirm --force --locked
+        shell: bash
+        run: |
+          # QuickInstall only ships an x86_64 macOS build of cargo-bundle. Run
+          # under Rosetta, it spawns an x86_64 `cc` that the arm64-only command
+          # line tools on macos-26 can't load, so build it natively there.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cargo install cargo-bundle --locked
+          else
+            cargo binstall cargo-bundle --no-confirm --force --locked
+          fi
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'

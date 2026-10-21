@@ -273,9 +273,10 @@ impl StreamDescriptor {
         }
     }
 
-    /// Returns `false` only for HTTP streams whose ranged GET yields a 4xx/5xx
-    /// status or a network/timeout error. Non-HTTP variants (local, torrent,
-    /// opendal) return `true` immediately.
+    /// Returns `false` for HTTP streams whose ranged GET gets no response,
+    /// returns 4xx/5xx, lands on an AIOStreams error clip, or starts with an
+    /// archive signature; body-read errors leave the stream alive. Non-HTTP
+    /// variants return `true`.
     pub async fn is_alive(&self) -> bool {
         let Self::Http {
             url,
@@ -289,19 +290,42 @@ impl StreamDescriptor {
         for (key, value) in request_headers {
             request = request.header(key.as_str(), value.as_str());
         }
-        request = request.header(http::header::RANGE, "bytes=0-0");
+        request = request.header(http::header::RANGE, "bytes=0-7");
 
-        match request
+        let Ok(mut response) = request
             .send()
             .await
+        else {
+            return false;
+        };
+        if response
+            .status()
+            .as_u16()
+            >= 400
+            || response
+                .url()
+                .path()
+                .rsplit_once("/static/")
+                .is_some_and(|(_, clip)| AIOSTREAMS_ERROR_CLIPS.contains(&clip))
         {
-            Ok(r) => {
-                r.status()
-                    .as_u16()
-                    < 400
-            }
-            Err(_) => false,
+            return false;
         }
+
+        // Read only until the magic-number prefix is available; servers that
+        // ignore Range must not trigger a full download.
+        let mut head = Vec::with_capacity(8);
+        while head.len() < 8 {
+            match response
+                .chunk()
+                .await
+            {
+                Ok(Some(chunk)) => head.extend_from_slice(&chunk),
+                _ => break,
+            }
+        }
+        !ARCHIVE_MAGIC
+            .iter()
+            .any(|magic| head.starts_with(magic))
     }
 
     /// Instantiate the runtime service for self-contained variants.
@@ -412,6 +436,12 @@ pub struct StreamInfo {
     pub probe_data: Option<crate::api::MediaSourceInfo>,
 }
 
+/// Sizes shown to three significant digits ("11.9 GB") are off by up to 1/200.
+const LISTED_SIZE_PRECISION_DIVISOR: u64 = 200;
+/// ±0.005 GiB: sizes shown in GiB to two decimals ("0.68 GB") are off by up to
+/// half a step, which exceeds 1/200 below 1 GiB.
+const LISTED_SIZE_ROUNDING_FLOOR: u64 = (1 << 30) / 200;
+
 impl StreamInfo {
     pub fn is_p2p(&self) -> bool {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
@@ -456,6 +486,35 @@ impl StreamInfo {
         }
     }
 
+    /// Whether a probed file of `probed_size` bytes can't be the listed one,
+    /// i.e. a resolver failover served another release. remux's own torrent
+    /// engine never fails over to another release.
+    pub fn is_other_file(&self, probed_size: Option<i64>) -> bool {
+        let (Some(listed), Some(probed)) = (
+            self.size
+                .filter(|&s| s > 0),
+            probed_size.filter(|&s| s > 0),
+        ) else {
+            return false;
+        };
+        let tolerance = (listed.max(probed) as u64 / LISTED_SIZE_PRECISION_DIVISOR)
+            .max(LISTED_SIZE_ROUNDING_FLOOR);
+        !self.is_p2p()
+            && listed.abs_diff(probed) > tolerance
+            && (probed > listed || !self.may_list_release())
+    }
+
+    /// NZBs and torrents without a file index may list the whole release,
+    /// which no file in it can exceed.
+    fn may_list_release(&self) -> bool {
+        self.usenet_guid
+            .is_some()
+            || self
+                .nzb_url
+                .is_some()
+            || matches!(self.torrent_identity(), Some((_, None)))
+    }
+
     pub fn resolution_tag(&self) -> Option<String> {
         let src = self
             .filename
@@ -484,6 +543,28 @@ static AVAILABILITY_CLIENT: std::sync::LazyLock<reqwest::Client> =
             .build()
             .expect("failed to build availability client")
     });
+
+/// Clips AIOStreams redirects to (`/static/<clip>`) when a debrid resolve
+/// fails; they are playable MP4s, so status alone reads them as alive. Mirrors
+/// `StaticFiles` in AIOStreams `utils/static-errors.ts`, minus `200.mp4`.
+const AIOSTREAMS_ERROR_CLIPS: &[&str] = &[
+    "download_failed.mp4",
+    "downloading.mp4",
+    "unavailable_for_legal_reasons.mp4",
+    "store_limit_exceeded.mp4",
+    "content_proxy_limit_reached.mp4",
+    "500.mp4",
+    "429.mp4",
+    "403.mp4",
+    "401.mp4",
+    "no_matching_file.mp4",
+    "payment_required.mp4",
+];
+
+/// Archive signatures (RAR, 7z, ZIP) occasionally served by debrid links in
+/// place of the video file; ffmpeg cannot play them.
+const ARCHIVE_MAGIC: &[&[u8]] =
+    &[b"Rar!\x1a\x07", b"7z\xbc\xaf\x27\x1c", b"PK\x03\x04"];
 
 static STREAM_PROXY_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
@@ -859,8 +940,8 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, TrackerUrl, is_tracker_url,
-        mime_from_path,
+        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, StreamInfo, TrackerUrl,
+        is_tracker_url, mime_from_path,
     };
     use std::path::Path;
 
@@ -943,6 +1024,43 @@ mod tests {
     #[test]
     fn stream_proxy_client_builds_without_panic() {
         let _ = &*STREAM_PROXY_CLIENT;
+    }
+
+    #[tokio::test]
+    async fn is_alive_rejects_error_clips_and_archives() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/playback/failed");
+            then.status(307)
+                .header("Location", "/static/download_failed.mp4");
+        });
+        for (path, body) in [
+            ("/static/download_failed.mp4", &b"\x00\x00\x00\x20ftyp"[..]),
+            ("/archive.mkv", b"Rar!\x1a\x07\x01\x00"),
+            ("/movie.mkv", b"\x1a\x45\xdf\xa3\x01\x00\x00\x00"),
+        ] {
+            server.mock(|when, then| {
+                when.method(httpmock::Method::GET)
+                    .path(path);
+                then.status(206)
+                    .body(body);
+            });
+        }
+
+        for (path, alive) in [
+            ("/playback/failed", false),
+            ("/archive.mkv", false),
+            ("/movie.mkv", true),
+        ] {
+            assert_eq!(
+                StreamDescriptor::http(server.url(path))
+                    .is_alive()
+                    .await,
+                alive,
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1057,5 +1175,60 @@ mod tests {
         resp.text()
             .await
             .expect("body should drain");
+    }
+
+    #[test]
+    fn is_other_file_only_when_listing_rounding_cannot_explain_the_size() {
+        let indexed = StreamInfo {
+            torrent_info_hash: Some("abc123".into()),
+            torrent_file_idx: Some(0),
+            ..Default::default()
+        };
+        let unindexed = StreamInfo {
+            torrent_info_hash: Some("abc123".into()),
+            ..Default::default()
+        };
+        let nzb = StreamInfo {
+            nzb_url: Some("https://indexer.example/api?t=get&id=1".into()),
+            ..Default::default()
+        };
+        let p2p = StreamInfo {
+            descriptor: StreamDescriptor::Torrent {
+                info_hash: "abc123".into(),
+                file_hint: None,
+                file_idx: None,
+                trackers: vec![],
+            },
+            ..Default::default()
+        };
+        let (listed, smaller, larger) = (12_811_223_977, 8_657_935_338, 19_000_000_000);
+        let cases = [
+            (&indexed, listed, smaller, true),
+            (&indexed, listed, larger, true),
+            // 0.33% off: within three-significant-digit rounding.
+            (&indexed, listed, listed - 42_000_000, false),
+            // 0.53% off, but within the 0.005 GiB rounding floor.
+            (&indexed, 730_144_440, 734_003_200, false),
+            (&indexed, 730_144_440, 740_000_000, true),
+            // May list the whole release: only a larger file contradicts it.
+            (&unindexed, listed, smaller, false),
+            (&unindexed, listed, larger, true),
+            (&nzb, listed, smaller, false),
+            (&nzb, listed, larger, true),
+            (&p2p, listed, larger, false),
+        ];
+        for (si, listed, probed, other) in cases {
+            let si = StreamInfo {
+                size: Some(listed),
+                ..si.clone()
+            };
+            assert_eq!(
+                si.is_other_file(Some(probed)),
+                other,
+                "{listed} vs {probed}"
+            );
+            assert!(!si.is_other_file(None));
+        }
+        assert!(!indexed.is_other_file(Some(smaller)));
     }
 }
