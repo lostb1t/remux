@@ -1247,17 +1247,17 @@ const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 /// How long a search waits for the remaining addons once a higher-priority
 /// addon has a non-empty answer.
 const SEARCH_GRACE: Duration = Duration::from_millis(150);
-/// How long an addon's non-empty search answer serves identical searches.
-const SEARCH_TTL: Duration = Duration::from_secs(600);
-/// How long a search addon's error, timeout or empty answer keeps identical
-/// searches from asking it again.
-const FAILED_SEARCH_TTL: Duration = Duration::from_secs(60);
+/// Cap on one addon's search. Separate from `addon_fetch_timeout_secs`, which
+/// operators raise for slow stream fetches.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long every search skips an addon whose search failed or timed out, so
+/// a broken high-priority addon doesn't stall each search by SEARCH_TIMEOUT.
+const SEARCH_BREAKER_TTL: Duration = Duration::from_secs(60);
 
-/// One addon's search lookup, kept in the store: identical searches share it
-/// while it runs and get its answer straight away once it's done.
-type SearchLookup = futures::future::Shared<
-    futures::future::BoxFuture<'static, Option<Arc<Vec<db::Media>>>>,
->;
+/// Store key marking an addon's search as skipped (see SEARCH_BREAKER_TTL).
+fn search_breaker_key(addon_id: &Uuid) -> String {
+    format!("addon_search_down:{addon_id}")
+}
 
 #[derive(Clone)]
 pub struct AddonService {
@@ -2866,121 +2866,61 @@ impl AddonService {
             .cloned()
             .collect();
 
-        // One slow addon must not hold up the merged answer.
-        let timeout = Duration::from_secs(
-            db::Settings::get_config_or_default(&ctx.db)
-                .await
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
         // Ask every eligible addon concurrently and merge, so an empty answer
         // (Stremio addons always answer) can't hide the others' results.
-        // Lookups are shared by identical searches and their outcome cached.
-        use futures::FutureExt;
-        use itertools::Itertools;
-        let normalized = query
-            .split_whitespace()
-            .join(" ")
-            .to_lowercase();
+        // Addons skipped by the breaker aren't waited on.
         let mut searches = Vec::with_capacity(addons.len());
         for r in &addons {
             if let Some(search) = &r.search
+                && ctx
+                    .store
+                    .get::<()>(search_breaker_key(
+                        &r.row
+                            .id,
+                    ))
+                    .is_none()
                 && search
                     .search_supports(kind)
                     .await
             {
-                searches.push((r, search.clone()));
+                searches.push((r, search));
             }
         }
-        let mut per_addon: Vec<Option<Vec<db::Media>>> = vec![None; searches.len()];
-        let mut waiting = vec![true; searches.len()];
-        let mut running = futures::stream::FuturesUnordered::new();
-        for (i, (r, search)) in searches
-            .into_iter()
+        let mut running: futures::stream::FuturesUnordered<_> = searches
+            .iter()
             .enumerate()
-        {
-            let key = format!(
-                "addon_search:{}:{kind}:{limit}:{normalized}",
-                r.row
-                    .id
-            );
-            let lookup = match ctx
-                .store
-                .get::<SearchLookup>(&key)
-            {
-                Some(lookup) => (*lookup).clone(),
-                None => {
-                    let (name, kind, query, task_ctx, task_key) = (
-                        r.row
-                            .name
-                            .clone(),
-                        kind.clone(),
-                        query.to_owned(),
-                        ctx.clone(),
-                        key.clone(),
-                    );
-                    let task = async move {
-                        let results = match tokio::time::timeout(
-                            timeout,
-                            search.search(&kind, &query, limit, &task_ctx),
-                        )
-                        .await
-                        {
-                            Ok(Ok(results)) => results.map(Arc::new),
-                            Ok(Err(e)) => {
-                                warn!(addon = %name, error = %e, "search addon error");
-                                None
-                            }
-                            Err(_) => {
-                                warn!(addon = %name, ?timeout, "search addon timed out");
-                                None
-                            }
-                        };
-                        // A Stremio addon's error arrives as an empty answer,
-                        // so only a non-empty answer is kept for long.
-                        let ttl = match &results {
-                            Some(results) if !results.is_empty() => SEARCH_TTL,
-                            _ => FAILED_SEARCH_TTL,
-                        };
-                        let done: SearchLookup =
-                            futures::future::ready(results.clone())
-                                .boxed()
-                                .shared();
-                        task_ctx
-                            .store
-                            .save(task_key, done, ttl);
-                        results
-                    };
-                    // Spawned on first poll, after the entry below is saved,
-                    // so that save can't overwrite the task's own. A task, so
-                    // a dropped request still caches the answer and an addon
-                    // panic doesn't reach the awaiters.
-                    let lookup = async move {
-                        tokio::spawn(task)
-                            .await
-                            .ok()
-                            .flatten()
+            .map(|(i, (r, search))| async move {
+                let answer = search.search(kind, query, limit, ctx);
+                match tokio::time::timeout(SEARCH_TIMEOUT, answer).await {
+                    Ok(Ok(results)) => return (i, results.unwrap_or_default()),
+                    Ok(Err(e)) => {
+                        warn!(addon = %r.row.name, error = %e, "search addon error")
                     }
-                    .boxed()
-                    .shared();
-                    // Outlives the task, which replaces it with its outcome.
-                    ctx.store
-                        .save(&key, lookup.clone(), timeout + FAILED_SEARCH_TTL);
-                    lookup
+                    Err(_) => warn!(addon = %r.row.name, "search addon timed out"),
                 }
-            };
-            running.push(async move { (i, lookup.await) });
-        }
-        // Every lookup ends within `timeout`; once the addons ahead of the
-        // first still-running one have a non-empty answer, the rest get
-        // SEARCH_GRACE.
-        let mut deadline = tokio::time::Instant::now() + timeout + SEARCH_GRACE;
+                // Only failures trip the breaker: an empty answer is valid.
+                ctx.store
+                    .save(
+                        search_breaker_key(
+                            &r.row
+                                .id,
+                        ),
+                        (),
+                        SEARCH_BREAKER_TTL,
+                    );
+                (i, vec![])
+            })
+            .collect();
+        // `None` while the addon is still running. Once the addons ahead of
+        // the first still-running one have a non-empty answer, the rest get
+        // SEARCH_GRACE; later answers are dropped with this request.
+        let mut per_addon: Vec<Option<Vec<db::Media>>> = vec![None; searches.len()];
+        let mut deadline = tokio::time::Instant::now() + SEARCH_TIMEOUT + SEARCH_GRACE;
         loop {
-            let settled = waiting
+            let settled = per_addon
                 .iter()
-                .position(|&w| w)
-                .unwrap_or(waiting.len());
+                .position(Option::is_none)
+                .unwrap_or(per_addon.len());
             if per_addon[..settled]
                 .iter()
                 .flatten()
@@ -2990,16 +2930,15 @@ impl AddonService {
             }
             let next = tokio::time::timeout_at(deadline, running.next()).await;
             let Ok(Some((i, results))) = next else { break };
-            waiting[i] = false;
-            per_addon[i] = results.map(|results| (*results).clone());
+            per_addon[i] = Some(results);
         }
-        // Round-robin in priority order so one addon's long list can't fill
-        // `limit` on its own; on a duplicate the first occurrence wins.
-        let mut results = crate::common::round_robin(
-            per_addon
-                .into_iter()
-                .flatten(),
-        );
+        // In priority order; on a duplicate the first (higher-priority) copy
+        // wins.
+        let mut results: Vec<db::Media> = per_addon
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
         // Adopt before deduping: two addons' copies of a stored item end up
         // with the same id even when they carry different external ids.
         db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
@@ -5103,11 +5042,12 @@ mod tests {
         );
     }
 
-    /// Answers with its hits after sleeping `delay` and, if gated, once the
-    /// test opens the gate.
+    /// Answers with its hits (or an error if `fail`) after sleeping `delay`
+    /// and, if gated, once the test opens the gate.
     #[derive(Default)]
     struct FixedSearch {
         hits: Vec<db::Media>,
+        fail: bool,
         delay: Duration,
         gate: Option<Arc<tokio::sync::Notify>>,
         calls: std::sync::atomic::AtomicUsize,
@@ -5132,6 +5072,9 @@ mod tests {
             if let Some(gate) = &self.gate {
                 gate.notified()
                     .await;
+            }
+            if self.fail {
+                return Err(anyhow!("search addon down"));
             }
             Ok(Some(
                 self.hits
@@ -5166,10 +5109,11 @@ mod tests {
     async fn search_titles(
         service: &AddonService,
         ctx: &AppContext,
+        query: &str,
         limit: usize,
     ) -> Vec<String> {
         service
-            .search(&db::MediaKind::Movie, "query", limit, ctx, None)
+            .search(&db::MediaKind::Movie, query, limit, ctx, None)
             .await
             .unwrap()
             .into_iter()
@@ -5184,16 +5128,15 @@ mod tests {
         let (_, guard) = crate::integration_test::new_test_server()
             .await
             .unwrap();
-        search_titles(&service, &guard.0, limit).await
+        search_titles(&service, &guard.0, "query", limit).await
     }
 
-    /// Results from every search addon are interleaved in priority order, so
-    /// neither an empty answer nor a long one hides the others within
-    /// `limit`; the same item from two addons (shared imdb id) appears once,
-    /// as its first occurrence. A fast empty answer doesn't cut off a slower
-    /// addon with results.
+    /// Results from every search addon are appended in priority order; the
+    /// same item from two addons (shared imdb id) appears once, as the
+    /// higher-priority copy. A fast empty answer starts no grace period, so
+    /// it doesn't cut off a slower addon with results.
     #[tokio::test]
-    async fn search_interleaves_addons_and_dedupes_by_external_id() {
+    async fn search_appends_addons_in_priority_order_and_dedupes() {
         let titles = search_with(
             vec![
                 search_runtime(vec![]),
@@ -5211,45 +5154,80 @@ mod tests {
                     search_hit("Low 2", "tt9900003"),
                 ]),
             ],
-            3,
+            20,
         )
         .await;
-        assert_eq!(titles, ["Shared (high)", "High 2", "Low 2"]);
+        assert_eq!(titles, ["Shared (high)", "High 2", "High 3", "Low 2"]);
     }
 
-    /// A lower-priority addon slower than `SEARCH_GRACE` doesn't hold up the
-    /// answer, an identical search while it runs doesn't ask it again, and
-    /// its late answer is merged into the next identical search.
+    /// Once a higher-priority addon has results, a lower-priority addon that
+    /// hasn't answered within `SEARCH_GRACE` is left out, rather than waited
+    /// on until `SEARCH_TIMEOUT`, and isn't counted as failed.
     #[tokio::test]
-    async fn slow_search_addon_is_asked_once_and_served_from_cache() {
-        let gate = Arc::new(tokio::sync::Notify::new());
-        let slow = Arc::new(FixedSearch {
-            hits: vec![search_hit("Slow", "tt9900002")],
-            gate: Some(gate.clone()),
+    async fn search_stops_waiting_after_grace_once_higher_priority_has_results() {
+        let never = fixed_search_runtime(Arc::new(FixedSearch {
+            hits: vec![search_hit("Never", "tt9900002")],
+            gate: Some(Arc::new(tokio::sync::Notify::new())),
             ..Default::default()
-        });
+        }));
+        let never_id = never
+            .row
+            .id;
         let service = AddonService {
             inner: Arc::new(ArcSwap::from_pointee(vec![
                 search_runtime(vec![search_hit("Fast", "tt9900001")]),
-                fixed_search_runtime(slow.clone()),
+                never,
             ])),
         };
         let (_, guard) = crate::integration_test::new_test_server()
             .await
             .unwrap();
-        assert_eq!(search_titles(&service, &guard.0, 20).await, ["Fast"]);
-        assert_eq!(search_titles(&service, &guard.0, 20).await, ["Fast"]);
-        gate.notify_one();
+        let started = tokio::time::Instant::now();
         assert_eq!(
-            search_titles(&service, &guard.0, 20).await,
-            ["Fast", "Slow"]
+            search_titles(&service, &guard.0, "query", 20).await,
+            ["Fast"]
         );
-        assert_eq!(
-            slow.calls
-                .load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "an identical search asked the slow addon again"
+        assert!(started.elapsed() < SEARCH_TIMEOUT);
+        assert!(
+            guard
+                .0
+                .store
+                .get::<()>(search_breaker_key(&never_id))
+                .is_none()
         );
+    }
+
+    /// An addon whose search failed is skipped for any query until the
+    /// breaker expires; an addon that answered empty is still asked.
+    #[tokio::test]
+    async fn failed_search_addon_is_skipped_for_other_queries() {
+        let failing = Arc::new(FixedSearch {
+            fail: true,
+            ..Default::default()
+        });
+        let empty = Arc::new(FixedSearch::default());
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![
+                fixed_search_runtime(failing.clone()),
+                fixed_search_runtime(empty.clone()),
+                search_runtime(vec![search_hit("Found", "tt9900001")]),
+            ])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        for query in ["first", "second"] {
+            assert_eq!(
+                search_titles(&service, &guard.0, query, 20).await,
+                ["Found"]
+            );
+        }
+        let calls = |s: &FixedSearch| {
+            s.calls
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(calls(&failing), 1, "a failed addon was asked again");
+        assert_eq!(calls(&empty), 2, "an empty answer tripped the breaker");
     }
 
     /// A TMDB result (tmdb id only) and a Stremio result for the same title

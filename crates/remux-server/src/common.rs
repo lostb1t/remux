@@ -316,30 +316,6 @@ pub fn get_uuid() -> Uuid {
     uuid::Uuid::new_v4()
 }
 
-/// Takes one item from each list in turn, so no list fills a limit on its own.
-pub fn round_robin<T>(lists: impl IntoIterator<Item = Vec<T>>) -> Vec<T> {
-    let mut lists: Vec<_> = lists
-        .into_iter()
-        .map(Vec::into_iter)
-        .collect();
-    let mut out = Vec::with_capacity(
-        lists
-            .iter()
-            .map(ExactSizeIterator::len)
-            .sum(),
-    );
-    while !lists.is_empty() {
-        lists.retain_mut(|list| match list.next() {
-            Some(item) => {
-                out.push(item);
-                true
-            }
-            None => false,
-        });
-    }
-    out
-}
-
 /// Computes the stable UUID for a media item from its kind and canonical external ID.
 pub fn stable_media_uuid(kind: &crate::db::MediaKind, canonical: &str) -> Uuid {
     get_stable_uuid(format!("{}:{}", kind, canonical))
@@ -588,15 +564,5 @@ mod progress_tests {
             "expected ~33.3%, got {}",
             read(&atomic)
         );
-    }
-}
-
-#[cfg(test)]
-mod round_robin_tests {
-    use super::*;
-
-    #[test]
-    fn round_robin_takes_one_per_list_until_all_are_empty() {
-        assert_eq!(round_robin([vec![1, 2, 3], vec![], vec![4]]), [1, 4, 2, 3]);
     }
 }
