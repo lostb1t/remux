@@ -85,6 +85,12 @@ pub enum ProgramKind {
     Sports,
 }
 
+/// Titles released within this many days (or not released yet) are synced
+/// from RemuxDB every day. Two years.
+pub const POPULARITY_RECENT_RELEASE_DAYS: i64 = 2 * 365;
+/// Every other title is re-synced once its metrics are this many days old.
+pub const POPULARITY_MAX_AGE_DAYS: i64 = 7;
+
 #[derive(
     Default,
     strum_macros::EnumString,
@@ -6206,6 +6212,61 @@ impl Media {
         Ok((rows, total))
     }
 
+    /// Picks which titles `RefreshPopularityTask` fetches on this run.
+    ///
+    /// Fetching every title daily took ~40 minutes on a library of ~85k, but
+    /// ratings and popularity of old, dormant titles barely move day to day.
+    /// So the sync is tiered:
+    ///
+    /// * daily: released within [`POPULARITY_RECENT_RELEASE_DAYS`] (this also
+    ///   covers upcoming titles), series that have not ended, titles with an
+    ///   unreleased status, and titles we have no `media_metrics` row for yet.
+    /// * weekly: everything else, once its metrics are older than
+    ///   [`POPULARITY_MAX_AGE_DAYS`]. Oldest first, and capped per run at a
+    ///   seventh of the dormant titles so a first rollout (where every row has
+    ///   about the same age) spreads over a week instead of landing on one day.
+    ///
+    /// `media_metrics.synced_at` is our own clock (RemuxDB's `updated_at` is
+    /// the backend's). Titles RemuxDB does not know get a timestamp-only row
+    /// (see the sync task), otherwise they would count as never synced forever.
+    pub async fn popularity_sync_ids(
+        db: &SqlitePool,
+        now: NaiveDateTime,
+    ) -> Result<Vec<Uuid>> {
+        const TIMESTAMP: &str = "%Y-%m-%d %H:%M:%S";
+        let recent_since = now - Duration::days(POPULARITY_RECENT_RELEASE_DAYS);
+        let stale_before = now - Duration::days(POPULARITY_MAX_AGE_DAYS);
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "WITH candidates AS ( \
+                 SELECT m.id AS id, mm.synced_at AS synced_at, \
+                        COALESCE( \
+                            mm.media_id IS NULL \
+                            OR m.released_at >= ?1 \
+                            OR m.status = 'unreleased' \
+                            OR (m.kind = 'series' AND (m.status IS NULL OR m.status != 'ended')), \
+                            0) AS daily \
+                 FROM media m LEFT JOIN media_metrics mm ON mm.media_id = m.id \
+                 WHERE m.kind IN (?3, ?4) \
+                   AND json_extract(m.external_ids, '$.imdb') IS NOT NULL \
+             ) \
+             SELECT id FROM candidates WHERE daily \
+             UNION ALL \
+             SELECT id FROM ( \
+                 SELECT id FROM candidates \
+                 WHERE NOT daily AND synced_at < ?2 \
+                 ORDER BY synced_at ASC, id \
+                 LIMIT (SELECT (COUNT(*) + 6) / 7 FROM candidates WHERE NOT daily) \
+             )",
+        )
+        .bind(recent_since)
+        .bind(stale_before.format(TIMESTAMP).to_string())
+        .bind(MediaKind::Movie)
+        .bind(MediaKind::Series)
+        .fetch_all(db)
+        .await?;
+        Ok(ids)
+    }
+
     /// Minimal per-item projection for `RefreshPopularityTask`, which only
     /// reads each item's IMDB id and writes back rating/popularity fields.
     /// The general-purpose `get_by_filter` this used to run through
@@ -6219,10 +6280,10 @@ impl Media {
     /// `external_ratings` must be carried because it's replaced whole-column
     /// (also not merged in SQL) — the caller's own merge logic depends on
     /// starting from the real stored value, not an empty default.
+    /// `ids` come from [`Self::popularity_sync_ids`].
     pub async fn list_for_popularity_sync(
         db: &SqlitePool,
-        limit: u32,
-        offset: u32,
+        ids: &[Uuid],
     ) -> Result<Vec<Self>> {
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -6235,17 +6296,21 @@ impl Media {
             external_ratings: Option<ExternalRatings>,
         }
 
-        let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, title, kind, external_ids, external_ratings FROM media \
-             WHERE kind IN (?, ?) AND json_extract(external_ids, '$.imdb') IS NOT NULL \
-             ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(MediaKind::Movie)
-        .bind(MediaKind::Series)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db)
-        .await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT id, title, kind, external_ids, external_ratings FROM media WHERE id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for id in ids {
+            sep.push_bind(id);
+        }
+        qb.push(") ORDER BY id");
+        let rows: Vec<Row> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -10970,7 +11035,7 @@ mod tests {
             .await
             .unwrap();
 
-        let page = Media::list_for_popularity_sync(db, 10, 0)
+        let page = Media::list_for_popularity_sync(db, &[id])
             .await
             .unwrap();
         let mut fetched = page

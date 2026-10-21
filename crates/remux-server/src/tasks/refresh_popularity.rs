@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::{StreamExt as _, stream};
 use remux_sdks::remuxdb::{MediaMetrics, MetricsLookup};
 use std::{future::Future, sync::Arc, time::Duration};
@@ -34,14 +35,15 @@ const BACKOFF_WAIT_BUDGET: Duration = Duration::from_secs(10 * 60);
 /// quarter of the original concurrency every round. Retries only happen while
 /// more than [`BACKOFF_FAILURE_SHARE`] of `items` is still unavailable and the
 /// next pause fits in `wait_budget`, which is shared across calls. Returns
-/// what was found plus how many items were still unavailable at the end.
+/// what was found, the items RemuxDB has no entry for, and how many items
+/// were still unavailable at the end.
 async fn lookup_with_backoff<T, F, Fut>(
     items: Vec<T>,
     concurrency: usize,
     delays: &[Duration],
     wait_budget: &mut Duration,
     lookup: F,
-) -> (Vec<(T, MediaMetrics)>, usize)
+) -> (Vec<(T, MediaMetrics)>, Vec<T>, usize)
 where
     F: Fn(&T) -> Fut,
     Fut: Future<Output = MetricsLookup>,
@@ -53,6 +55,7 @@ where
         .max(1);
     let mut round_concurrency = first_round;
     let mut found = Vec::new();
+    let mut missing = Vec::new();
     let mut pending = items;
     let mut delays = delays.iter();
     loop {
@@ -71,7 +74,7 @@ where
         for (item, result) in results {
             match result {
                 MetricsLookup::Found(metrics) => found.push((item, metrics)),
-                MetricsLookup::Missing => {}
+                MetricsLookup::Missing => missing.push(item),
                 MetricsLookup::Unavailable => pending.push(item),
             }
         }
@@ -80,7 +83,7 @@ where
             .next()
             .filter(|delay| widespread && **delay <= *wait_budget);
         let Some(delay) = delay else {
-            return (found, pending.len());
+            return (found, missing, pending.len());
         };
         warn!(
             unavailable = pending.len(),
@@ -129,33 +132,25 @@ impl Task for RefreshPopularityTask {
         else {
             return Ok(());
         };
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM media WHERE kind IN ('movie', 'series') \
-             AND json_extract(external_ids, '$.imdb') IS NOT NULL",
-        )
-        .fetch_one(&ctx.db)
-        .await?;
+        let ids =
+            db::Media::popularity_sync_ids(&ctx.db, Utc::now().naive_utc()).await?;
+        let total = ids.len();
+        info!(titles = total, "RemuxDB metrics sync starting");
         let concurrency = db::Settings::get_config_or_default(&ctx.db)
             .await
             .meta_concurrency
             .max(1) as usize;
         let client_id = crate::common::server_id().to_string();
 
-        const PAGE_SIZE: u32 = 250;
-        let mut offset = 0;
-        let mut completed = 0_i64;
+        const PAGE_SIZE: usize = 250;
+        let mut completed = 0_usize;
         let mut wait_budget = BACKOFF_WAIT_BUDGET;
-        loop {
-            let page =
-                db::Media::list_for_popularity_sync(&ctx.db, PAGE_SIZE, offset).await?;
-            if page.is_empty() {
-                break;
-            }
-            offset += page.len() as u32;
-            completed += page.len() as i64;
+        for chunk in ids.chunks(PAGE_SIZE) {
+            let page = db::Media::list_for_popularity_sync(&ctx.db, chunk).await?;
+            completed += chunk.len();
 
             let page_len = page.len();
-            let (synced, gave_up) = lookup_with_backoff(
+            let (synced, missing, gave_up) = lookup_with_backoff(
                 page,
                 concurrency,
                 &RETRY_DELAYS,
@@ -191,17 +186,45 @@ impl Task for RefreshPopularityTask {
             // stop instead of waiting out the same delays for every page.
             let outage = is_outage(gave_up, page_len);
             persist_metrics(&ctx.db, synced).await?;
+            mark_synced(
+                &ctx.db,
+                &missing
+                    .iter()
+                    .map(|media| media.id)
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
             if outage {
                 anyhow::bail!("RemuxDB is unavailable; metrics sync stopped early");
             }
-            if total > 0 {
-                progress.set((completed as f64 / total as f64 * 100.0).min(99.0));
-            }
+            progress.set((completed as f64 / total as f64 * 100.0).min(99.0));
         }
         info!("RemuxDB metrics sync complete");
         progress.set(100.0);
         Ok(())
     }
+}
+
+/// Records that we asked RemuxDB about these titles and it had nothing, so the
+/// tiered selection does not treat them as never synced and ask again every
+/// day. Existing metric values are left alone.
+async fn mark_synced(pool: &sqlx::SqlitePool, ids: &[uuid::Uuid]) -> Result<()> {
+    for chunk in ids.chunks(100) {
+        let mut query =
+            sqlx::QueryBuilder::new("INSERT INTO media_metrics (media_id, synced_at) ");
+        query.push_values(chunk, |mut b, id| {
+            b.push_bind(*id)
+                .push("CURRENT_TIMESTAMP");
+        });
+        query.push(
+            " ON CONFLICT(media_id) DO UPDATE SET synced_at = excluded.synced_at",
+        );
+        query
+            .build()
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn persist_metrics(
@@ -370,7 +393,7 @@ mod tests {
         let (calls, lookup) = flaky(2);
         let delays = [Duration::ZERO; 3];
 
-        let (found, gave_up) = lookup_with_backoff(
+        let (found, _missing, gave_up) = lookup_with_backoff(
             (0..20).collect::<Vec<u32>>(),
             4,
             &delays,
@@ -395,7 +418,7 @@ mod tests {
         let (calls, lookup) = flaky(usize::MAX);
         let delays = [Duration::ZERO; 2];
 
-        let (found, gave_up) = lookup_with_backoff(
+        let (found, _missing, gave_up) = lookup_with_backoff(
             vec![1_u32, 2, 3],
             2,
             &delays,
@@ -420,7 +443,7 @@ mod tests {
     async fn missing_titles_are_not_retried() {
         let calls = std::sync::atomic::AtomicUsize::new(0);
 
-        let (found, gave_up) = lookup_with_backoff(
+        let (found, _missing, gave_up) = lookup_with_backoff(
             vec![1_u32],
             1,
             &[Duration::ZERO; 3],
@@ -463,7 +486,7 @@ mod tests {
         let (calls, lookup) = some_always_down(0..10);
         let mut budget = Duration::from_secs(60);
 
-        let (found, gave_up) = lookup_with_backoff(
+        let (found, _missing, gave_up) = lookup_with_backoff(
             (0..100).collect::<Vec<u32>>(),
             4,
             &[Duration::from_secs(5); 3],
@@ -483,7 +506,7 @@ mod tests {
     async fn widespread_failures_are_retried() {
         let (calls, lookup) = some_always_down(0..11);
 
-        let (_, gave_up) = lookup_with_backoff(
+        let (_, _, gave_up) = lookup_with_backoff(
             (0..100).collect::<Vec<u32>>(),
             4,
             &[Duration::ZERO; 2],
@@ -506,14 +529,14 @@ mod tests {
         let (calls, lookup) = some_always_down(0..u32::MAX);
 
         // two sleeps fit in the budget, the third would not
-        let (_, gave_up) =
+        let (_, _, gave_up) =
             lookup_with_backoff(vec![1_u32, 2], 2, &delays, &mut budget, &lookup).await;
         assert_eq!(gave_up, 2);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2 * 3);
         assert_eq!(budget, Duration::from_millis(5));
 
         // the next page gets one pass and no waiting at all
-        let (_, gave_up) =
+        let (_, _, gave_up) =
             lookup_with_backoff(vec![3_u32, 4], 2, &delays, &mut budget, &lookup).await;
         assert_eq!(gave_up, 2);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2 * 3 + 2);
@@ -528,7 +551,7 @@ mod tests {
         let peaks = std::sync::Mutex::new(vec![0_usize; 4]);
         let started = AtomicUsize::new(0);
 
-        let (_, gave_up) = lookup_with_backoff(
+        let (_, _, gave_up) = lookup_with_backoff(
             (0..40).collect::<Vec<u32>>(),
             16,
             &[Duration::ZERO; 3],
@@ -575,7 +598,7 @@ mod tests {
         let (_, lookup) = some_always_down(0..60);
         let page_len = 100;
 
-        let (_, gave_up) = lookup_with_backoff(
+        let (_, _, gave_up) = lookup_with_backoff(
             (0..page_len as u32).collect::<Vec<u32>>(),
             4,
             &[Duration::ZERO; 2],
@@ -704,7 +727,7 @@ mod tests {
             .await
             .unwrap();
 
-        let page = db::Media::list_for_popularity_sync(&ctx.db, 10, 0)
+        let page = db::Media::list_for_popularity_sync(&ctx.db, &[media_id])
             .await
             .unwrap();
         let synced = page
@@ -726,5 +749,179 @@ mod tests {
             Some("PG-13")
         );
         assert_eq!(stored.certification_age, Some(13));
+    }
+
+    fn now() -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 20)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
+
+    /// Saves a title and, when `synced_days_ago` is set, a metrics row stamped
+    /// that many days before [`now`].
+    async fn seed(
+        ctx: &AppContext,
+        imdb: &str,
+        kind: db::MediaKind,
+        released_days_ago: Option<i64>,
+        status: Option<db::MediaStatus>,
+        synced_days_ago: Option<i64>,
+    ) -> uuid::Uuid {
+        let mut media = db::Media {
+            title: imdb.to_string(),
+            kind,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                ..Default::default()
+            },
+            released_at: released_days_ago
+                .map(|days| now() - chrono::Duration::days(days)),
+            status,
+            ..Default::default()
+        };
+        let id = media.id;
+        media
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        if let Some(days) = synced_days_ago {
+            sqlx::query(
+                "INSERT INTO media_metrics (media_id, synced_at) VALUES (?, ?)",
+            )
+            .bind(id)
+            .bind(
+                (now() - chrono::Duration::days(days))
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            )
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        }
+        id
+    }
+
+    const OLD: Option<i64> = Some(20 * 365);
+
+    #[tokio::test]
+    async fn daily_tier_covers_recent_upcoming_running_and_never_synced() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let movie = db::MediaKind::Movie;
+        let series = db::MediaKind::Series;
+        let recent =
+            seed(ctx, "tt1000001", movie.clone(), Some(100), None, Some(1)).await;
+        let upcoming =
+            seed(ctx, "tt1000002", movie.clone(), Some(-30), None, Some(1)).await;
+        let running = seed(
+            ctx,
+            "tt1000003",
+            series.clone(),
+            OLD,
+            Some(db::MediaStatus::Continuing),
+            Some(1),
+        )
+        .await;
+        let never = seed(ctx, "tt1000004", movie.clone(), OLD, None, None).await;
+        let ended = seed(
+            ctx,
+            "tt1000005",
+            series,
+            OLD,
+            Some(db::MediaStatus::Ended),
+            Some(2),
+        )
+        .await;
+        let old_fresh = seed(ctx, "tt1000006", movie, OLD, None, Some(2)).await;
+
+        let ids = db::Media::popularity_sync_ids(&ctx.db, now())
+            .await
+            .unwrap();
+
+        for id in [recent, upcoming, running, never] {
+            assert!(ids.contains(&id));
+        }
+        assert!(!ids.contains(&ended), "ended series synced 2 days ago");
+        assert!(!ids.contains(&old_fresh), "old title synced 2 days ago");
+    }
+
+    #[tokio::test]
+    async fn old_titles_come_back_once_their_metrics_are_a_week_old() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let movie = db::MediaKind::Movie;
+        let six = seed(ctx, "tt2000001", movie.clone(), OLD, None, Some(6)).await;
+        let eight = seed(ctx, "tt2000002", movie, OLD, None, Some(8)).await;
+
+        let ids = db::Media::popularity_sync_ids(&ctx.db, now())
+            .await
+            .unwrap();
+
+        assert_eq!(ids, vec![eight]);
+        assert!(!ids.contains(&six));
+    }
+
+    /// A first rollout leaves every row with a similar age; the weekly tier
+    /// takes a seventh of them per run, oldest first.
+    #[tokio::test]
+    async fn weekly_tier_is_capped_and_takes_the_oldest_first() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let mut by_age = Vec::new();
+        for n in 0..15 {
+            let id = seed(
+                ctx,
+                &format!("tt30000{n:02}"),
+                db::MediaKind::Movie,
+                OLD,
+                None,
+                Some(8 + n),
+            )
+            .await;
+            by_age.push(id);
+        }
+
+        let ids = db::Media::popularity_sync_ids(&ctx.db, now())
+            .await
+            .unwrap();
+
+        // ceil(15 / 7) = 3, the three that have waited longest
+        assert_eq!(ids.len(), 3);
+        for id in &by_age[12..] {
+            assert!(ids.contains(id));
+        }
+    }
+
+    #[tokio::test]
+    async fn titles_remuxdb_does_not_know_are_not_asked_again_daily() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let id = seed(ctx, "tt4000001", db::MediaKind::Movie, OLD, None, None).await;
+        assert!(
+            db::Media::popularity_sync_ids(&ctx.db, now())
+                .await
+                .unwrap()
+                .contains(&id)
+        );
+
+        mark_synced(&ctx.db, &[id])
+            .await
+            .unwrap();
+
+        assert!(
+            db::Media::popularity_sync_ids(&ctx.db, chrono::Utc::now().naive_utc())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
