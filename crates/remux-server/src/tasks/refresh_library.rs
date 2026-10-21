@@ -308,7 +308,7 @@ impl Task for RefreshLibraryTask {
         "Imports catalogs, scans addon sources, and updates the media library index."
     }
     fn short_description(&self) -> &str {
-        "Syncs all addon catalogs into your library"
+        "Full update: file indexes, catalogs and outdated metadata"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Library
@@ -390,7 +390,7 @@ impl Task for RefreshCatalogsTask {
         "Imports all enabled addon catalogs without scanning file indexes or running the general metadata refresh."
     }
     fn short_description(&self) -> &str {
-        "Imports addon catalogs only"
+        "Imports new titles from addon catalogs"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Library
@@ -431,10 +431,10 @@ impl Task for RefreshIndexesTask {
         "Refresh File Indexes"
     }
     fn description(&self) -> &str {
-        "Rescans file-based addon sources (WebDAV, local folders) and imports their new files, without touching other catalogs or running the general metadata refresh."
+        "Rescans the file indexes of WebDAV and local folder addons: imports new files and removes entries of files that are gone, without touching other catalogs or running the general metadata refresh."
     }
     fn short_description(&self) -> &str {
-        "Rescans file sources only"
+        "Updates the file index of WebDAV and local folder addons"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Library
