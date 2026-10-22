@@ -2154,8 +2154,9 @@ pub enum MediaError {
 // value — comparing that against a TEXT-bound '123' never matches (SQLite
 // doesn't coerce across storage classes in a bare `=`), so integer-valued
 // fields must bind as an integer, not a stringified one. Used by
-// `Media::find_by_external_ids` and `Media::resolve_ambiguous_external_id`.
-#[derive(Clone, PartialEq)]
+// `Media::find_by_external_ids` and `Media::resolve_ambiguous_external_id`;
+// `Media::dedupe_by_identity` hashes it as a group key.
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum IdValue {
     Text(String),
     Int(i64),
@@ -3183,17 +3184,51 @@ impl Media {
         id_fields
     }
 
-    /// Whether `self` and `other` are the same kind and share any of the
-    /// external ids `adopt_existing_rows` matches stored rows on — i.e. they
-    /// would resolve to the same stored item.
-    pub fn shares_external_id(&self, other: &Media) -> bool {
-        if self.kind != other.kind {
-            return false;
+    /// Keeps the first item of every group of items that are the same media —
+    /// same id, or same kind and any external id `adopt_existing_rows`
+    /// matches stored rows on. Transitive: `{tmdb}`, `{tmdb, imdb}`, `{imdb}`
+    /// is one group although the first and last share nothing, because they
+    /// would all resolve to one stored item. Kept items stay in input order.
+    pub fn dedupe_by_identity(items: Vec<Media>) -> Vec<Media> {
+        // Union-find over indices. A union always hangs the higher root under
+        // the lower one, so every group's root is its first item.
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
         }
-        let ours = Self::external_id_fields(&self.kind, &self.external_ids);
-        Self::external_id_fields(&other.kind, &other.external_ids)
+        fn union(parent: &mut [usize], a: usize, b: usize) {
+            let (a, b) = (root(parent, a), root(parent, b));
+            parent[a.max(b)] = a.min(b);
+        }
+        let mut parent: Vec<usize> = (0..items.len()).collect();
+        let mut by_id: HashMap<Uuid, usize> = HashMap::with_capacity(items.len());
+        let mut by_ext: HashMap<
+            (std::mem::Discriminant<MediaKind>, &'static str, IdValue),
+            usize,
+        > = HashMap::with_capacity(items.len());
+        for (i, m) in items
             .iter()
-            .any(|field| ours.contains(field))
+            .enumerate()
+        {
+            if let Some(j) = by_id.insert(m.id, i) {
+                union(&mut parent, i, j);
+            }
+            let kind = std::mem::discriminant(&m.kind);
+            for (path, value) in Self::external_id_fields(&m.kind, &m.external_ids) {
+                if let Some(j) = by_ext.insert((kind, path, value), i) {
+                    union(&mut parent, i, j);
+                }
+            }
+        }
+        items
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| root(&mut parent, *i) == *i)
+            .map(|(_, m)| m)
+            .collect()
     }
 
     pub async fn find_by_external_ids(
