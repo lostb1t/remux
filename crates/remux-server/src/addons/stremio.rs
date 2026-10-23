@@ -725,15 +725,6 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
             .as_deref()
             .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok());
     }
-    if ids
-        .tmdb
-        .is_none()
-    {
-        ids.tmdb = meta
-            .moviedb_id
-            .map(|n| n as i64);
-    }
-
     // AIO resolve: the addon may map its own ID to an IMDB ID.
     if ids
         .imdb
