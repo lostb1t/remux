@@ -85,7 +85,7 @@ impl StremioService {
         &self,
         media_type: sdks::stremio::MediaType,
         id: impl Into<String>,
-    ) -> Result<sdks::stremio::Meta> {
+    ) -> Result<Option<sdks::stremio::Meta>> {
         Ok(self
             .client
             .execute(
@@ -104,7 +104,8 @@ impl StremioService {
                 .should_cache(|response: &sdks::stremio::MetaResponse| {
                     (!response
                         .meta
-                        .is_error())
+                        .as_ref()
+                        .is_some_and(|m| m.is_error()))
                     .then_some(Duration::from_secs(3600))
                 }),
             )
