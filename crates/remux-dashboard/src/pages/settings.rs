@@ -1020,6 +1020,7 @@ pub fn StreamSortingSettingsCard(app_state: AppState) -> Element {
                             option { value: "Best", selected: *sort_mode.read() == SortMediaSourcesMode::Best, "Best" }
                             option { value: "Compatibility", selected: *sort_mode.read() == SortMediaSourcesMode::Compatibility, "Compatibility" }
                             option { value: "Quality", selected: *sort_mode.read() == SortMediaSourcesMode::Quality, "Quality" }
+                            option { value: "TranscodeCost", selected: *sort_mode.read() == SortMediaSourcesMode::TranscodeCost, "Transcode cost (keep addon order)" }
                         }
                     }
                     ToggleRow {

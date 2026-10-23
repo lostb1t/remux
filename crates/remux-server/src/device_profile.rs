@@ -954,6 +954,11 @@ impl ProfileConditionExt for ProfileCondition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaSourceRank {
     resolution_fit_tier: u8,
+    /// Set only for `TranscodeCost` ranking: the source has no real probe
+    /// (filename guess or nothing), and filling its unknown fields with a
+    /// codec/container the device does not list would make it transcode. Its
+    /// cheap-looking cost tier is then a guess, not a fact.
+    decision_unverified: bool,
     cached: bool,
     bitrate_plausibility_tier: u8,
     transcode_cost_tier: u8,
@@ -1050,6 +1055,20 @@ impl SourceRankingContext<'_> {
         let mut rank = source.capability_rank(self.device_profile, &reasons);
         rank.resolution_fit_tier =
             resolution_fit_tier(source, self.device_profile, self.is_4k_capable);
+        if self.mode == SortMediaSourcesMode::TranscodeCost
+            && transcode_cost_tier(&reasons) >= 3
+            && let Some(pessimistic) = with_unknowns_unsupported(source)
+        {
+            let pessimistic_reasons = compute_transcode_reasons(
+                &pessimistic,
+                self.device_profile,
+                self.subtitle_mode,
+                self.explicit_subtitle_index,
+                self.max_bitrate,
+            );
+            rank.decision_unverified = transcode_cost_tier(&pessimistic_reasons)
+                < transcode_cost_tier(&reasons);
+        }
         SourceAssessment { reasons, rank }
     }
 
@@ -1061,6 +1080,95 @@ impl SourceRankingContext<'_> {
         self.assess(source, allow_subtitle_extraction)
             .sort_key(self.mode)
     }
+}
+
+/// For a source without a real probe (a filename guess, or no streams at
+/// all), a copy whose unknown facts take a worst case: container, video and
+/// audio codec a value no device lists, bitrate a UHD Blu-ray peak, size 8K.
+/// `None` for probed sources: their facts are known.
+/// Ranking compares the device's verdict on this copy with its verdict on the
+/// source itself: if they differ, the cheap verdict rests on missing facts.
+fn with_unknowns_unsupported(source: &MediaSourceInfo) -> Option<MediaSourceInfo> {
+    const UNKNOWN: &str = "unknown";
+    // Above any UHD Blu-ray (128 Mbps max), below the 1 Gbps "unlimited" caps some clients send.
+    const WORST_BITRATE: i64 = 150_000_000;
+    if !(source.is_filename_guess()
+        || source
+            .media_streams
+            .is_empty())
+    {
+        return None;
+    }
+    let mut copy = source.clone();
+    if copy
+        .container
+        .is_none()
+    {
+        copy.container = Some(VideoContainer::Other(UNKNOWN.to_string()));
+    }
+    let next_index = copy
+        .media_streams
+        .iter()
+        .map(|s| s.index)
+        .max()
+        .map_or(0, |i| i + 1);
+    match copy
+        .media_streams
+        .iter_mut()
+        .find(|s| matches!(s.type_, Some(MediaStreamType::Video)))
+    {
+        Some(video) => {
+            video
+                .codec
+                .get_or_insert_with(|| UNKNOWN.to_string());
+            video
+                .width
+                .get_or_insert(7680);
+            video
+                .height
+                .get_or_insert(4320);
+        }
+        None => copy
+            .media_streams
+            .push(MediaStream {
+                type_: Some(MediaStreamType::Video),
+                index: next_index,
+                codec: Some(UNKNOWN.to_string()),
+                width: Some(7680),
+                height: Some(4320),
+                ..Default::default()
+            }),
+    }
+    copy.bitrate
+        .get_or_insert(WORST_BITRATE);
+    let audio_index = selected_audio_stream(&copy).map(|s| s.index);
+    match audio_index {
+        Some(index) => {
+            if let Some(audio) = copy
+                .media_streams
+                .iter_mut()
+                .find(|s| {
+                    s.index == index && matches!(s.type_, Some(MediaStreamType::Audio))
+                })
+            {
+                audio
+                    .codec
+                    .get_or_insert_with(|| UNKNOWN.to_string());
+            }
+        }
+        None => {
+            let index = next_index + 1;
+            copy.media_streams
+                .push(MediaStream {
+                    type_: Some(MediaStreamType::Audio),
+                    index,
+                    codec: Some(UNKNOWN.to_string()),
+                    ..Default::default()
+                });
+            copy.default_audio_stream_index = Some(index);
+        }
+    }
+    Some(copy)
 }
 
 impl MediaSourceRank {
@@ -1108,6 +1216,35 @@ impl MediaSourceRank {
     /// re-deriving it here from every embedded subtitle stream would ignore
     /// which one is actually selected and double-count the same fact.
     pub fn sort_key(&self, mode: SortMediaSourcesMode) -> MediaSourceSortKey {
+        if mode == SortMediaSourcesMode::TranscodeCost {
+            // Only the playback cost counts. Every other field ties, so the
+            // stable sort in PlaybackInfo keeps the probe/addon order within
+            // each cost tier — the addon's own ranking decides there.
+            return MediaSourceSortKey {
+                resolution_fit: 0,
+                cached: false,
+                plausibility_before_cost: 0,
+                // Confirmed Direct Play (5) > confirmed Direct Stream (4) >
+                // unverified (3) > audio re-encode (2) > video re-encode (1).
+                // A filename guess that already shows a transcode (e.g.
+                // "TrueHD" for a device without it) keeps that tier.
+                cost: match (self.decision_unverified, self.transcode_cost_tier) {
+                    (true, _) => 3,
+                    (false, 4) => 5,
+                    (false, 3) => 4,
+                    (false, tier) => tier,
+                },
+                plausibility_after_cost: 0,
+                resolution: 0,
+                hdr_class: 0,
+                release_quality: 0,
+                bitrate: 0,
+                bit_depth: 0,
+                audio_tier: 0,
+                audio_channels: 0,
+                hdr_variant: 0,
+            };
+        }
         let cost = match mode {
             SortMediaSourcesMode::Compatibility => self.transcode_cost_tier,
             // Collapse Direct Play (4) and Direct Stream (3) into one tier —
@@ -1122,6 +1259,8 @@ impl MediaSourceRank {
             // Every source ties on this field, so the rest of the tuple
             // (pure quality) decides the order.
             SortMediaSourcesMode::Quality => 0,
+            // Returned early above; kept so the match stays exhaustive.
+            SortMediaSourcesMode::TranscodeCost => self.transcode_cost_tier,
             SortMediaSourcesMode::Disabled => {
                 debug_assert!(
                     false,
@@ -1580,6 +1719,7 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         let hdr_tier = hdr_tier(video).max(1);
 
         MediaSourceRank {
+            decision_unverified: false,
             resolution_fit_tier: resolution_fit_tier(self, profile, false),
             cached: stream_info
                 .as_ref()
@@ -1639,7 +1779,7 @@ mod tests {
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
         DlnaProfileType, EmbeddedSubtitleHandling, MediaSourceInfo, MediaStream,
-        MediaStreamType, ProfileCondition, ProfileConditionProperty,
+        MediaStreamType, ProbeOrigin, ProfileCondition, ProfileConditionProperty,
         ProfileConditionType, SortMediaSourcesMode, SubtitleDeliveryMethod,
         SubtitleProfile, TranscodeReason, TranscodeReasons, VideoCodec, VideoContainer,
         VideoRangeType,
@@ -2782,6 +2922,527 @@ mod tests {
                 &compatible_1080p.transcoding_reasons
             )),
             "Quality mode must ignore transcode cost and rank by HDR/audio quality alone"
+        );
+    }
+
+    fn transcode_cost(rank: MediaSourceRank) -> MediaSourceSortKey {
+        rank.sort_key(SortMediaSourcesMode::TranscodeCost)
+    }
+
+    #[test]
+    fn transcode_cost_mode_ranks_by_playback_cost_alone() {
+        let direct_play_720p = with_release(
+            source_with_reasons(
+                video_stream(1280, Some(VideoRangeType::Sdr)),
+                audio_stream("aac", 2),
+                &[],
+            ),
+            "Movie.2024.720p.WEBRip.mkv",
+            2_000_000,
+        );
+        let direct_stream_4k = with_release(
+            source_with_reasons(
+                video_stream(3840, Some(VideoRangeType::Hdr10)),
+                audio_stream("eac3", 6),
+                &[TranscodeReason::ContainerNotSupported("mkv".to_string())],
+            ),
+            "Movie.2024.2160p.BluRay.REMUX.mkv",
+            60_000_000,
+        );
+        let audio_reencode_4k = with_release(
+            source_with_reasons(
+                video_stream(3840, Some(VideoRangeType::Dovi)),
+                audio_stream("truehd", 8),
+                &[TranscodeReason::AudioCodecNotSupported(
+                    "truehd".to_string(),
+                )],
+            ),
+            "Movie.2024.2160p.BluRay.REMUX.DV.TrueHD.Atmos.mkv",
+            70_000_000,
+        );
+        let video_reencode_4k = with_release(
+            source_with_reasons(
+                video_stream(3840, Some(VideoRangeType::Dovi)),
+                audio_stream("eac3", 6),
+                &[TranscodeReason::VideoRangeTypeNotSupported(
+                    "DOVI".to_string(),
+                )],
+            ),
+            "Movie.2024.2160p.BluRay.REMUX.DV.mkv",
+            80_000_000,
+        );
+        let key = |source: &MediaSourceInfo| {
+            transcode_cost(source.capability_rank(None, &source.transcoding_reasons))
+        };
+        assert!(key(&direct_play_720p) > key(&direct_stream_4k));
+        assert!(key(&direct_stream_4k) > key(&audio_reencode_4k));
+        assert!(key(&audio_reencode_4k) > key(&video_reencode_4k));
+    }
+
+    #[test]
+    fn transcode_cost_mode_ties_sources_of_one_tier_whatever_their_quality() {
+        let remux_4k = with_release(
+            source_with(
+                video_stream(3840, Some(VideoRangeType::Dovi)),
+                audio_stream("eac3", 6),
+                true,
+            ),
+            "Movie.2024.2160p.BluRay.REMUX.mkv",
+            60_000_000,
+        );
+        let mut webrip_1080p_cached = with_release(
+            source_with(
+                video_stream(1920, Some(VideoRangeType::Sdr)),
+                audio_stream("aac", 2),
+                true,
+            ),
+            "Movie.2024.1080p.WEBRip.mkv",
+            4_000_000,
+        );
+        webrip_1080p_cached
+            .remux
+            .as_mut()
+            .unwrap()
+            .provider_info = serde_json::to_value(crate::stream::StreamInfo {
+            filename: Some("Movie.2024.1080p.WEBRip.mkv".to_string()),
+            service_cached: Some(true),
+            ..Default::default()
+        })
+        .ok();
+        assert_eq!(
+            transcode_cost(
+                remux_4k.capability_rank(None, &remux_4k.transcoding_reasons)
+            ),
+            transcode_cost(
+                webrip_1080p_cached
+                    .capability_rank(None, &webrip_1080p_cached.transcoding_reasons)
+            ),
+            "quality and cache state must not split a cost tier, so the addon order stands"
+        );
+    }
+
+    /// An iPhone-like profile: MP4/MKV with H.264/HEVC, AAC/AC3/E-AC3 audio
+    /// (no TrueHD), no 4K learned yet.
+    fn iphone_like_profile() -> DeviceProfile {
+        DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mp4, VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264, VideoCodec::Hevc]),
+                audio_codec: Some(vec![
+                    AudioCodec::Aac,
+                    AudioCodec::Ac3,
+                    AudioCodec::Eac3,
+                ]),
+                type_: Some(DlnaProfileType::Video),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn probed_source(
+        name: &str,
+        video_codec: &str,
+        width: i64,
+        range: VideoRangeType,
+        audio_codec: &str,
+        bitrate: i64,
+    ) -> MediaSourceInfo {
+        let mut video = video_stream(width, Some(range));
+        video.codec = Some(video_codec.to_string());
+        let mut source = with_release(
+            source_with(video, audio_stream(audio_codec, 6), true),
+            &format!("{name}.mkv"),
+            bitrate,
+        );
+        source.name = Some(name.to_string());
+        source.container = Some(VideoContainer::Mkv);
+        source.transcoding_reasons = TranscodeReasons::default();
+        source
+    }
+
+    /// Mirrors the PlaybackInfo sort pass: a stable sort on the reversed key.
+    fn sorted_names(
+        ranking: &SourceRankingContext,
+        sources: &[MediaSourceInfo],
+    ) -> Vec<String> {
+        let mut sorted = sources.to_vec();
+        sorted.sort_by_cached_key(|source| std::cmp::Reverse(ranking.sort_key(source)));
+        sorted
+            .into_iter()
+            .filter_map(|source| source.name)
+            .collect()
+    }
+
+    #[test]
+    fn transcode_cost_mode_picks_the_first_direct_playable_source_in_addon_order() {
+        // Addon order: its #1 needs an audio transcode on this device.
+        let sources = [
+            probed_source(
+                "dv-truehd",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                70_000_000,
+            ),
+            probed_source(
+                "hdr10-eac3",
+                "hevc",
+                3840,
+                VideoRangeType::Hdr10,
+                "eac3",
+                40_000_000,
+            ),
+            probed_source(
+                "sdr-1080p",
+                "h264",
+                1920,
+                VideoRangeType::Sdr,
+                "eac3",
+                30_000_000,
+            ),
+            probed_source(
+                "dv-truehd-2",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                90_000_000,
+            ),
+        ];
+        let profile = iphone_like_profile();
+        let ranking = |mode| SourceRankingContext {
+            mode,
+            device_profile: Some(&profile),
+            is_4k_capable: false,
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+
+        assert_eq!(
+            sorted_names(&ranking(SortMediaSourcesMode::TranscodeCost), &sources),
+            ["hdr10-eac3", "sdr-1080p", "dv-truehd", "dv-truehd-2"],
+            "direct-playable sources first, each tier in addon order"
+        );
+        // Compatibility re-ranks inside the direct-play tier (here the
+        // unlearned 4K capability favours the 1080p source), which is what
+        // TranscodeCost exists to avoid.
+        assert_eq!(
+            sorted_names(&ranking(SortMediaSourcesMode::Compatibility), &sources)[0],
+            "sdr-1080p"
+        );
+    }
+
+    /// A source Remux only knows from its release name.
+    fn guessed_source(
+        name: &str,
+        video_codec: Option<&str>,
+        audio_codec: Option<&str>,
+    ) -> MediaSourceInfo {
+        let mut video = video_stream(3840, Some(VideoRangeType::Hdr10));
+        video.codec = video_codec.map(str::to_string);
+        let mut streams = vec![video];
+        if let Some(codec) = audio_codec {
+            streams.push(audio_stream(codec, 8));
+        }
+        let mut source = with_release(
+            MediaSourceInfo {
+                media_streams: streams,
+                default_audio_stream_index: audio_codec.map(|_| 1),
+                ..Default::default()
+            },
+            &format!("{name}.mkv"),
+            60_000_000,
+        );
+        source.name = Some(name.to_string());
+        source.container = Some(VideoContainer::Mkv);
+        source
+            .remux
+            .as_mut()
+            .unwrap()
+            .source = Some(ProbeOrigin::FilenameGuess);
+        source
+    }
+
+    fn ranking_for(profile: &DeviceProfile) -> SourceRankingContext<'_> {
+        SourceRankingContext {
+            mode: SortMediaSourcesMode::TranscodeCost,
+            device_profile: Some(profile),
+            is_4k_capable: false,
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        }
+    }
+
+    #[test]
+    fn transcode_cost_mode_ranks_unverified_sources_between_confirmed_direct_and_transcode()
+     {
+        let mut direct_stream = probed_source(
+            "remux-only",
+            "hevc",
+            3840,
+            VideoRangeType::Hdr10,
+            "eac3",
+            40_000_000,
+        );
+        direct_stream.container = Some(VideoContainer::Avi);
+        let sources = [
+            guessed_source("guess-no-audio", Some("hevc"), None),
+            probed_source(
+                "probed-truehd",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                70_000_000,
+            ),
+            guessed_source("guess-truehd", Some("hevc"), Some("truehd")),
+            direct_stream,
+            probed_source(
+                "probed-eac3",
+                "hevc",
+                3840,
+                VideoRangeType::Hdr10,
+                "eac3",
+                40_000_000,
+            ),
+            guessed_source("guess-nothing", None, None),
+        ];
+        let profile = iphone_like_profile();
+        assert_eq!(
+            sorted_names(&ranking_for(&profile), &sources),
+            [
+                "probed-eac3",
+                "remux-only",
+                "guess-no-audio",
+                "guess-nothing",
+                "probed-truehd",
+                "guess-truehd",
+            ],
+            "confirmed direct play, confirmed remux, unknown, then transcodes; a name \
+             that already shows TrueHD is a transcode, not an unknown"
+        );
+        // Without any confirmed direct play, an unknown still beats a known transcode.
+        assert_eq!(
+            sorted_names(&ranking_for(&profile), &sources[..3]),
+            ["guess-no-audio", "probed-truehd", "guess-truehd"]
+        );
+    }
+
+    #[test]
+    fn transcode_cost_mode_treats_guesses_as_direct_for_a_device_that_plays_anything() {
+        let sources = [
+            guessed_source("guess-no-audio", Some("hevc"), None),
+            probed_source(
+                "probed-truehd",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                70_000_000,
+            ),
+            guessed_source("guess-nothing", None, None),
+        ];
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                type_: Some(DlnaProfileType::Video),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            sorted_names(&ranking_for(&profile), &sources),
+            ["guess-no-audio", "probed-truehd", "guess-nothing"],
+            "nothing the device could reject is unknown, so the addon order stands"
+        );
+    }
+
+    /// Addon order: best quality first.
+    fn quality_ladder() -> Vec<MediaSourceInfo> {
+        vec![
+            probed_source(
+                "4k-remux-truehd",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                80_000_000,
+            ),
+            probed_source(
+                "4k-encode",
+                "hevc",
+                3840,
+                VideoRangeType::Hdr10,
+                "eac3",
+                40_000_000,
+            ),
+            probed_source(
+                "1080p-remux",
+                "h264",
+                1920,
+                VideoRangeType::Sdr,
+                "eac3",
+                30_000_000,
+            ),
+            probed_source(
+                "1080p-web",
+                "h264",
+                1920,
+                VideoRangeType::Sdr,
+                "eac3",
+                6_000_000,
+            ),
+            probed_source(
+                "720p-web",
+                "h264",
+                1280,
+                VideoRangeType::Sdr,
+                "aac",
+                3_000_000,
+            ),
+        ]
+    }
+
+    fn capped(
+        ranking: SourceRankingContext<'_>,
+        max_bitrate: i64,
+    ) -> SourceRankingContext<'_> {
+        SourceRankingContext {
+            max_bitrate: Some(max_bitrate),
+            ..ranking
+        }
+    }
+
+    #[test]
+    fn transcode_cost_mode_phone_at_8_mbps_gets_the_best_source_that_fits() {
+        let mut sources = quality_ladder();
+        // Known only by name, size unknown: it may or may not fit the cap.
+        let mut guess = guessed_source("1080p-guess", Some("h264"), Some("eac3"));
+        guess.media_streams[0].width = Some(1920);
+        guess.bitrate = None;
+        sources.push(guess);
+        let profile = iphone_like_profile();
+        assert_eq!(
+            sorted_names(&capped(ranking_for(&profile), 8_000_000), &sources),
+            [
+                "1080p-web",
+                "720p-web",
+                "1080p-guess",
+                "4k-remux-truehd",
+                "4k-encode",
+                "1080p-remux",
+            ],
+            "over the cap is a video transcode; the lighter source that fits wins"
+        );
+    }
+
+    #[test]
+    fn transcode_cost_mode_respects_a_resolution_limit() {
+        let mut profile = iphone_like_profile();
+        profile.codec_profiles = vec![CodecProfile {
+            type_: Some(CodecProfileType::Video),
+            conditions: vec![ProfileCondition {
+                condition: Some(ProfileConditionType::LessThanEqual),
+                property: Some(ProfileConditionProperty::Width),
+                value: Some("1920".to_string()),
+                is_required: Some(true),
+            }],
+            ..Default::default()
+        }];
+        assert_eq!(
+            sorted_names(&ranking_for(&profile), &quality_ladder()),
+            [
+                "1080p-remux",
+                "1080p-web",
+                "720p-web",
+                "4k-remux-truehd",
+                "4k-encode"
+            ]
+        );
+    }
+
+    #[test]
+    fn transcode_cost_mode_high_cap_and_unlimited_clients_keep_the_top_pick() {
+        // mpv-style client: no codec or container limits.
+        let plays_anything = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                type_: Some(DlnaProfileType::Video),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let expected = [
+            "4k-remux-truehd",
+            "4k-encode",
+            "1080p-remux",
+            "1080p-web",
+            "720p-web",
+        ];
+        assert_eq!(
+            sorted_names(
+                &capped(ranking_for(&plays_anything), 120_000_000),
+                &quality_ladder()
+            ),
+            expected
+        );
+        assert_eq!(
+            sorted_names(
+                &capped(ranking_for(&plays_anything), 1_000_000_000),
+                &quality_ladder()
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn transcode_cost_mode_keeps_addon_order_when_everything_direct_plays() {
+        let sources = [
+            probed_source(
+                "dv-truehd",
+                "hevc",
+                3840,
+                VideoRangeType::Dovi,
+                "truehd",
+                70_000_000,
+            ),
+            probed_source(
+                "sdr-1080p",
+                "h264",
+                1920,
+                VideoRangeType::Sdr,
+                "aac",
+                9_000_000,
+            ),
+            probed_source(
+                "hdr10-eac3",
+                "hevc",
+                3840,
+                VideoRangeType::Hdr10,
+                "eac3",
+                90_000_000,
+            ),
+        ];
+        // A client that direct-plays anything, with no profile limits.
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                type_: Some(DlnaProfileType::Video),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ranking = SourceRankingContext {
+            mode: SortMediaSourcesMode::TranscodeCost,
+            device_profile: Some(&profile),
+            is_4k_capable: false,
+            subtitle_mode: EmbeddedSubtitleHandling::default(),
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+        assert_eq!(
+            sorted_names(&ranking, &sources),
+            ["dv-truehd", "sdr-1080p", "hdr10-eac3"]
         );
     }
 
