@@ -7900,11 +7900,6 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
-                ids.tmdb = ids
-                    .tmdb
-                    .or(meta
-                        .moviedb_id
-                        .map(|n| n as i64));
                 ids.custom_stremio_type = custom_stremio_type(&meta.media_type);
                 ids
             },

@@ -1261,15 +1261,6 @@ fn apply_manifest_info(
 
 const MANIFEST_FETCH_CONCURRENCY: usize = 25;
 
-/// How long every search skips an addon whose search failed or timed out, so
-/// a broken addon doesn't stall each search by the addon fetch timeout.
-const SEARCH_BREAKER_TTL: Duration = Duration::from_secs(60);
-
-/// Store key marking an addon's search as skipped (see SEARCH_BREAKER_TTL).
-fn search_breaker_key(addon_id: &Uuid) -> String {
-    format!("addon_search_down:{addon_id}")
-}
-
 #[derive(Clone)]
 pub struct AddonService {
     inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
@@ -1950,12 +1941,7 @@ impl AddonService {
         // hang up to their own ~30s upstream timeout under load; without
         // this, one bad addon stalls the whole item even though the other
         // addons in the same fan-out already finished.
-        let addon_fetch_timeout = Duration::from_secs(
-            config
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
+        let addon_fetch_timeout = config.addon_fetch_timeout();
         let media_ref: &db::Media = media;
         let results = async {
         futures::future::join_all(
@@ -2242,12 +2228,7 @@ impl AddonService {
         ctx: &AppContext,
         config: &api::ServerConfiguration,
     ) -> Vec<db::Media> {
-        let fetch_timeout = Duration::from_secs(
-            config
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
+        let fetch_timeout = config.addon_fetch_timeout();
         let applicable: Vec<Arc<dyn TreeAddon>> = self
             .inner
             .load()
@@ -2891,24 +2872,11 @@ impl AddonService {
         // (Stremio addons always answer) can't hide the others' results.
         // Every addon gets the full configured timeout, even once others have
         // answered, so which results show up doesn't depend on timing races.
-        // Addons skipped by the breaker aren't waited on.
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-        let addon_fetch_timeout = Duration::from_secs(
-            config
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
+        let addon_fetch_timeout = config.addon_fetch_timeout();
         let mut searches = Vec::with_capacity(addons.len());
         for r in &addons {
             if let Some(search) = &r.search
-                && ctx
-                    .store
-                    .get::<()>(search_breaker_key(
-                        &r.row
-                            .id,
-                    ))
-                    .is_none()
                 && search
                     .search_supports(kind)
                     .await
@@ -2930,16 +2898,6 @@ impl AddonService {
                         }
                         Err(_) => warn!(addon = %r.row.name, "search addon timed out"),
                     }
-                    // Only failures trip the breaker: an empty answer is valid.
-                    ctx.store
-                        .save(
-                            search_breaker_key(
-                                &r.row
-                                    .id,
-                            ),
-                            (),
-                            SEARCH_BREAKER_TTL,
-                        );
                     vec![]
                 }),
         )
@@ -5090,7 +5048,6 @@ mod tests {
         fail: bool,
         delay: Duration,
         gate: Option<Arc<tokio::sync::Notify>>,
-        calls: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait]
@@ -5106,8 +5063,6 @@ mod tests {
             _limit: usize,
             _ctx: &AppContext,
         ) -> Result<Option<Vec<db::Media>>> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tokio::time::sleep(self.delay).await;
             if let Some(gate) = &self.gate {
                 gate.notified()
@@ -5215,22 +5170,16 @@ mod tests {
     }
 
     /// An addon that doesn't answer within the configured
-    /// `addon_fetch_timeout_secs` is left out and trips the breaker, so the
-    /// next query doesn't wait on it again.
+    /// `addon_fetch_timeout_secs` is left out of the results.
     #[tokio::test]
-    async fn search_leaves_out_and_skips_addon_exceeding_timeout() {
-        let never = Arc::new(FixedSearch {
-            hits: vec![search_hit("Never", "tt9900002")],
-            gate: Some(Arc::new(tokio::sync::Notify::new())),
-            ..Default::default()
-        });
-        let never_runtime = fixed_search_runtime(never.clone());
-        let never_id = never_runtime
-            .row
-            .id;
+    async fn search_leaves_out_addon_exceeding_timeout() {
         let service = AddonService {
             inner: Arc::new(ArcSwap::from_pointee(vec![
-                never_runtime,
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    hits: vec![search_hit("Never", "tt9900002")],
+                    gate: Some(Arc::new(tokio::sync::Notify::new())),
+                    ..Default::default()
+                })),
                 search_runtime(vec![search_hit("Fast", "tt9900001")]),
             ])),
         };
@@ -5250,28 +5199,10 @@ mod tests {
         .unwrap();
         let started = tokio::time::Instant::now();
         assert_eq!(
-            search_titles(&service, &guard.0, "first", 20).await,
+            search_titles(&service, &guard.0, "query", 20).await,
             ["Fast"]
         );
         assert!(started.elapsed() >= Duration::from_secs(1));
-        assert!(
-            guard
-                .0
-                .store
-                .get::<()>(search_breaker_key(&never_id))
-                .is_some()
-        );
-        assert_eq!(
-            search_titles(&service, &guard.0, "second", 20).await,
-            ["Fast"]
-        );
-        assert_eq!(
-            never
-                .calls
-                .load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "a timed-out addon was asked again"
-        );
     }
 
     /// Results that share an external id only through a chain are one item:
@@ -5309,37 +5240,21 @@ mod tests {
         }
     }
 
-    /// An addon whose search failed is skipped for any query until the
-    /// breaker expires; an addon that answered empty is still asked.
+    /// An addon whose search failed doesn't hide the others' results.
     #[tokio::test]
-    async fn failed_search_addon_is_skipped_for_other_queries() {
-        let failing = Arc::new(FixedSearch {
-            fail: true,
-            ..Default::default()
-        });
-        let empty = Arc::new(FixedSearch::default());
-        let service = AddonService {
-            inner: Arc::new(ArcSwap::from_pointee(vec![
-                fixed_search_runtime(failing.clone()),
-                fixed_search_runtime(empty.clone()),
+    async fn failed_search_addon_does_not_hide_other_results() {
+        let titles = search_with(
+            vec![
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    fail: true,
+                    ..Default::default()
+                })),
                 search_runtime(vec![search_hit("Found", "tt9900001")]),
-            ])),
-        };
-        let (_, guard) = crate::integration_test::new_test_server()
-            .await
-            .unwrap();
-        for query in ["first", "second"] {
-            assert_eq!(
-                search_titles(&service, &guard.0, query, 20).await,
-                ["Found"]
-            );
-        }
-        let calls = |s: &FixedSearch| {
-            s.calls
-                .load(std::sync::atomic::Ordering::Relaxed)
-        };
-        assert_eq!(calls(&failing), 1, "a failed addon was asked again");
-        assert_eq!(calls(&empty), 2, "an empty answer tripped the breaker");
+            ],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Found"]);
     }
 
     /// A TMDB result and a Stremio result for the same title (a `tmdb:` id, as
