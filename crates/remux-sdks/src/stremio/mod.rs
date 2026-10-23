@@ -307,7 +307,10 @@ impl Endpoint for MetaEndpoint {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaResponse {
-    pub meta: Meta,
+    /// Absent (or null) when the addon does not know the id: Cinemeta answers
+    /// 200 `{}` for those.
+    #[serde(default)]
+    pub meta: Option<Meta>,
 }
 
 /// `/subtitles/{type}/{id}/{extraArgs}.json`. The optional `filename` and
@@ -566,7 +569,7 @@ impl Meta {
     /// Catalog responses are often partial (missing `imdb_id` etc.); calling
     /// this upgrades the item to complete metadata before DB conversion.
     pub async fn resolve(&mut self, client: &RestClient) -> Result<()> {
-        *self = client
+        let response = client
             .execute(
                 MetaEndpoint {
                     media_type: self
@@ -580,8 +583,11 @@ impl Meta {
                 }
                 .with_cache(std::time::Duration::from_secs(3600)),
             )
-            .await?
-            .meta;
+            .await?;
+        // The addon does not know this id: keep the partial item as is.
+        if let Some(meta) = response.meta {
+            *self = meta;
+        }
         Ok(())
     }
 
@@ -1119,10 +1125,23 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Endpoint, MediaType, Meta, ReleaseInfo, Stream, SubtitlesEndpoint,
-        parse_duration_lossy,
+        Endpoint, MediaType, Meta, MetaResponse, ReleaseInfo, Stream,
+        SubtitlesEndpoint, parse_duration_lossy,
     };
     use std::time::Duration;
+
+    #[test]
+    fn meta_response_accepts_an_empty_body() {
+        // Cinemeta answers 200 `{}` for ids it does not know.
+        for body in ["{}", r#"{"meta": null}"#] {
+            let response: MetaResponse = serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("{body} should deserialize: {e}"));
+            assert_eq!(
+                serde_json::to_value(&response).unwrap(),
+                serde_json::json!({})
+            );
+        }
+    }
 
     fn subtitles_path(filename: Option<&str>, video_size: Option<i64>) -> String {
         SubtitlesEndpoint {
