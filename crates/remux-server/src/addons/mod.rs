@@ -1941,12 +1941,7 @@ impl AddonService {
         // hang up to their own ~30s upstream timeout under load; without
         // this, one bad addon stalls the whole item even though the other
         // addons in the same fan-out already finished.
-        let addon_fetch_timeout = Duration::from_secs(
-            config
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
+        let addon_fetch_timeout = config.addon_fetch_timeout();
         let media_ref: &db::Media = media;
         let results = async {
         futures::future::join_all(
@@ -2224,12 +2219,7 @@ impl AddonService {
         ctx: &AppContext,
         config: &api::ServerConfiguration,
     ) -> Vec<db::Media> {
-        let fetch_timeout = Duration::from_secs(
-            config
-                .addon_fetch_timeout_secs
-                .unwrap_or(5)
-                .max(1) as u64,
-        );
+        let fetch_timeout = config.addon_fetch_timeout();
         let applicable: Vec<Arc<dyn TreeAddon>> = self
             .inner
             .load()
@@ -2869,42 +2859,54 @@ impl AddonService {
             .cloned()
             .collect();
 
-        for r in addons {
-            if !r
-                .search
-                .as_ref()
-                .unwrap()
-                .search_supports(kind)
-                .await
+        // Ask every eligible addon concurrently and merge, so an empty answer
+        // (Stremio addons always answer) can't hide the others' results.
+        // Every addon gets the full configured timeout, even once others have
+        // answered, so which results show up doesn't depend on timing races.
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let addon_fetch_timeout = config.addon_fetch_timeout();
+        let mut searches = Vec::with_capacity(addons.len());
+        for r in &addons {
+            if let Some(search) = &r.search
+                && search
+                    .search_supports(kind)
+                    .await
             {
-                continue;
-            }
-            match r
-                .search
-                .as_ref()
-                .unwrap()
-                .search(kind, query, limit, ctx)
-                .await
-            {
-                Ok(Some(mut results)) => {
-                    db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
-                    for m in &results {
-                        ctx.store
-                            .save(
-                                m.id.to_string(),
-                                m.clone(),
-                                Duration::from_secs(3600),
-                            );
-                    }
-                    return Ok(results);
-                }
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!(addon = %r.row.name, error = %e, "search addon error")
-                }
+                searches.push((r, search));
             }
         }
-        Ok(vec![])
+        // `join_all` keeps priority order; on a duplicate the first
+        // (higher-priority) copy wins below.
+        let mut results: Vec<db::Media> = futures::future::join_all(
+            searches
+                .iter()
+                .map(|(r, search)| async move {
+                    let answer = search.search(kind, query, limit, ctx);
+                    match tokio::time::timeout(addon_fetch_timeout, answer).await {
+                        Ok(Ok(results)) => return results.unwrap_or_default(),
+                        Ok(Err(e)) => {
+                            warn!(addon = %r.row.name, error = %e, "search addon error")
+                        }
+                        Err(_) => warn!(addon = %r.row.name, "search addon timed out"),
+                    }
+                    vec![]
+                }),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+        // Adopt before deduping: two addons' copies of a stored item end up
+        // with the same id even when they carry different external ids.
+        db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
+        // Dedupe before truncating, so duplicates don't eat into the limit.
+        let mut merged = db::Media::dedupe_by_identity(results);
+        merged.truncate(limit);
+        for m in &merged {
+            ctx.store
+                .save(m.id.to_string(), m.clone(), Duration::from_secs(3600));
+        }
+        Ok(merged)
     }
 
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
@@ -5283,5 +5285,252 @@ mod tests {
             results[0].title, stored.title,
             "a deezer-only match is replaced wholesale too"
         );
+    }
+
+    /// Answers with its hits (or an error if `fail`) after sleeping `delay`
+    /// and, if gated, once the test opens the gate.
+    #[derive(Default)]
+    struct FixedSearch {
+        hits: Vec<db::Media>,
+        fail: bool,
+        delay: Duration,
+        gate: Option<Arc<tokio::sync::Notify>>,
+    }
+
+    #[async_trait]
+    impl SearchAddon for FixedSearch {
+        async fn search_supports(&self, _kind: &db::MediaKind) -> bool {
+            true
+        }
+
+        async fn search(
+            &self,
+            _kind: &db::MediaKind,
+            _query: &str,
+            _limit: usize,
+            _ctx: &AppContext,
+        ) -> Result<Option<Vec<db::Media>>> {
+            tokio::time::sleep(self.delay).await;
+            if let Some(gate) = &self.gate {
+                gate.notified()
+                    .await;
+            }
+            if self.fail {
+                return Err(anyhow!("search addon down"));
+            }
+            Ok(Some(
+                self.hits
+                    .clone(),
+            ))
+        }
+    }
+
+    fn search_runtime(results: Vec<db::Media>) -> AddonRuntime {
+        fixed_search_runtime(Arc::new(FixedSearch {
+            hits: results,
+            ..Default::default()
+        }))
+    }
+
+    fn fixed_search_runtime(search: Arc<FixedSearch>) -> AddonRuntime {
+        let mut runtime = unreachable_runtime(vec![ResourceType::Search], None);
+        runtime
+            .caps
+            .search = Some(search);
+        runtime
+    }
+
+    fn search_hit(title: &str, imdb: &str) -> db::Media {
+        db::Media {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            ..media_with_imdb(imdb)
+        }
+    }
+
+    async fn search_titles(
+        service: &AddonService,
+        ctx: &AppContext,
+        query: &str,
+        limit: usize,
+    ) -> Vec<String> {
+        service
+            .search(&db::MediaKind::Movie, query, limit, ctx, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.title)
+            .collect()
+    }
+
+    async fn search_with(runtimes: Vec<AddonRuntime>, limit: usize) -> Vec<String> {
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(runtimes)),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        search_titles(&service, &guard.0, "query", limit).await
+    }
+
+    /// Results from every search addon are appended in priority order; the
+    /// same item from two addons (shared imdb id) appears once, as the
+    /// higher-priority copy.
+    #[tokio::test]
+    async fn search_appends_addons_in_priority_order_and_dedupes() {
+        let titles = search_with(
+            vec![
+                search_runtime(vec![]),
+                search_runtime(vec![
+                    search_hit("Shared (high)", "tt9900001"),
+                    search_hit("High 2", "tt9900002"),
+                    search_hit("High 3", "tt9900004"),
+                ]),
+                search_runtime(vec![
+                    search_hit("Shared (low)", "tt9900001"),
+                    search_hit("Low 2", "tt9900003"),
+                ]),
+            ],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Shared (high)", "High 2", "High 3", "Low 2"]);
+    }
+
+    /// A higher-priority addon having answered doesn't cut off a slower
+    /// lower-priority one: every addon is awaited up to the timeout.
+    #[tokio::test]
+    async fn search_waits_for_slower_lower_priority_addon() {
+        let titles = search_with(
+            vec![
+                search_runtime(vec![search_hit("Fast", "tt9900001")]),
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    hits: vec![search_hit("Slow", "tt9900002")],
+                    delay: Duration::from_millis(300),
+                    ..Default::default()
+                })),
+            ],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Fast", "Slow"]);
+    }
+
+    /// An addon that doesn't answer within the configured
+    /// `addon_fetch_timeout_secs` is left out of the results.
+    #[tokio::test]
+    async fn search_leaves_out_addon_exceeding_timeout() {
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    hits: vec![search_hit("Never", "tt9900002")],
+                    gate: Some(Arc::new(tokio::sync::Notify::new())),
+                    ..Default::default()
+                })),
+                search_runtime(vec![search_hit("Fast", "tt9900001")]),
+            ])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        db::Settings::set_config(
+            &guard
+                .0
+                .db,
+            &crate::api::ServerConfiguration {
+                addon_fetch_timeout_secs: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            search_titles(&service, &guard.0, "query", 20).await,
+            ["Fast"]
+        );
+        assert!(started.elapsed() >= Duration::from_secs(1));
+    }
+
+    /// Results that share an external id only through a chain are one item:
+    /// `{tmdb}`, `{tmdb, imdb}`, `{imdb}` collapses to the first, also when
+    /// the linking result comes last and joins two earlier groups. An
+    /// unrelated result stays separate.
+    #[tokio::test]
+    async fn search_dedupes_results_linked_through_a_chain_of_ids() {
+        let hit = |title: &str, tmdb: Option<i64>, imdb: Option<&str>| db::Media {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb,
+                imdb: imdb
+                    .and_then(|i| db::NonEmptyString::try_new(i.to_string()).ok()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tmdb_only = hit("First", Some(9900101), None);
+        let both = hit("Both", Some(9900101), Some("tt9900101"));
+        let imdb_only = hit("Imdb", None, Some("tt9900101"));
+        let other = hit("Other", Some(9900102), Some("tt9900102"));
+        for chain in [
+            [tmdb_only.clone(), both.clone(), imdb_only.clone()],
+            [tmdb_only.clone(), imdb_only.clone(), both.clone()],
+        ] {
+            let mut runtimes: Vec<AddonRuntime> = chain
+                .into_iter()
+                .map(|m| search_runtime(vec![m]))
+                .collect();
+            runtimes.push(search_runtime(vec![other.clone()]));
+            assert_eq!(search_with(runtimes, 20).await, ["First", "Other"]);
+        }
+    }
+
+    /// An addon whose search failed doesn't hide the others' results.
+    #[tokio::test]
+    async fn failed_search_addon_does_not_hide_other_results() {
+        let titles = search_with(
+            vec![
+                fixed_search_runtime(Arc::new(FixedSearch {
+                    fail: true,
+                    ..Default::default()
+                })),
+                search_runtime(vec![search_hit("Found", "tt9900001")]),
+            ],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Found"]);
+    }
+
+    /// A TMDB result and a Stremio result for the same title (a `tmdb:` id, as
+    /// AIOStreams' search sends) collapse to the first occurrence.
+    #[tokio::test]
+    async fn search_dedupes_tmdb_and_stremio_copies() {
+        let tmdb = db::Media {
+            id: Uuid::new_v4(),
+            title: "Inception (TMDB)".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                tmdb: Some(27205),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let meta: remux_sdks::stremio::Meta =
+            serde_json::from_value(serde_json::json!({
+                "id": "tmdb:27205",
+                "type": "movie",
+                "name": "Inception (Stremio)",
+            }))
+            .unwrap();
+        let stremio = db::Media::try_from(meta).unwrap();
+        let titles = search_with(
+            vec![search_runtime(vec![tmdb]), search_runtime(vec![stremio])],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["Inception (TMDB)"]);
     }
 }
