@@ -4666,25 +4666,11 @@ impl Media {
             }
 
             if let Some(studio_ids) = &filter.studio_ids {
-                if !studio_ids.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
-                    let mut sep = qb.separated(", ");
-                    for id in studio_ids {
-                        sep.push_bind(id);
-                    }
-                    qb.push("))");
-                }
+                push_related_to_any(qb, studio_ids);
             }
 
             if let Some(person_ids) = &filter.person_ids {
-                if !person_ids.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
-                    let mut sep = qb.separated(", ");
-                    for id in person_ids {
-                        sep.push_bind(id);
-                    }
-                    qb.push("))");
-                }
+                push_related_to_any(qb, person_ids);
             }
 
             // GetItemsQuery.tags: item must have ANY of these tags
@@ -8704,6 +8690,27 @@ async fn count_related_items_by_kind(
         }
     }
     map
+}
+
+/// Keep only media linked (as the left side of a relation) to any of
+/// `right_ids`: a person's filmography, a studio's titles.
+///
+/// Driven from `idx_media_relations_right_left` like the `genre_ids` filter:
+/// a correlated EXISTS here makes SQLite walk every row of the requested
+/// kinds and probe the relation index per row.
+fn push_related_to_any<'a>(
+    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    right_ids: &'a [Uuid],
+) {
+    if right_ids.is_empty() {
+        return;
+    }
+    qb.push(" AND media.id IN (SELECT mr.left_media_id FROM media_relations mr WHERE mr.right_media_id IN (");
+    let mut sep = qb.separated(", ");
+    for id in right_ids {
+        sep.push_bind(id);
+    }
+    qb.push("))");
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
@@ -13565,5 +13572,112 @@ mod genre_ids_filter_tests {
             Some(1),
             "the hidden member must not be counted"
         );
+    }
+
+    /// A person's filmography (and a studio's titles) must be driven from
+    /// `idx_media_relations_right_left`: the person has a few dozen credits,
+    /// while a correlated EXISTS makes SQLite walk every movie and series
+    /// and probe the relation index once per row. On a 93K-title library that
+    /// was 0.25 s per query, and opening a cast member in Infuse fires enough
+    /// of them in parallel to hit the 30 s get_by_filter timeout.
+    #[tokio::test]
+    async fn person_and_studio_filters_seek_the_relation_index() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let person_ids = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut qb = sqlx::QueryBuilder::new(
+            "EXPLAIN QUERY PLAN SELECT id FROM media WHERE kind IN ('movie', 'series')",
+        );
+        push_related_to_any(&mut qb, &person_ids);
+        let plan = qb
+            .build()
+            .fetch_all(&db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>(3))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan.contains("SEARCH mr USING COVERING INDEX idx_media_relations_right_left (right_media_id=?)"),
+            "relation filter must seek the people/studios side first; plan: {plan}"
+        );
+        assert!(
+            !plan.contains("CORRELATED"),
+            "relation filter must not re-run per media row; plan: {plan}"
+        );
+        assert!(
+            !plan.contains("SEARCH media USING INDEX idx_media_kind"),
+            "relation filter must not walk every movie and series; plan: {plan}"
+        );
+    }
+
+    /// The person filter keeps returning exactly the titles the person is
+    /// credited in, of the requested kinds.
+    #[tokio::test]
+    async fn person_ids_filter_returns_only_credited_titles() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let title = |kind: MediaKind, name: &str, imdb: &str| Media {
+            id: Uuid::new_v4(),
+            title: name.into(),
+            kind,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new(imdb).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut person = title(MediaKind::Person, "Actor", "nm3100001");
+        let mut credited_movie = title(MediaKind::Movie, "Credited Movie", "tt3100002");
+        let mut credited_series =
+            title(MediaKind::Series, "Credited Series", "tt3100003");
+        let mut other_movie = title(MediaKind::Movie, "Other Movie", "tt3100004");
+        for m in [
+            &mut person,
+            &mut credited_movie,
+            &mut credited_series,
+            &mut other_movie,
+        ] {
+            m.save(&ctx.db)
+                .await
+                .unwrap();
+        }
+        MediaRelation::upsert(
+            &ctx.db,
+            &[credited_movie.id, credited_series.id].map(|left_media_id| {
+                MediaRelation {
+                    left_media_id,
+                    right_media_id: person.id,
+                    ..Default::default()
+                }
+            }),
+        )
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            &ctx.db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie, MediaKind::Series]),
+                person_ids: Some(vec![person.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut names: Vec<String> = result
+            .records
+            .into_iter()
+            .map(|m| m.title)
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["Credited Movie", "Credited Series"]);
     }
 }
