@@ -778,20 +778,34 @@ impl MediaRelation {
         if right_kinds.is_empty() {
             return Ok(());
         }
-        let mut qb = sqlx::QueryBuilder::new(
-            "DELETE FROM media_relations WHERE left_media_id = ",
-        );
+        let mut qb = sqlx::QueryBuilder::new("");
+        Self::push_delete_by_right_kinds(&mut qb, left_id, right_kinds);
+        qb.build()
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    fn push_delete_by_right_kinds(
+        qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+        left_id: Uuid,
+        right_kinds: &[MediaKind],
+    ) {
+        qb.push("DELETE FROM media_relations WHERE left_media_id = ");
         qb.push_bind(left_id);
-        qb.push(" AND right_media_id IN (SELECT id FROM media WHERE kind IN (");
+        // Correlated on purpose: checks each of this item's relations by
+        // primary key. `right_media_id IN (SELECT id FROM media WHERE kind
+        // IN (...))` lists every person in the library first, which takes
+        // seconds while holding DB_WRITE_SEMAPHORE.
+        qb.push(
+            " AND EXISTS (SELECT 1 FROM media m \
+              WHERE m.id = media_relations.right_media_id AND m.kind IN (",
+        );
         let mut sep = qb.separated(", ");
         for k in right_kinds {
             sep.push_bind(k.to_string());
         }
         qb.push("))");
-        qb.build()
-            .execute(&mut *conn)
-            .await?;
-        Ok(())
     }
 
     pub async fn move_playlist_item(
@@ -12654,6 +12668,133 @@ mod tests {
             elapsed.as_millis() < 150,
             "query took {elapsed:?}, expected < 150 ms — correlated subquery regression?"
         );
+    }
+}
+
+#[cfg(test)]
+mod relation_delete_tests {
+    use super::*;
+    use crate::integration_test::new_test_server;
+
+    /// Replacing an item's people runs under DB_WRITE_SEMAPHORE, so the
+    /// delete has to stay cheap: walk the item's own relations and check each
+    /// right side by primary key. `right_media_id IN (SELECT id FROM media
+    /// WHERE kind IN (...))` instead builds a list of every person in the
+    /// library first (seconds on a large one) while holding the write lock.
+    #[tokio::test]
+    async fn delete_by_right_kinds_walks_the_items_own_relations() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let mut qb = sqlx::QueryBuilder::new("EXPLAIN QUERY PLAN ");
+        MediaRelation::push_delete_by_right_kinds(
+            &mut qb,
+            Uuid::new_v4(),
+            &[MediaKind::Person],
+        );
+        let plan = qb
+            .build()
+            .fetch_all(&db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>(3))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan.contains("SEARCH media_relations USING COVERING INDEX uniq_media_relation (left_media_id=?)"),
+            "delete must start from the item's own relations; plan: {plan}"
+        );
+        assert!(
+            !plan.contains("LIST SUBQUERY"),
+            "delete must not list every media row of the kind; plan: {plan}"
+        );
+    }
+
+    /// Only the item's relations to the given kinds go; its other relations
+    /// and other items' relations to the same people stay.
+    #[tokio::test]
+    async fn replace_by_right_kinds_only_touches_the_items_relations_of_those_kinds() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let row = |kind: MediaKind, imdb: &str| Media {
+            id: Uuid::new_v4(),
+            title: imdb.into(),
+            kind,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new(imdb).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut movie = row(MediaKind::Movie, "tt3200001");
+        let mut other_movie = row(MediaKind::Movie, "tt3200002");
+        let mut old_actor = row(MediaKind::Person, "nm3200003");
+        let mut new_actor = row(MediaKind::Person, "nm3200004");
+        for m in [&mut movie, &mut other_movie, &mut old_actor, &mut new_actor] {
+            m.save(db)
+                .await
+                .unwrap();
+        }
+        let genre = build_genre_relations_from_names(
+            Uuid::nil(),
+            &["Drama".to_string()],
+            MediaKind::Genre,
+        )[0]
+        .1
+        .clone();
+        Media::upsert(db, &[genre.clone()])
+            .await
+            .unwrap();
+        let link = |left_media_id: Uuid, right_media_id: Uuid| MediaRelation {
+            left_media_id,
+            right_media_id,
+            ..Default::default()
+        };
+        MediaRelation::upsert(
+            db,
+            &[
+                link(movie.id, old_actor.id),
+                link(movie.id, genre.id),
+                link(other_movie.id, old_actor.id),
+            ],
+        )
+        .await
+        .unwrap();
+
+        MediaRelation::replace_by_right_kinds(
+            db,
+            movie.id,
+            &[MediaKind::Person],
+            &[link(movie.id, new_actor.id)],
+        )
+        .await
+        .unwrap();
+
+        let mut pairs: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT left_media_id, right_media_id FROM media_relations \
+             WHERE left_media_id IN (?1, ?2)",
+        )
+        .bind(movie.id)
+        .bind(other_movie.id)
+        .fetch_all(db)
+        .await
+        .unwrap();
+        pairs.sort();
+        let mut expected = vec![
+            (movie.id, new_actor.id),
+            (movie.id, genre.id),
+            (other_movie.id, old_actor.id),
+        ];
+        expected.sort();
+        assert_eq!(pairs, expected);
     }
 }
 
