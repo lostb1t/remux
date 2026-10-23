@@ -1070,6 +1070,15 @@ pub struct JellyfinItem {
 impl ServerConfiguration {
     const DEFAULT_TMDB_KEY: &'static str = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwZDczZTBjYjkxZjM5ZTY3MGIwZWZhNjkxM2FmYmQ1OCIsIm5iZiI6MTUzMjkzOTA3My41MzcsInN1YiI6IjViNWVjYjQxMGUwYTI2MmU5MDA0NjNjMCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vfOGe8_35CxhjjZXdnR2iAwdOMIY0VFYMBQrLWuRqn8";
 
+    /// Cap on a single addon call, from `addon_fetch_timeout_secs` (default 5 s, at least 1 s).
+    pub fn addon_fetch_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.addon_fetch_timeout_secs
+                .unwrap_or(5)
+                .max(1) as u64,
+        )
+    }
+
     pub fn get_tmdb_key(&self) -> &str {
         self.tmdb_api_key
             .as_deref()
