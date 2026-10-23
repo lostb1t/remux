@@ -3779,7 +3779,7 @@ async fn fetch_meta_with_retry(
         info!(
             id = %media.id,
             addon = %addon_name,
-            outcome = if retried.is_ok() { "recovered" } else { "failed again" },
+            outcome = if retried.is_ok() { "answered" } else { "timed out again" },
             elapsed = ?started.elapsed(),
             "addon meta_fetch timed out, retried once"
         );
@@ -4971,7 +4971,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_meta_fetch_that_keeps_stalling_still_times_out() {
-        struct Hangs(std::sync::atomic::AtomicUsize);
+        struct Hangs {
+            calls: std::sync::atomic::AtomicUsize,
+            timeouts: std::sync::atomic::AtomicUsize,
+        }
 
         #[async_trait]
         impl MetaAddon for Hangs {
@@ -4984,10 +4987,12 @@ mod tests {
                 _ctx: &AppContext,
                 _config: &crate::api::ServerConfiguration,
             ) -> Result<Option<db::Media>> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 std::future::pending().await
             }
             fn on_meta_fetch_timeout(&self, _media: &db::Media) {
-                self.0
+                self.timeouts
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
@@ -4997,7 +5002,10 @@ mod tests {
             .unwrap();
         let ctx = &guard.0;
         let config = db::Settings::get_config_or_default(&ctx.db).await;
-        let addon = Hangs(Default::default());
+        let addon = Hangs {
+            calls: Default::default(),
+            timeouts: Default::default(),
+        };
         let err = fetch_meta_with_retry(
             &addon,
             "hangs",
@@ -5014,7 +5022,14 @@ mod tests {
         );
         assert_eq!(
             addon
-                .0
+                .calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a first timeout is retried once"
+        );
+        assert_eq!(
+            addon
+                .timeouts
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
