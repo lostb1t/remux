@@ -614,6 +614,64 @@ pub async fn unmark_favorite_modern(
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
 
+/// Marks an item played or unplayed for `user` and emits the matching signal
+/// (webhooks, websocket, media tracker). Shared by every mark-played route
+/// (`/users/{user_id}/playeditems/{id}` and `/userplayeditems/{id}`) so none
+/// of them can update the state without telling the subscribers.
+pub(crate) async fn set_played(
+    state: &AppState,
+    user: &db::User,
+    id: Uuid,
+    played: bool,
+) -> Result<axum::response::Response> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let (ms, event) = if played {
+        let server_config = db::Settings::get_config_or_default(
+            &state
+                .ctx
+                .db,
+        )
+        .await;
+        let ms = media
+            .mark_played(
+                &state
+                    .ctx
+                    .db,
+                user,
+                true,
+                server_config.release_date_threshold(),
+            )
+            .await?;
+        let info = MarkPlayedInfo {
+            user_id: user.id,
+            media_id: media.id,
+        };
+        (ms, Event::MarkPlayed(info))
+    } else {
+        let ms = media
+            .mark_unplayed(
+                &state
+                    .ctx
+                    .db,
+                user,
+                true,
+            )
+            .await?;
+        let info = MarkUnplayedInfo {
+            user_id: user.id,
+            media_id: media.id,
+        };
+        (ms, Event::MarkUnplayed(info))
+    };
+    state
+        .ctx
+        .signals
+        .emit(event);
+    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+}
+
 #[post("/users/{user_id}/playeditems/{id}")]
 pub async fn mark_played(
     State(state): State<AppState>,
@@ -621,33 +679,7 @@ pub async fn mark_played(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
-    let server_config = db::Settings::get_config_or_default(
-        &state
-            .ctx
-            .db,
-    )
-    .await;
-    let ms = media
-        .mark_played(
-            &state
-                .ctx
-                .db,
-            &user,
-            true,
-            server_config.release_date_threshold(),
-        )
-        .await?;
-    state
-        .ctx
-        .signals
-        .emit(Event::MarkPlayed(MarkPlayedInfo {
-            user_id: user.id,
-            media_id: media.id,
-        }));
-    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+    set_played(&state, &user, id, true).await
 }
 
 #[delete("/users/{user_id}/playeditems/{id}")]
@@ -657,53 +689,7 @@ pub async fn unmark_played(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
-    let ms = media
-        .mark_unplayed(
-            &state
-                .ctx
-                .db,
-            &user,
-            true,
-        )
-        .await?;
-    state
-        .ctx
-        .signals
-        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
-            user_id: user.id,
-            media_id: media.id,
-        }));
-    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
-}
-
-async fn unmark_played_inner(
-    state: AppState,
-    user: db::User,
-    id: Uuid,
-) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
-    let ms = media
-        .mark_unplayed(
-            &state
-                .ctx
-                .db,
-            &user,
-            true,
-        )
-        .await?;
-    state
-        .ctx
-        .signals
-        .emit(Event::MarkUnplayed(MarkUnplayedInfo {
-            user_id: user.id,
-            media_id: media.id,
-        }));
-    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+    set_played(&state, &user, id, false).await
 }
 
 #[get("/users/{user_id}/playeditems/{id}/delete")]
@@ -713,7 +699,7 @@ pub async fn unmark_played_get(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    unmark_played_inner(state, user, id).await
+    set_played(&state, &user, id, false).await
 }
 
 #[post("/users/{user_id}/playeditems/{id}/delete")]
@@ -723,7 +709,7 @@ pub async fn unmark_played_post(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    unmark_played_inner(state, user, id).await
+    set_played(&state, &user, id, false).await
 }
 
 #[query]
@@ -5029,5 +5015,129 @@ mod e2e_tests {
             ids.contains(&watched_col.id),
             "Watched collection missing after user2 watches an item"
         );
+    }
+}
+
+#[cfg(test)]
+mod played_items_signal_tests {
+    use crate::{
+        db,
+        integration_test::{auth_header_with_token, authenticated_server},
+    };
+    use http::header::HeaderValue;
+    use httpmock::{Method::POST, MockServer};
+    use remux_sdks::remux::{HttpWebhookConfig, WebhookDestination, WebhookEvent};
+    use sqlx::types::Json;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    /// Every mark-played route has to reach the subscribers: a client built on
+    /// `@jellyfin/sdk` marks items through `/UserPlayedItems/{id}`, the web
+    /// client through `/Users/{id}/PlayedItems/{id}`. A `UserDataSaved`
+    /// webhook must fire for both, for played and for unplayed.
+    #[tokio::test]
+    async fn every_mark_played_route_fires_user_data_saved() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut movie = db::Media {
+            id: Uuid::new_v4(),
+            title: "Movie".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt3400001").ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        let hook = MockServer::start_async().await;
+        let played = hook
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .body_contains("\"Played\":true");
+                then.status(204);
+            })
+            .await;
+        let unplayed = hook
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/hook")
+                    .body_contains("\"Played\":false");
+                then.status(204);
+            })
+            .await;
+        db::Webhook {
+            id: Uuid::new_v4(),
+            name: "played".into(),
+            enabled: true,
+            destination: Json(WebhookDestination::Http(HttpWebhookConfig {
+                url: hook.url("/hook"),
+                ..Default::default()
+            })),
+            events: Json(vec![WebhookEvent::UserDataSaved]),
+            send_all_properties: true,
+            ..Default::default()
+        }
+        .save(db)
+        .await
+        .unwrap();
+
+        let routes = [
+            format!("/users/{}/playeditems/{}", user.id, movie.id),
+            format!("/userplayeditems/{}", movie.id),
+        ];
+        let mut expected = 0;
+        for route in &routes {
+            server
+                .post(route)
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .await
+                .assert_status_ok();
+            server
+                .delete(route)
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .await
+                .assert_status_ok();
+            expected += 1;
+            // Webhooks are delivered from a spawned task.
+            for _ in 0..100 {
+                if played
+                    .hits_async()
+                    .await
+                    >= expected
+                    && unplayed
+                        .hits_async()
+                        .await
+                        >= expected
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(
+                (
+                    played
+                        .hits_async()
+                        .await,
+                    unplayed
+                        .hits_async()
+                        .await
+                ),
+                (expected, expected),
+                "{route} did not fire UserDataSaved for played and unplayed"
+            );
+        }
     }
 }

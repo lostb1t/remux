@@ -981,26 +981,7 @@ pub async fn user_mark_played(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
-    let server_config = db::Settings::get_config_or_default(
-        &state
-            .ctx
-            .db,
-    )
-    .await;
-    let ms = media
-        .mark_played(
-            &state
-                .ctx
-                .db,
-            &user,
-            true,
-            server_config.release_date_threshold(),
-        )
-        .await?;
-    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+    api::users::set_played(&state, &user, id, true).await
 }
 
 #[delete("/userplayeditems/{id}")]
@@ -1010,19 +991,7 @@ pub async fn user_unmark_played(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
-    let ms = media
-        .mark_unplayed(
-            &state
-                .ctx
-                .db,
-            &user,
-            true,
-        )
-        .await?;
-    Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
+    api::users::set_played(&state, &user, id, false).await
 }
 
 /// Jellyfin-compatible master HLS playlist endpoint.
