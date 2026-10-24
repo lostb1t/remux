@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792802441851,
+  "lastUpdate": 1792844183238,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -10471,6 +10471,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 58797282,
             "range": "± 4459430",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "lostbit",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "id": "72436b6b4c819bab4449f1c489dad65406bd5b36",
+          "message": "fix: rank an 8-bit stream tagged HDR as SDR",
+          "timestamp": "2026-10-24T11:55:04Z",
+          "url": "https://github.com/lostb1t/remux/commit/72436b6b4c819bab4449f1c489dad65406bd5b36"
+        },
+        "date": 1792844181005,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/limit=20&recursive=false",
+            "value": 2195064,
+            "range": "± 1082203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&recursive=false",
+            "value": 6588774,
+            "range": "± 2182226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=500&recursive=false",
+            "value": 20819535,
+            "range": "± 2801204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Movie&recursive=false",
+            "value": 564319,
+            "range": "± 264549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/limit=100&include_item_types=Series&recursive=false",
+            "value": 43997937,
+            "range": "± 2884421",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=20&recursive=false",
+            "value": 33725027,
+            "range": "± 2224717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&recursive=false",
+            "value": 33582870,
+            "range": "± 1930326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=500&recursive=false",
+            "value": 34003815,
+            "range": "± 2231761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Movie&recursive=false",
+            "value": 598832,
+            "range": "± 376029",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&include_item_types=Series&recursive=false",
+            "value": 122843249,
+            "range": "± 6621310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&filters=IsPlayed&recursive=false",
+            "value": 35556194,
+            "range": "± 3376124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/limit=100&sort_by=DateCreated&recursive=false",
+            "value": 35481010,
+            "range": "± 2760213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=50&recursive=false",
+            "value": 232452187,
+            "range": "± 16326472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=200&recursive=false",
+            "value": 238099307,
+            "range": "± 21363796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/limit=500&recursive=false",
+            "value": 238439184,
+            "range": "± 15404830",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=true&recursive=false",
+            "value": 242602387,
+            "range": "± 24870091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/limit=500&enable_resumable=false&recursive=false",
+            "value": 235555089,
+            "range": "± 14499670",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 239662208,
+            "range": "± 20913452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 57139219,
+            "range": "± 5999047",
             "unit": "ns/iter"
           }
         ]
