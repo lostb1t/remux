@@ -1761,9 +1761,41 @@ pub struct GetItemsQuery {
     /// Regular Jellyfin clients never send this; it is used by the admin dashboard.
     #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub include_childless: Option<bool>,
+    /// Remux extension: only items on (`true`) or off (`false`) the user's
+    /// watchlist. `Filters=IsWatchlist` is the same as `true`.
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_watchlist: Option<bool>,
+    /// Remux extension: only items the user ignores (`true`) or does not
+    /// ignore (`false`). `Filters=IsIgnored` is the same as `true`.
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
+    pub is_ignored: Option<bool>,
 }
 
 impl GetItemsQuery {
+    /// The watchlist constraint, from `IsWatchlist=` or `Filters=IsWatchlist`.
+    pub fn watchlist(&self) -> Option<bool> {
+        self.is_watchlist
+            .or_else(|| {
+                self.filters
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .contains(&ItemFilter::IsWatchlist)
+                    .then_some(true)
+            })
+    }
+
+    /// The ignore constraint, from `IsIgnored=` or `Filters=IsIgnored`.
+    pub fn ignored(&self) -> Option<bool> {
+        self.is_ignored
+            .or_else(|| {
+                self.filters
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .contains(&ItemFilter::IsIgnored)
+                    .then_some(true)
+            })
+    }
+
     /// The favorite constraint, from `IsFavorite=` or `Filters=IsFavorite`.
     pub fn favorite(&self) -> Option<bool> {
         self.is_favorite
@@ -4201,6 +4233,20 @@ pub struct RemuxInfo {
     pub image_config: Option<CollectionImageConfig>,
     /// Stored display order (`DisplayOrder` sort); `None` sorts last.
     pub sort_order: Option<i64>,
+    /// Whether the requesting user has this item on their watchlist.
+    pub watchlist: Option<bool>,
+    /// Whether the requesting user ignores this item.
+    pub ignored: Option<bool>,
+}
+
+/// A user's remux-only marks on one item, as returned by the watchlist and
+/// ignore endpoints.
+#[dto]
+pub struct RemuxUserFlags {
+    #[default(false)]
+    pub watchlist: bool,
+    #[default(false)]
+    pub ignored: bool,
 }
 
 #[dto]
@@ -4547,6 +4593,10 @@ pub enum ItemFilter {
     Likes,
     Dislikes,
     IsFavoriteOrLikes,
+    /// Remux extension.
+    IsWatchlist,
+    /// Remux extension.
+    IsIgnored,
 }
 
 #[derive(
@@ -4670,6 +4720,8 @@ pub enum ItemSortBy {
     AirTime,
     Studio,
     IsFavoriteOrLiked,
+    /// Remux extension: when the item was added to the user's watchlist.
+    DateWatchlisted,
     DateLastContentAdded,
     SeriesDatePlayed,
     ParentIndexNumber,
@@ -7394,6 +7446,54 @@ impl Endpoint for ToggleFavorite {
     }
 }
 
+/// Adds an item to (`watchlist`) or removes it from a user's watchlist.
+#[derive(Debug, Clone)]
+pub struct ToggleWatchlist {
+    pub user_id: Uuid,
+    pub item_id: Uuid,
+    pub watchlist: bool,
+}
+
+impl Endpoint for ToggleWatchlist {
+    type Output = RemuxUserFlags;
+
+    fn path(&self) -> String {
+        format!("/remux/users/{}/watchlist/{}", self.user_id, self.item_id)
+    }
+
+    fn method(&self) -> Method {
+        if self.watchlist {
+            Method::POST
+        } else {
+            Method::DELETE
+        }
+    }
+}
+
+/// Starts (`ignored`) or stops ignoring an item for a user.
+#[derive(Debug, Clone)]
+pub struct ToggleIgnored {
+    pub user_id: Uuid,
+    pub item_id: Uuid,
+    pub ignored: bool,
+}
+
+impl Endpoint for ToggleIgnored {
+    type Output = RemuxUserFlags;
+
+    fn path(&self) -> String {
+        format!("/remux/users/{}/ignored/{}", self.user_id, self.item_id)
+    }
+
+    fn method(&self) -> Method {
+        if self.ignored {
+            Method::POST
+        } else {
+            Method::DELETE
+        }
+    }
+}
+
 /// Marks (`played`) or unmarks an item as played for a user.
 #[derive(Debug, Clone)]
 pub struct TogglePlayed {
@@ -8820,6 +8920,59 @@ mod tests {
 
     fn id(n: u128) -> Uuid {
         Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn watchlist_and_ignored_toggle_between_post_and_delete() {
+        let (user_id, item_id) = (id(1), id(2));
+        let watch = ToggleWatchlist {
+            user_id,
+            item_id,
+            watchlist: true,
+        };
+        assert_eq!(watch.method(), Method::POST);
+        assert_eq!(
+            ToggleWatchlist {
+                watchlist: false,
+                ..watch.clone()
+            }
+            .method(),
+            Method::DELETE
+        );
+        assert_eq!(
+            watch.path(),
+            format!("/remux/users/{user_id}/watchlist/{item_id}")
+        );
+        let ignore = ToggleIgnored {
+            user_id,
+            item_id,
+            ignored: false,
+        };
+        assert_eq!(ignore.method(), Method::DELETE);
+        assert_eq!(
+            ignore.path(),
+            format!("/remux/users/{user_id}/ignored/{item_id}")
+        );
+    }
+
+    #[test]
+    fn items_query_reads_watchlist_and_ignored_from_either_form() {
+        let filtered = |filter| GetItemsQuery {
+            filters: Some(vec![filter]),
+            ..Default::default()
+        };
+        assert_eq!(filtered(ItemFilter::IsWatchlist).watchlist(), Some(true));
+        assert_eq!(filtered(ItemFilter::IsIgnored).ignored(), Some(true));
+        let explicit = GetItemsQuery {
+            is_watchlist: Some(false),
+            is_ignored: Some(false),
+            filters: Some(vec![ItemFilter::IsWatchlist, ItemFilter::IsIgnored]),
+            ..Default::default()
+        };
+        assert_eq!(explicit.watchlist(), Some(false));
+        assert_eq!(explicit.ignored(), Some(false));
+        let bare = GetItemsQuery::default();
+        assert_eq!((bare.watchlist(), bare.ignored()), (None, None));
     }
 
     #[test]

@@ -24,7 +24,7 @@ use crate::{
     services::MediaResolveService,
     signals::{
         Event, MarkFavoriteInfo, MarkPlayedInfo, MarkUnplayedInfo, RatingInfo,
-        UnmarkFavoriteInfo, UserDeletedInfo, UserUpdatedInfo,
+        UnmarkFavoriteInfo, UserDeletedInfo, UserFlagChangedInfo, UserUpdatedInfo,
     },
 };
 use axum_anyhow::ApiResult as Result;
@@ -612,6 +612,85 @@ pub async fn unmark_favorite_modern(
             media_id: media.id,
         }));
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
+}
+
+/// Sets or clears a remux-only mark (watchlist, ignored) for `user` and
+/// emits the signal that keeps WebSocket clients in step. Shared by the
+/// watchlist and ignore routes so neither can change the state silently.
+async fn set_user_flag(
+    state: AppState,
+    user: db::User,
+    id: Uuid,
+    flag: db::UserFlag,
+    on: bool,
+) -> Result<impl IntoResponse> {
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("Item not found")?;
+    let ms = media
+        .set_user_flag(
+            &state
+                .ctx
+                .db,
+            &user,
+            flag,
+            on,
+        )
+        .await?;
+    state
+        .ctx
+        .signals
+        .emit(Event::UserFlagChanged(UserFlagChangedInfo {
+            user_id: user.id,
+            media_id: media.id,
+            flag,
+            on,
+        }));
+    Ok(Json(api::RemuxUserFlags {
+        watchlist: ms.watchlist,
+        ignored: ms.ignored,
+    })
+    .into_response())
+}
+
+#[post("/remux/users/{user_id}/watchlist/{id}")]
+pub async fn add_to_watchlist(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    set_user_flag(state, user, id, db::UserFlag::Watchlist, true).await
+}
+
+#[delete("/remux/users/{user_id}/watchlist/{id}")]
+pub async fn remove_from_watchlist(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    set_user_flag(state, user, id, db::UserFlag::Watchlist, false).await
+}
+
+#[post("/remux/users/{user_id}/ignored/{id}")]
+pub async fn ignore_item(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    set_user_flag(state, user, id, db::UserFlag::Ignored, true).await
+}
+
+#[delete("/remux/users/{user_id}/ignored/{id}")]
+pub async fn unignore_item(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
+    Path((_, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    set_user_flag(state, user, id, db::UserFlag::Ignored, false).await
 }
 
 /// Marks an item played or unplayed for `user` and emits the matching signal
@@ -4394,6 +4473,239 @@ mod e2e_tests {
             .await;
         assert_eq!(resp.status_code(), http::StatusCode::OK);
         assert_eq!(resp.json::<serde_json::Value>()["IsFavorite"], false);
+    }
+
+    /// Watchlist and ignore are per-user marks: they show on `BaseItemDto`
+    /// under `Remux`, filter `/Items` (as `Filters=` values or `IsWatchlist=` /
+    /// `IsIgnored=`) and never leak to another user.
+    #[tokio::test]
+    async fn watchlist_and_ignored_marks_filter_items_per_user() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let movie = |title: &str, imdb: &str| {
+            let external_ids = db::ExternalIds {
+                imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                ..Default::default()
+            };
+            db::Media {
+                id: Uuid::from(&db::MediaIdRaw {
+                    kind: db::MediaKind::Movie,
+                    external_ids: external_ids.clone(),
+                    season: None,
+                    episode: None,
+                }),
+                title: title.into(),
+                kind: db::MediaKind::Movie,
+                external_ids,
+                // Items released in the future are hidden from listings.
+                released_at: Some(
+                    chrono::Utc::now().naive_utc() - chrono::Duration::days(365),
+                ),
+                ..Default::default()
+            }
+        };
+        let (mut a, mut b, mut c) = (
+            movie("Alpha", "tt3300001"),
+            movie("Bravo", "tt3300002"),
+            movie("Charlie", "tt3300003"),
+        );
+        for m in [&mut a, &mut b, &mut c] {
+            m.save(db)
+                .await
+                .unwrap();
+        }
+        let hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+
+        let resp = server
+            .post(&format!("/remux/users/{user_id}/watchlist/{}", a.id))
+            .add_header(hdr().0, hdr().1)
+            .await;
+        assert_eq!(resp.status_code(), http::StatusCode::OK);
+        let flags = resp.json::<serde_json::Value>();
+        assert_eq!(flags["Watchlist"], true);
+        assert_eq!(flags["Ignored"], false);
+        let resp = server
+            .post(&format!("/remux/users/{user_id}/ignored/{}", b.id))
+            .add_header(hdr().0, hdr().1)
+            .await;
+        assert_eq!(resp.json::<serde_json::Value>()["Ignored"], true);
+
+        let titles = |query: &'static [(&'static str, &'static str)]| {
+            let server = &server;
+            let auth = &auth;
+            let uid = &user_id;
+            async move {
+                let mut req = server
+                    .get("/items")
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(auth).unwrap(),
+                    )
+                    .add_query_param("Recursive", "true")
+                    .add_query_param("SortBy", "SortName")
+                    .add_query_param("userId", uid.as_str());
+                for (k, v) in query {
+                    req = req.add_query_param(*k, *v);
+                }
+                let body = req
+                    .await
+                    .json::<serde_json::Value>();
+                body["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        i["Name"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    // The test server also lists seeded views.
+                    .filter(|name| {
+                        ["Alpha", "Bravo", "Charlie"].contains(&name.as_str())
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(titles(&[]).await, ["Alpha", "Bravo", "Charlie"]);
+        assert_eq!(titles(&[("Filters", "IsWatchlist")]).await, ["Alpha"]);
+        assert_eq!(titles(&[("IsWatchlist", "true")]).await, ["Alpha"]);
+        assert_eq!(
+            titles(&[("IsWatchlist", "false")]).await,
+            ["Bravo", "Charlie"]
+        );
+        assert_eq!(titles(&[("Filters", "IsIgnored")]).await, ["Bravo"]);
+        assert_eq!(
+            titles(&[("IsIgnored", "false")]).await,
+            ["Alpha", "Charlie"]
+        );
+        assert_eq!(
+            titles(&[("Filters", "IsFavorite")]).await,
+            Vec::<String>::new()
+        );
+
+        // The marks ride on every item under `Remux`.
+        let body = server
+            .get("/items")
+            .add_header(hdr().0, hdr().1)
+            .add_query_param("Recursive", "true")
+            .await
+            .json::<serde_json::Value>();
+        let mark = |name: &str, key: &str| {
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["Name"] == name)
+                .unwrap()["Remux"][key]
+                .clone()
+        };
+        assert_eq!(mark("Alpha", "Watchlist"), true);
+        assert_eq!(mark("Alpha", "Ignored"), false);
+        assert_eq!(mark("Bravo", "Ignored"), true);
+        assert_eq!(mark("Charlie", "Watchlist"), false);
+
+        // Another user sees none of it.
+        let mut other = db::User::new_with_password(
+            String::new(),
+            "flag-other".into(),
+            "test",
+            None,
+        )
+        .unwrap();
+        other
+            .save(db)
+            .await
+            .unwrap();
+        let other_state = db::UserMediaState::get_or_new(db, &other, &a)
+            .await
+            .unwrap();
+        assert!(!other_state.watchlist && !other_state.ignored);
+
+        // Removing the marks clears them again.
+        server
+            .delete(&format!("/remux/users/{user_id}/watchlist/{}", a.id))
+            .add_header(hdr().0, hdr().1)
+            .await;
+        server
+            .delete(&format!("/remux/users/{user_id}/ignored/{}", b.id))
+            .add_header(hdr().0, hdr().1)
+            .await;
+        assert!(
+            titles(&[("Filters", "IsWatchlist")])
+                .await
+                .is_empty()
+        );
+        assert!(
+            titles(&[("Filters", "IsIgnored")])
+                .await
+                .is_empty()
+        );
+    }
+
+    /// Another update to the same row (here a played-state change) must not
+    /// wipe the watchlist and ignore marks.
+    #[tokio::test]
+    async fn other_state_updates_keep_watchlist_and_ignored() {
+        let (_server, guard, _token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let mut media = db::Media {
+            id: Uuid::new_v4(),
+            title: "Keeper".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt3300010".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        media
+            .save(db)
+            .await
+            .unwrap();
+        media
+            .set_user_flag(db, &user, db::UserFlag::Watchlist, true)
+            .await
+            .unwrap();
+        let first = media
+            .set_user_flag(db, &user, db::UserFlag::Ignored, true)
+            .await
+            .unwrap();
+        let added = first
+            .watchlisted_at
+            .expect("watchlist keeps when it was added");
+        // Adding again keeps the original time instead of moving to the front.
+        let again = media
+            .set_user_flag(db, &user, db::UserFlag::Watchlist, true)
+            .await
+            .unwrap();
+        assert_eq!(again.watchlisted_at, Some(added));
+
+        media
+            .mark_played(db, &user, false, None)
+            .await
+            .unwrap();
+        let state = db::UserMediaState::get_or_new(db, &user, &media)
+            .await
+            .unwrap();
+        assert!(state.watchlist && state.ignored);
+        assert_eq!(state.watchlisted_at, Some(added));
+        assert!(state.play_count > 0);
     }
 
     #[tokio::test]

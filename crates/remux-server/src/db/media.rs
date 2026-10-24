@@ -4551,6 +4551,19 @@ impl Media {
             }
 
             if let Some(user_state_filter) = &filter.user_state {
+                push_user_flag_filter(
+                    qb,
+                    user_state_filter.user_id,
+                    "watchlist",
+                    user_state_filter.watchlist,
+                );
+                push_user_flag_filter(
+                    qb,
+                    user_state_filter.user_id,
+                    "ignored",
+                    user_state_filter.ignored,
+                );
+
                 // favorite — always uses EXISTS
                 if let Some(favorite) = &user_state_filter.favorite {
                     qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
@@ -5141,6 +5154,17 @@ impl Media {
                                 format!(
                                     "COALESCE((SELECT ums.favorite FROM user_media_state ums \
                                      WHERE ums.user_id = {uid} AND ums.media_id = media.id), 0) {}",
+                                    dir
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
+                        }
+                        api::ItemSortBy::DateWatchlisted => {
+                            if let Some(uid) = &user_hex {
+                                format!(
+                                    "(SELECT ums.watchlisted_at FROM user_media_state ums \
+                                     WHERE ums.user_id = {uid} AND ums.media_id = media.id) {}",
                                     dir
                                 )
                             } else {
@@ -6629,25 +6653,34 @@ impl Media {
         let is_unplayed = item_filters.contains(&api::ItemFilter::IsUnplayed);
         let is_resumable = item_filters.contains(&api::ItemFilter::IsResumable);
         let favorite = filter.favorite();
+        let watchlist = filter.watchlist();
+        let ignored = filter.ignored();
 
-        let user_state =
-            if favorite.is_some() || is_played || is_unplayed || is_resumable {
-                Some(super::UserMediaStateFilter {
-                    user_id: filter.user_id,
-                    favorite,
-                    played: if is_played {
-                        Some(true)
-                    } else if is_unplayed {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                    resumable: if is_resumable { Some(true) } else { None },
-                    ..Default::default()
-                })
-            } else {
-                None
-            };
+        let user_state = if favorite.is_some()
+            || watchlist.is_some()
+            || ignored.is_some()
+            || is_played
+            || is_unplayed
+            || is_resumable
+        {
+            Some(super::UserMediaStateFilter {
+                user_id: filter.user_id,
+                favorite,
+                watchlist,
+                ignored,
+                played: if is_played {
+                    Some(true)
+                } else if is_unplayed {
+                    Some(false)
+                } else {
+                    None
+                },
+                resumable: if is_resumable { Some(true) } else { None },
+                ..Default::default()
+            })
+        } else {
+            None
+        };
 
         let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
         let has_playlist = kinds.contains(&MediaKind::Playlist);
@@ -7057,6 +7090,22 @@ impl Media {
     ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.favorite = false;
+        state
+            .save(db)
+            .await?;
+        Ok(state)
+    }
+
+    /// Sets or clears one of the user's remux-only marks on this item.
+    pub async fn set_user_flag(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+        flag: super::UserFlag,
+        on: bool,
+    ) -> Result<super::UserMediaState> {
+        let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
+        state.set_flag(flag, on, chrono::Utc::now().naive_utc());
         state
             .save(db)
             .await?;
@@ -8752,6 +8801,36 @@ async fn count_related_items_by_kind(
         }
     }
     map
+}
+
+/// Keep only media the user has (`want = true`) or has not (`false`) marked
+/// with the `watchlist` or `ignored` flag.
+///
+/// Driven from the partial index on the flag, like the `genre_ids` filter: a
+/// user flags few items, so listing them first beats probing
+/// `user_media_state` once per media row.
+fn push_user_flag_filter<'a>(
+    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    user_id: Option<Uuid>,
+    column: &'static str,
+    want: Option<bool>,
+) {
+    let Some(want) = want else {
+        return;
+    };
+    qb.push(if want {
+        " AND media.id IN ("
+    } else {
+        " AND media.id NOT IN ("
+    });
+    qb.push("SELECT ums.media_id FROM user_media_state ums WHERE ums.")
+        .push(column)
+        .push(" = 1");
+    if let Some(user_id) = user_id {
+        qb.push(" AND ums.user_id = ")
+            .push_bind(user_id);
+    }
+    qb.push(")");
 }
 
 /// Keep only media linked (as the left side of a relation) to any of
@@ -13803,6 +13882,47 @@ mod genre_ids_filter_tests {
             !plan.contains("SEARCH media USING INDEX idx_media_kind"),
             "relation filter must not walk every movie and series; plan: {plan}"
         );
+    }
+
+    /// The watchlist and ignore filters list the user's few flagged rows
+    /// from the partial index and look the media up from there. A
+    /// per-media-row `EXISTS` would probe `user_media_state` for every movie
+    /// and series in the library.
+    #[tokio::test]
+    async fn user_flag_filters_seek_the_partial_index() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let user = Uuid::new_v4();
+        for (column, index) in [
+            ("watchlist", "idx_ums_user_watchlist"),
+            ("ignored", "idx_ums_user_ignored"),
+        ] {
+            let mut qb = sqlx::QueryBuilder::new(
+                "EXPLAIN QUERY PLAN SELECT id FROM media WHERE kind IN ('movie', 'series')",
+            );
+            push_user_flag_filter(&mut qb, Some(user), column, Some(true));
+            let plan = qb
+                .build()
+                .fetch_all(&db)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.get::<String, _>(3))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                plan.contains(&format!("USING COVERING INDEX {index} (user_id=?)")),
+                "{column} filter must seek the flagged rows; plan: {plan}"
+            );
+            assert!(
+                !plan.contains("CORRELATED"),
+                "{column} filter must not re-run per media row; plan: {plan}"
+            );
+        }
     }
 
     /// The person filter keeps returning exactly the titles the person is

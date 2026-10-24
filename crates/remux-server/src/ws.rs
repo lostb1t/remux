@@ -323,6 +323,7 @@ impl Subscriber for WebSocketSubscriber {
             EventType::MarkUnplayed,
             EventType::MarkFavorite,
             EventType::UnmarkFavorite,
+            EventType::UserFlagChanged,
             EventType::Rating,
             EventType::PlaybackStopped,
             EventType::LibraryChanged,
@@ -350,6 +351,10 @@ impl Subscriber for WebSocketSubscriber {
                 item_id: i.media_id,
             },
             Event::UnmarkFavorite(i) => WsEvent::UserDataChanged {
+                user_id: i.user_id,
+                item_id: i.media_id,
+            },
+            Event::UserFlagChanged(i) => WsEvent::UserDataChanged {
                 user_id: i.user_id,
                 item_id: i.media_id,
             },
