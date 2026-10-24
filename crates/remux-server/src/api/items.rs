@@ -4417,6 +4417,52 @@ mod tests {
         assert_eq!(response["StartIndex"], 1);
     }
 
+    /// Jellyfin web's search page asks `/Studios` for `searchTerm`; only
+    /// matching studios may come back, so an unmatched term yields none.
+    #[tokio::test]
+    async fn studios_honor_search_term() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let item =
+            insert_media(db, "Some Show", db::MediaKind::Series, "tt1000011").await;
+        let names = vec!["A24 Search".to_string(), "Other Search".to_string()];
+        let pairs = db::build_genre_relations_from_names(
+            item.id,
+            &names,
+            db::MediaKind::Studio,
+        );
+        let media: Vec<_> = pairs
+            .iter()
+            .map(|(_, m)| m.clone())
+            .collect();
+        db::Media::upsert(db, &media)
+            .await
+            .unwrap();
+
+        for (term, expected) in [("A24", vec!["A24 Search"]), ("nomatch", vec![])] {
+            let response: serde_json::Value = server
+                .get("/studios")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .add_query_param("searchTerm", term)
+                .await
+                .json();
+            let names: Vec<&str> = response["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["Name"].as_str())
+                .collect();
+            assert_eq!(names, expected, "searchTerm={term}");
+            assert_eq!(response["TotalRecordCount"], expected.len());
+        }
+    }
+
     #[tokio::test]
     async fn genres_populate_movie_and_series_item_counts() {
         let (server, guard, token) = authenticated_server().await;
