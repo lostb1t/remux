@@ -1,3 +1,10 @@
+## [0.38.2](https://github.com/lostb1t/remux/compare/v0.38.1...v0.38.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* build Linux binaries on ubuntu-24.04 with baseline x86-64 C flags ([f7ed73b](https://github.com/lostb1t/remux/commit/f7ed73b0140467974997876a2a5c425850fc107d))
+
 ## [0.38.1](https://github.com/lostb1t/remux/compare/v0.38.0...v0.38.1) (2026-10-24)
 
 
