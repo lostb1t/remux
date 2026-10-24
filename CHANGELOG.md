@@ -1,3 +1,11 @@
+## [0.38.1](https://github.com/lostb1t/remux/compare/v0.38.0...v0.38.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* only show studios that match the search term ([#648](https://github.com/lostb1t/remux/issues/648)) ([595e539](https://github.com/lostb1t/remux/commit/595e539a42631b92c66fd6fbe7b819375ae76bc3))
+* rank an 8-bit stream tagged HDR as SDR ([72436b6](https://github.com/lostb1t/remux/commit/72436b6b4c819bab4449f1c489dad65406bd5b36))
+
 # [0.38.0](https://github.com/lostb1t/remux/compare/v0.37.0...v0.38.0) (2026-10-24)
 
 
