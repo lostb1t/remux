@@ -126,6 +126,7 @@ pub async fn insert_test_source_with_external_subtitle(ctx: &AppContext) -> db::
             language: Some("eng".to_string()),
             ..Default::default()
         }],
+        VideoContainer::Mp4,
     )
     .await
 }
@@ -136,13 +137,24 @@ pub async fn insert_test_source_of_kind(
     ctx: &AppContext,
     kind: db::MediaKind,
 ) -> db::Media {
-    insert_source(ctx, kind, vec![]).await
+    insert_source(ctx, kind, vec![], VideoContainer::Mp4).await
+}
+
+/// [`insert_test_source_of_kind`] with a container other than mp4, e.g. the
+/// raw MPEG-TS a live-TV proxy serves.
+pub async fn insert_test_source_with_container(
+    ctx: &AppContext,
+    kind: db::MediaKind,
+    container: VideoContainer,
+) -> db::Media {
+    insert_source(ctx, kind, vec![], container).await
 }
 
 async fn insert_source(
     ctx: &AppContext,
     kind: db::MediaKind,
     extra_streams: Vec<MediaStream>,
+    container: VideoContainer,
 ) -> db::Media {
     let now = Utc::now().naive_utc();
 
@@ -150,7 +162,7 @@ async fn insert_source(
     // without needing ffprobe or a live network connection.
     let probe = MediaSourceInfo {
         id: Uuid::new_v4(),
-        container: Some(VideoContainer::Mp4),
+        container: Some(container),
         bitrate: Some(8_000_000),
         run_time_ticks: Some(100_000_000),
         media_streams: vec![
