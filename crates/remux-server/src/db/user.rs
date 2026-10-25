@@ -447,6 +447,30 @@ pub struct UserMediaState {
     pub audio_idx: Option<i64>,
     /// Set via [`UserMediaState::set_rating`] so it only holds parsed [`UserRating`]s.
     pub rating: Option<f64>,
+    /// Set via [`UserMediaState::set_flag`] so `watchlisted_at` stays in step.
+    pub watchlist: bool,
+    pub ignored: bool,
+    pub watchlisted_at: Option<NaiveDateTime>,
+}
+
+/// Per-user marks on an item that Jellyfin has no concept of, kept next to
+/// `favorite`. Exposed to clients under the `remux` namespace.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum::Display,
+    strum::EnumString,
+    Serialize,
+    Deserialize,
+)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum UserFlag {
+    Watchlist,
+    Ignored,
 }
 
 /// A personal rating on Jellyfin's 0-10 scale. Jellyfin stores no `Likes`
@@ -504,6 +528,8 @@ pub struct UserMediaStateFilter {
     pub media_id: Option<Vec<Uuid>>,
     pub played: Option<bool>,
     pub favorite: Option<bool>,
+    pub watchlist: Option<bool>,
+    pub ignored: Option<bool>,
     pub resumable: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -612,6 +638,15 @@ impl UserMediaState {
                         .stream_id
                         .or(other.stream_id),
                     favorite: existing.favorite || old_row.favorite,
+                    watchlist: existing.watchlist || old_row.watchlist,
+                    ignored: existing.ignored || old_row.ignored,
+                    watchlisted_at: match (
+                        existing.watchlisted_at,
+                        old_row.watchlisted_at,
+                    ) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (a, b) => a.or(b),
+                    },
                     play_count: existing
                         .play_count
                         .max(old_row.play_count),
@@ -645,9 +680,10 @@ impl UserMediaState {
             r#"
             INSERT INTO user_media_state (
                 user_id, media_id, media_raw, stream_id, favorite, play_count,
-                played_at, playback_position, last_played_at, subtitle_idx, audio_idx, rating
+                played_at, playback_position, last_played_at, subtitle_idx, audio_idx, rating,
+                watchlist, ignored, watchlisted_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(user_id, media_id) DO UPDATE SET
                 media_raw = excluded.media_raw,
                 stream_id = excluded.stream_id,
@@ -658,7 +694,10 @@ impl UserMediaState {
                 last_played_at = excluded.last_played_at,
                 subtitle_idx = excluded.subtitle_idx,
                 audio_idx = excluded.audio_idx,
-                rating = excluded.rating
+                rating = excluded.rating,
+                watchlist = excluded.watchlist,
+                ignored = excluded.ignored,
+                watchlisted_at = excluded.watchlisted_at
             "#,
         )
         .bind(merged.user_id)
@@ -673,6 +712,9 @@ impl UserMediaState {
         .bind(merged.subtitle_idx)
         .bind(merged.audio_idx)
         .bind(merged.rating)
+        .bind(merged.watchlist)
+        .bind(merged.ignored)
+        .bind(merged.watchlisted_at)
         .execute(&mut *tx)
         .await?;
 
@@ -994,7 +1036,7 @@ impl UserMediaState {
     }
 
     /// True when this state records nothing a client could act on: never
-    /// played, no resume point, no favourite, no rating, no remembered
+    /// played, no resume point, no favourite/watchlist/ignore mark, no rating, no remembered
     /// stream/track selection. Such a row is not worth creating.
     pub fn is_blank(&self) -> bool {
         self.play_count == 0
@@ -1003,6 +1045,8 @@ impl UserMediaState {
                 .is_none()
             && self.playback_position == 0
             && !self.favorite
+            && !self.watchlist
+            && !self.ignored
             && self
                 .rating
                 .is_none()
@@ -1024,6 +1068,23 @@ impl UserMediaState {
     pub fn likes(&self) -> Option<bool> {
         self.rating
             .map(|r| r >= UserRating::LIKE_THRESHOLD)
+    }
+
+    /// Sets or clears `flag`. A watchlist entry keeps the time it was first
+    /// added, so setting it again does not move it to the front.
+    pub fn set_flag(&mut self, flag: UserFlag, on: bool, now: NaiveDateTime) {
+        match flag {
+            UserFlag::Watchlist => {
+                self.watchlist = on;
+                self.watchlisted_at = if on {
+                    self.watchlisted_at
+                        .or(Some(now))
+                } else {
+                    None
+                };
+            }
+            UserFlag::Ignored => self.ignored = on,
+        }
     }
 
     /// Persist playback position (and optionally stream-selection preferences)
@@ -1138,9 +1199,12 @@ impl UserMediaState {
                 last_played_at,
                 subtitle_idx,
                 audio_idx,
-                rating
+                rating,
+                watchlist,
+                ignored,
+                watchlisted_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(user_id, media_id)
             DO UPDATE SET
                 media_raw = excluded.media_raw,
@@ -1152,7 +1216,10 @@ impl UserMediaState {
                 last_played_at = excluded.last_played_at,
                 subtitle_idx = excluded.subtitle_idx,
                 audio_idx = excluded.audio_idx,
-                rating = excluded.rating
+                rating = excluded.rating,
+                watchlist = excluded.watchlist,
+                ignored = excluded.ignored,
+                watchlisted_at = excluded.watchlisted_at
             "#,
         )
         .bind(self.user_id)
@@ -1167,6 +1234,9 @@ impl UserMediaState {
         .bind(self.subtitle_idx)
         .bind(self.audio_idx)
         .bind(self.rating)
+        .bind(self.watchlist)
+        .bind(self.ignored)
+        .bind(self.watchlisted_at)
         .execute(db)
         .await?;
 
@@ -1197,6 +1267,14 @@ impl UserMediaState {
             if let Some(favorite) = &filter.favorite {
                 qb.push(" AND favorite = ")
                     .push_bind(favorite);
+            }
+            if let Some(watchlist) = &filter.watchlist {
+                qb.push(" AND watchlist = ")
+                    .push_bind(watchlist);
+            }
+            if let Some(ignored) = &filter.ignored {
+                qb.push(" AND ignored = ")
+                    .push_bind(ignored);
             }
         }
 
@@ -2040,12 +2118,14 @@ mod identity_reattach_tests {
         let raw = media.identity_raw(None);
         sqlx::query(
             "INSERT INTO user_media_state \
-             (user_id, media_id, media_raw, favorite, play_count, last_played_at) \
-             VALUES (?, ?, ?, 1, 5, ?)",
+             (user_id, media_id, media_raw, favorite, play_count, last_played_at, \
+              watchlist, ignored, watchlisted_at) \
+             VALUES (?, ?, ?, 1, 5, ?, 1, 1, ?)",
         )
         .bind(user.id)
         .bind(media.id)
         .bind(raw.identity_key())
+        .bind(old_time)
         .bind(old_time)
         .execute(&ctx.db)
         .await
@@ -2099,6 +2179,15 @@ mod identity_reattach_tests {
             "play_count must take the max, not whichever side happened to win"
         );
         assert_eq!(merged.media_id, reimported.id);
+        assert!(
+            merged.watchlist && merged.ignored,
+            "watchlist and ignored are monotonic too"
+        );
+        assert_eq!(
+            merged.watchlisted_at,
+            Some(old_time),
+            "the watchlist keeps when the item was first added"
+        );
 
         // No duplicate/orphaned row should remain at the old id, and the
         // merge must actually be persisted, not just returned in memory.

@@ -125,6 +125,12 @@ jobs:
           name: jellyfin-web-dist
           path: artifacts/jellyfin-web/
 
+      - name: Download remux-web
+        uses: actions/download-artifact@v4
+        with:
+          name: remux-web-dist
+          path: artifacts/remux-web/
+
       - name: Download desktop artifacts
         uses: actions/download-artifact@v4
         with:
@@ -148,6 +154,7 @@ jobs:
                    "remux-${VERSION}-macos-amd64" "remux-${VERSION}-macos-arm64"
           tar -czf "remux-${VERSION}-dashboard.tar.gz" -C artifacts/dashboard .
           tar -czf "remux-${VERSION}-jellyfin-web.tar.gz" -C artifacts/jellyfin-web .
+          tar -czf "remux-${VERSION}-remux-web.tar.gz" -C artifacts/remux-web .
 
       - name: Extract changelog for this release
         run: |
@@ -174,6 +181,7 @@ jobs:
             "remux-${VERSION}-macos-arm64" \
             "remux-${VERSION}-dashboard.tar.gz" \
             "remux-${VERSION}-jellyfin-web.tar.gz" \
+            "remux-${VERSION}-remux-web.tar.gz" \
             "remux-desktop-linux-x86_64.deb" \
             "remux-desktop-macos-aarch64.dmg" \
             "remux-desktop-macos-x86_64.dmg" \

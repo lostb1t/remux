@@ -1577,7 +1577,21 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
         // An absent video-range tag is not evidence of quality below SDR.
         // Treat it as the SDR baseline for ordering, without claiming the
         // source was actually probed as SDR.
-        let hdr_tier = hdr_tier(video).max(1);
+        let known_bit_depth = video.and_then(|s| {
+            s.bit_depth
+                .or_else(|| {
+                    s.pixel_format
+                        .as_deref()
+                        .and_then(crate::playback::probe::bit_depth_from_pix_fmt)
+                })
+        });
+        // HDR10, HLG and Dolby Vision are 10-bit or deeper. An 8-bit stream
+        // tagged with one (bad remote probe data) is SDR, or it outranks
+        // every genuine SDR source on `hdr_class`.
+        let hdr_tier = match known_bit_depth {
+            Some(depth) if depth < 10 => 1,
+            _ => hdr_tier(video).max(1),
+        };
 
         MediaSourceRank {
             resolution_fit_tier: resolution_fit_tier(self, profile, false),
@@ -1600,18 +1614,7 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
             // baseline — that "unknown" default must never outrank a
             // genuinely-known higher bit depth, but also must not make an
             // unknown stream look worse than an ordinary 8-bit one.
-            bit_depth: video
-                .and_then(|s| {
-                    s.bit_depth
-                        .or_else(|| {
-                            s.pixel_format
-                                .as_deref()
-                                .and_then(
-                                    crate::playback::probe::bit_depth_from_pix_fmt,
-                                )
-                        })
-                })
-                .unwrap_or(8),
+            bit_depth: known_bit_depth.unwrap_or(8),
             quality_source_tier: crate::db::detect_source_quality_weight(
                 stream_info.as_ref(),
             ),
@@ -3141,6 +3144,24 @@ mod tests {
                 .contains(&TranscodeReason::ContainerBitrateExceedsLimit)
         );
         assert_eq!(assessment.playback_label(), "Direct Play");
+    }
+
+    #[test]
+    fn hdr_tag_on_an_8_bit_stream_ranks_as_sdr() {
+        let rank_for = |range: VideoRangeType, bit_depth: Option<i64>| {
+            let mut video = video_stream(1920, Some(range));
+            video.bit_depth = bit_depth;
+            compat(
+                source_with(video, audio_stream("aac", 2), true)
+                    .capability_rank(None, &TranscodeReasons::default()),
+            )
+        };
+        let sdr = rank_for(VideoRangeType::Sdr, Some(8));
+        assert_eq!(rank_for(VideoRangeType::Hdr10, Some(8)), sdr);
+        assert_eq!(rank_for(VideoRangeType::Dovi, Some(8)), sdr);
+        assert!(rank_for(VideoRangeType::Hdr10, Some(10)) > sdr);
+        // Unknown depth keeps the tag: nothing contradicts it.
+        assert!(rank_for(VideoRangeType::Hdr10, None) > sdr);
     }
 
     #[test]

@@ -129,6 +129,14 @@ pub struct UnmarkFavoriteInfo {
     pub media_id: Uuid,
 }
 
+#[derive(Debug, Clone)]
+pub struct UserFlagChangedInfo {
+    pub user_id: Uuid,
+    pub media_id: Uuid,
+    pub flag: crate::db::UserFlag,
+    pub on: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RatingInfo {
     pub user_id: Uuid,
@@ -174,6 +182,7 @@ pub enum Event {
     MarkUnplayed(MarkUnplayedInfo),
     MarkFavorite(MarkFavoriteInfo),
     UnmarkFavorite(UnmarkFavoriteInfo),
+    UserFlagChanged(UserFlagChangedInfo),
     Rating(RatingInfo),
     UserUpdated(UserUpdatedInfo),
     UserDeleted(UserDeletedInfo),
@@ -194,6 +203,7 @@ pub enum EventType {
     MarkUnplayed,
     MarkFavorite,
     UnmarkFavorite,
+    UserFlagChanged,
     Rating,
     UserUpdated,
     UserDeleted,
@@ -215,6 +225,7 @@ impl Event {
             Event::MarkUnplayed(_) => EventType::MarkUnplayed,
             Event::MarkFavorite(_) => EventType::MarkFavorite,
             Event::UnmarkFavorite(_) => EventType::UnmarkFavorite,
+            Event::UserFlagChanged(_) => EventType::UserFlagChanged,
             Event::Rating(_) => EventType::Rating,
             Event::UserUpdated(_) => EventType::UserUpdated,
             Event::UserDeleted(_) => EventType::UserDeleted,

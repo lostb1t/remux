@@ -24,6 +24,9 @@ pub async fn studios(
             kind: Some(vec![db::MediaKind::Studio]),
             limit: q.limit,
             offset: q.start_index,
+            title_contains: q
+                .search_term
+                .clone(),
             total_count: true,
             user_state: api::items::favorite_user_state(
                 &q,

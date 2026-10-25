@@ -81,6 +81,10 @@ pub struct FilesystemPaths {
     pub web_path: String,
     #[serde(default = "default_dashboard_path")]
     pub dashboard_path: String,
+    /// The Remux web client, served at `/remux/`. Optional: without it the
+    /// server runs Jellyfin Web only.
+    #[serde(default = "default_remux_web_path")]
+    pub remux_web_path: String,
 }
 
 impl Default for FilesystemPaths {
@@ -88,6 +92,7 @@ impl Default for FilesystemPaths {
         Self {
             web_path: default_web_path(),
             dashboard_path: default_dashboard_path(),
+            remux_web_path: default_remux_web_path(),
         }
     }
 }
@@ -100,6 +105,9 @@ impl FilesystemPaths {
         }
         if let Ok(v) = std::env::var("DASHBOARD_PATH") {
             paths.dashboard_path = v;
+        }
+        if let Ok(v) = std::env::var("REMUX_WEB_PATH") {
+            paths.remux_web_path = v;
         }
         paths
     }
@@ -346,6 +354,10 @@ pub async fn init_app(
     };
 
     let web_client = make_web_client(conn.clone());
+    // The Remux client has its own UI, so no branding scripts are injected.
+    let remux_web = web_paths
+        .as_ref()
+        .map(|p| WebClientService::from_filesystem_plain(&p.remux_web_path));
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
@@ -425,24 +437,18 @@ pub async fn init_app(
     let base = Router::new()
         .route("/websocket", get(ws::ws_handler))
         .route("/socket", get(ws::ws_handler))
-        .route(
-            "/",
-            get(|uri: axum::http::Uri| async move {
-                let q = uri
-                    .query()
-                    .map(|q| format!("?{q}"))
-                    .unwrap_or_default();
-                Redirect::permanent(&format!("/web/{q}"))
-            }),
-        )
+        .route("/", get(web_client::root_redirect))
         .route("/serviceworker.js", get(web_client::root_serviceworker))
         .merge(collect_routes());
 
-    let router = base
+    let mut router = base
         .nest_service("/admin", admin)
         .nest_service("/web", web_client.clone())
-        .nest_service("/jellyfin", web_client)
-        .with_state(state);
+        .nest_service("/jellyfin", web_client);
+    if let Some(remux_web) = remux_web {
+        router = router.nest_service("/remux", remux_web);
+    }
+    let router = router.with_state(state);
 
     let router = router
         .layer(on_error(log_api_error))
@@ -558,6 +564,14 @@ fn default_web_path() -> String {
         .to_str()
         .map(str::to_owned)
         .unwrap_or_else(|| "/data/jellyfin-web".to_string())
+}
+
+fn default_remux_web_path() -> String {
+    default_data_dir()
+        .join("remux-web")
+        .to_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "/data/remux-web".to_string())
 }
 
 fn default_dashboard_path() -> String {
@@ -775,7 +789,7 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
         .replace("/emby", "");
 
     // Trim trailing slashes, but keep "/" for root, and preserve the trailing slash
-    // on SPA mount prefixes (/web/, /admin/, /jellyfin/) so WebClientService and
+    // on SPA mount prefixes (/web/, /admin/, /jellyfin/, /remux/) so WebClientService and
     // ServeDir can properly resolve relative asset URLs without infinite redirect loops.
     let trimmed = path.trim_end_matches('/');
     let path = if trimmed.is_empty() {
@@ -783,6 +797,7 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     } else if trimmed.eq_ignore_ascii_case("/web")
         || trimmed.eq_ignore_ascii_case("/admin")
         || trimmed.eq_ignore_ascii_case("/jellyfin")
+        || trimmed.eq_ignore_ascii_case("/remux")
     {
         if path.ends_with('/') {
             format!("{trimmed}/")
@@ -824,7 +839,14 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
         .collect::<Vec<_>>()
         .join("/");
 
-    let new_path = if path == "/" {
+    // Remux Web has path routes whose segments are case-sensitive (names,
+    // ids), unlike the API keywords normalised below. Leave its paths alone.
+    let is_remux_web = path.eq_ignore_ascii_case("/remux")
+        || path
+            .to_ascii_lowercase()
+            .starts_with("/remux/");
+
+    let new_path = if path == "/" || is_remux_web {
         path
     } else if is_file_like && !api_file_like {
         // Static file — preserve original casing.
@@ -1027,6 +1049,23 @@ mod rewrite_uri_tests {
             .uri()
             .path()
             .to_string()
+    }
+
+    /// `/remux/` lost its trailing slash here, so the web client service
+    /// redirected it back to `/remux/` and the browser looped.
+    #[test]
+    fn keeps_the_remux_web_mount_and_its_paths_untouched() {
+        assert_eq!(rewrite("/remux/"), "/remux/");
+        assert_eq!(rewrite("/remux"), "/remux");
+        assert_eq!(rewrite("/remux/assets/App.js"), "/remux/assets/App.js");
+        assert_eq!(
+            rewrite("/remux/library/Some-Name"),
+            "/remux/library/Some-Name"
+        );
+        assert_eq!(
+            rewrite("/remux/library/Some-Name/"),
+            "/remux/library/Some-Name"
+        );
     }
 
     #[test]

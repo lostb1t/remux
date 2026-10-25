@@ -900,6 +900,18 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 }),
         ),
         remux: Some(RemuxInfo {
+            watchlist: Some(
+                media
+                    .user_state
+                    .as_ref()
+                    .is_some_and(|s| s.watchlist),
+            ),
+            ignored: Some(
+                media
+                    .user_state
+                    .as_ref()
+                    .is_some_and(|s| s.ignored),
+            ),
             collection_kind: media
                 .collection_kind
                 .as_ref()
