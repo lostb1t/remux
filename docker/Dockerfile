@@ -13,6 +13,7 @@ ARG BGUTIL_POT_VER=0.8.1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
 ENV DASHBOARD_PATH=/app/dashboard
+ENV REMUX_WEB_PATH=/app/remux-web
 ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
 ENV LOG_FILE=/data/logs/remux.jsonl
 ENV TORRENT_DATA_DIR=/data/torrents
@@ -77,6 +78,7 @@ WORKDIR /app
 COPY remux-server .
 COPY dashboard ./dashboard
 COPY jellyfin-web ./jellyfin-web
+COPY remux-web ./remux-web
 
 EXPOSE 3000
 

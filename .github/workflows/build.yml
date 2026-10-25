@@ -86,6 +86,30 @@ jobs:
           path: jellyfin-web/
           retention-days: 1
 
+  fetch-remux-web:
+    name: Fetch Remux Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the newest Remux Web build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # lostb1t/remux-client-releases only publishes nightlies, each with
+          # one remux-web-<sha>.zip. Take the newest.
+          tag=$(gh release list --repo lostb1t/remux-client-releases --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Remux Web from $tag"
+          gh release download "$tag" --repo lostb1t/remux-client-releases --pattern 'remux-web-*.zip'
+          mkdir remux-web
+          unzip -q remux-web-*.zip -d remux-web
+          test -f remux-web/index.html
+
+      - name: Upload Remux Web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remux-web-dist
+          path: remux-web/
+          retention-days: 1
+
   build-dashboard:
     name: Build dashboard
     runs-on: ubuntu-latest
@@ -449,7 +473,7 @@ jobs:
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})
-    needs: [build-dashboard, build-server, build-jellyfin-web]
+    needs: [build-dashboard, build-server, build-jellyfin-web, fetch-remux-web]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -486,6 +510,12 @@ jobs:
         with:
           name: jellyfin-web-dist
           path: jellyfin-web/
+
+      - name: Download remux-web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remux-web-dist
+          path: remux-web/
 
       - name: Download server binary
         uses: actions/download-artifact@v4

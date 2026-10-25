@@ -527,17 +527,44 @@ where
 pub enum DefaultWebClient {
     #[default]
     Jellyfin,
+    Remux,
 }
 
 impl DefaultWebClient {
+    pub const ALL: [Self; 2] = [Self::Jellyfin, Self::Remux];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Jellyfin => "jellyfin",
+            Self::Remux => "remux",
         }
     }
 
-    pub fn from_str_lossy(_value: &str) -> Self {
-        Self::Jellyfin
+    /// Where the server mounts this client.
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::Jellyfin => "/web/",
+            Self::Remux => "/remux/",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Jellyfin => "Jellyfin Web",
+            Self::Remux => "Remux Web",
+        }
+    }
+
+    /// Unknown values (an older or hand-edited config) fall back to Jellyfin.
+    pub fn from_str_lossy(value: &str) -> Self {
+        match value
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "remux" => Self::Remux,
+            _ => Self::Jellyfin,
+        }
     }
 }
 

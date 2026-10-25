@@ -4,6 +4,7 @@ use crate::{
 };
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
+use remux_sdks::remux::DefaultWebClient;
 
 #[component]
 pub(crate) fn NavItem(
@@ -271,11 +272,13 @@ pub fn DashboardLayout() -> Element {
                 }
 
                 div { class: "sidebar-footer",
-                    a {
-                        class: "btn btn-ghost",
-                        style: "width:100%;margin-bottom:8px",
-                        href: "/",
-                        "Jellyfin Web"
+                    for client in DefaultWebClient::ALL {
+                        a {
+                            class: "btn btn-ghost",
+                            style: "width:100%;margin-bottom:8px",
+                            href: client.path(),
+                            "{client.label()}"
+                        }
                     }
                     button {
                         class: "btn btn-ghost",
