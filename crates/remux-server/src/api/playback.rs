@@ -3500,6 +3500,125 @@ mod tests {
         assert!(url.contains("MaxStreamingBitrate=2000000"), "{url}");
     }
 
+    /// The Remux web client's profile: it direct plays mp4/mov/webm/mkv and
+    /// asks for HLS in TS segments when it has to transcode.
+    fn web_client_profile() -> serde_json::Value {
+        json!({
+            "Name": "Remux Web",
+            "MaxStreamingBitrate": 120_000_000i64,
+            "DirectPlayProfiles": [
+                {
+                    "Type": "Video",
+                    "Container": "mp4,m4v,mov",
+                    "VideoCodec": "h264,hevc,av1,vp9",
+                    "AudioCodec": "aac,mp3,opus,flac,ac3,eac3"
+                },
+                {
+                    "Type": "Video",
+                    "Container": "webm",
+                    "VideoCodec": "vp8,vp9,av1",
+                    "AudioCodec": "opus,vorbis"
+                },
+                {
+                    "Type": "Video",
+                    "Container": "mkv",
+                    "VideoCodec": "h264,hevc,av1,vp9",
+                    "AudioCodec": "aac,mp3,opus,flac,ac3,eac3"
+                }
+            ],
+            "TranscodingProfiles": [{
+                "Type": "Video",
+                "Context": "Streaming",
+                "Protocol": "hls",
+                "Container": "ts",
+                "VideoCodec": "h264",
+                "AudioCodec": "aac"
+            }],
+            "CodecProfiles": [],
+            "SubtitleProfiles": []
+        })
+    }
+
+    async fn playback_info(
+        server: &axum_test::TestServer,
+        token: &str,
+        item_id: uuid::Uuid,
+        profile: serde_json::Value,
+    ) -> serde_json::Value {
+        server
+            .post(&format!("/items/{item_id}/playbackinfo"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
+            )
+            .json(&json!({ "DeviceProfile": profile }))
+            .await
+            .json::<serde_json::Value>()
+    }
+
+    /// A raw MPEG-TS stream is not an HLS playlist. The web client's transcoding
+    /// container is "ts" (HLS segments), which used to match a live source in
+    /// "ts" and turn the copy-copy remux into a "direct play" of the raw
+    /// stream, one a browser cannot play and the device's direct-play
+    /// profiles do not list.
+    #[tokio::test]
+    async fn live_ts_source_is_not_direct_played_by_a_browser() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = crate::integration_test::insert_test_source_with_container(
+            &guard.0,
+            crate::db::MediaKind::TvChannel,
+            VideoContainer::Ts,
+        )
+        .await;
+
+        let body = playback_info(&server, &token, media.id, web_client_profile()).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], false, "{source}");
+        assert!(
+            source["TranscodingUrl"]
+                .as_str()
+                .is_some(),
+            "a TS source must come back as an HLS transcode: {source}"
+        );
+    }
+
+    /// The same profile still direct plays a source it lists.
+    #[tokio::test]
+    async fn mp4_h264_aac_source_still_direct_plays_in_a_browser() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = insert_test_source(&guard.0).await;
+
+        let body = playback_info(&server, &token, media.id, web_client_profile()).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], true, "{source}");
+        assert!(source["TranscodingUrl"].is_null(), "{source}");
+    }
+
+    /// A native player that lists ts in its direct-play profiles keeps
+    /// playing the raw stream directly.
+    #[tokio::test]
+    async fn live_ts_source_still_direct_plays_when_the_device_lists_ts() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = crate::integration_test::insert_test_source_with_container(
+            &guard.0,
+            crate::db::MediaKind::TvChannel,
+            VideoContainer::Ts,
+        )
+        .await;
+        let mut profile = web_client_profile();
+        profile["Name"] = json!("MPV");
+        profile["DirectPlayProfiles"] = json!([{
+            "Type": "Video",
+            "Container": "mp4,mkv,ts",
+            "VideoCodec": "h264,hevc",
+            "AudioCodec": "aac,mp3,ac3"
+        }]);
+
+        let body = playback_info(&server, &token, media.id, profile).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], true, "{source}");
+    }
+
     /// `enable_direct_play: false` must force transcoding even with a matching
     /// direct-play profile.
     #[tokio::test]

@@ -437,15 +437,24 @@ fn build_video_transcode(
     // If policy constraints reduced both codecs to copy, this would be a no-op
     // remux. If the source container already matches the transcoding target
     // there is nothing to do — upgrade to direct play.
+    //
+    // Only when the device can play that container as is. The transcoding
+    // profile's "ts" can mean HLS segments (the web client), which says nothing
+    // about the raw TS stream a source in "ts" is: a container the device's
+    // direct-play profiles do not list (`ContainerNotSupported`) must be
+    // transcoded, here remuxed to HLS, not handed over raw.
     let needs_hevc_retag = reasons.contains(
         &api::TranscodeReason::VideoCodecTagNotSupported(String::new()),
     );
     let needs_stream_filter =
         reasons.contains(&api::TranscodeReason::StreamCountExceedsLimit(String::new()));
+    let container_not_playable =
+        reasons.contains(&api::TranscodeReason::ContainerNotSupported(String::new()));
     if video_codec == "copy"
         && audio_codec == "copy"
         && !needs_hevc_retag
         && !needs_stream_filter
+        && !container_not_playable
     {
         let src = source
             .container
