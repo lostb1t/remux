@@ -28,6 +28,7 @@ pub mod remux;
 pub mod search;
 pub mod session;
 pub mod shows;
+pub mod sso;
 pub mod startup;
 pub mod stream;
 pub mod stream_group;

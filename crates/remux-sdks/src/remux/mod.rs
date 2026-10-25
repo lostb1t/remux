@@ -6291,6 +6291,25 @@ impl Endpoint for GetBrandingConfiguration {
     }
 }
 
+/// An OpenID Connect provider users can sign in with, as listed by
+/// `GET /remux/sso/providers`. Start a sign-in at `/sso/oid/start/{Name}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SsoProvider {
+    pub name: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetSsoProviders;
+
+impl Endpoint for GetSsoProviders {
+    type Output = Vec<SsoProvider>;
+    fn path(&self) -> String {
+        "/remux/sso/providers".into()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateBrandingConfiguration {
     pub config: BrandingOptions,
