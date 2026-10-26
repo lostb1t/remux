@@ -13,6 +13,8 @@ use super::{
 };
 use crate::{AppContext, db, iptv};
 
+const IPTV_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
 // ---------------------------------------------------------------------------
 // IptvM3uPreset
 // ---------------------------------------------------------------------------
@@ -348,7 +350,9 @@ impl CatalogAddon for IptvAddon {
             return Ok(None);
         }
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .user_agent(IPTV_USER_AGENT)
+            .build()?;
         let source_id = self.source_id();
         let addon_id = self.addon_id;
 
