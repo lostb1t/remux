@@ -1404,6 +1404,12 @@ pub struct MediaFilter {
     pub include_user_state: bool,
     pub include_child_count: bool,
     pub include_relations: bool,
+    /// `Some(false)` skips person relations for Jellyfin list queries without
+    /// `Fields=People`; `None` preserves the historical internal-query behavior.
+    pub include_people: Option<bool>,
+    /// `None` preserves the internal query's historical behavior; Jellyfin
+    /// list queries set this from `Fields=Tags` to avoid unnecessary tag reads.
+    pub include_tags: Option<bool>,
     /// User ID to use when loading user state (separate from user_state filter)
     pub user_id: Option<Uuid>,
     pub user_state: Option<super::UserMediaStateFilter>,
@@ -5344,35 +5350,37 @@ impl Media {
                 .iter()
                 .map(|m| m.id)
                 .collect();
-            let mut tag_rows = Vec::new();
-            for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
-                let mut tags_qb = sqlx::QueryBuilder::new(
-                    "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
-                );
-                let mut sep = tags_qb.separated(", ");
-                for id in chunk {
-                    sep.push_bind(id);
+            if filter.include_tags != Some(false) {
+                let mut tag_rows = Vec::new();
+                for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
+                    let mut tags_qb = sqlx::QueryBuilder::new(
+                        "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
+                    );
+                    let mut sep = tags_qb.separated(", ");
+                    for id in chunk {
+                        sep.push_bind(id);
+                    }
+                    tags_qb.push(") ORDER BY tag");
+                    tag_rows.extend(
+                        tags_qb
+                            .build()
+                            .fetch_all(db)
+                            .await?,
+                    );
                 }
-                tags_qb.push(") ORDER BY tag");
-                tag_rows.extend(
-                    tags_qb
-                        .build()
-                        .fetch_all(db)
-                        .await?,
-                );
-            }
-            let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
-            for row in tag_rows {
-                let media_id: Uuid = row.get(0);
-                let tag: String = row.get(1);
-                tags_map
-                    .entry(media_id)
-                    .or_default()
-                    .push(tag);
-            }
-            for media in &mut records {
-                if let Some(tags) = tags_map.remove(&media.id) {
-                    media.tags = tags;
+                let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+                for row in tag_rows {
+                    let media_id: Uuid = row.get(0);
+                    let tag: String = row.get(1);
+                    tags_map
+                        .entry(media_id)
+                        .or_default()
+                        .push(tag);
+                }
+                for media in &mut records {
+                    if let Some(tags) = tags_map.remove(&media.id) {
+                        media.tags = tags;
+                    }
                 }
             }
 
@@ -5422,7 +5430,14 @@ impl Media {
                     for id in chunk {
                         sep.push_bind(id);
                     }
-                    g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+                    g_qb.push(")");
+                    if filter.include_people == Some(false) {
+                        g_qb.push(
+                            " AND (mr.role IS NULL OR mr.role NOT IN \
+                             ('actor', 'director', 'writer', 'producer', 'creator'))",
+                        );
+                    }
+                    g_qb.push(" ORDER BY mr.left_media_id, mr.weight");
                     rows.extend(
                         g_qb.build()
                             .fetch_all(db)
@@ -6736,16 +6751,21 @@ impl Media {
                         .as_deref()
                         .map(|f| f.contains(&api::ItemFields::ChildCount))
                         .unwrap_or(false),
-                include_relations: filter
-                    .fields
-                    .as_deref()
-                    .map(|f| {
-                        f.contains(&api::ItemFields::People)
-                            || f.contains(&api::ItemFields::Genres)
-                            || f.contains(&api::ItemFields::Studios)
-                            || f.contains(&api::ItemFields::ProductionLocations)
-                    })
-                    .unwrap_or(false),
+                include_relations: api::fields_include_relations(
+                    filter
+                        .fields
+                        .as_deref(),
+                ),
+                include_people: Some(api::fields_include_people(
+                    filter
+                        .fields
+                        .as_deref(),
+                )),
+                include_tags: Some(api::fields_include_tags(
+                    filter
+                        .fields
+                        .as_deref(),
+                )),
                 total_count,
                 user_state,
                 genre_ids,
@@ -12895,6 +12915,85 @@ mod relation_delete_tests {
         expected.sort();
         assert_eq!(pairs, expected);
     }
+
+    #[tokio::test]
+    async fn get_by_filter_skips_person_rows_when_people_not_requested() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut movie = Media {
+            title: "Movie with cast and genre".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt6000001".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut person = Media {
+            title: "Cast member".into(),
+            kind: MediaKind::Person,
+            ..Default::default()
+        };
+        let mut genre = Media {
+            title: "Drama".into(),
+            kind: MediaKind::Genre,
+            ..Default::default()
+        };
+        for item in [&mut movie, &mut person, &mut genre] {
+            item.save(db)
+                .await
+                .unwrap();
+        }
+        MediaRelation::upsert(
+            db,
+            &[
+                MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: person.id,
+                    role: Some(RelationRole::Actor),
+                    ..Default::default()
+                },
+                MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: genre.id,
+                    role: Some(RelationRole::Catalog),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                id: Some(vec![movie.id]),
+                include_relations: true,
+                include_people: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let relations = result.records[0]
+            .relations
+            .as_ref()
+            .unwrap();
+        assert!(
+            relations
+                .iter()
+                .any(|(_, related)| related.kind == MediaKind::Genre)
+        );
+        assert!(
+            relations
+                .iter()
+                .all(|(_, related)| related.kind != MediaKind::Person)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -14140,6 +14239,44 @@ mod played_filter_plan_tests {
         assert!(
             !plan.contains("idx_media_kind_grandparent"),
             "the rollup must not walk every episode in the library; plan: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unplayed_filter_uses_composite_user_media_index() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let user_id = Uuid::new_v4();
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT media.id FROM media WHERE kind IN ('movie', 'series') \
+             AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                             WHERE ums.media_id = media.id AND ums.user_id = ? \
+                               AND ums.play_count > 0)",
+        )
+        .bind(user_id)
+        .fetch_all(&db)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>(3))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+        assert!(
+            plan.contains(
+                "SEARCH ums USING INDEX idx_ums_user_media (user_id=? AND media_id=?)"
+            ) || plan.contains(
+                "SEARCH ums USING INDEX sqlite_autoindex_user_media_state_1 (user_id=? AND media_id=?)"
+            ),
+            "IsUnplayed must probe a composite (user_id, media_id) index; plan: {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN ums"),
+            "IsUnplayed must not scan user_media_state; plan: {plan}"
         );
     }
 

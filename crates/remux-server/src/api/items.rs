@@ -32,6 +32,27 @@ use super::{mock_items, stub_json};
 pub struct ItemsQueryResult {
     pub items: Vec<api::BaseItemDto>,
     pub total_count: i64,
+    fields: Option<Vec<api::ItemFields>>,
+}
+
+impl ItemsQueryResult {
+    pub fn serialized_items(&self) -> Vec<serde_json::Value> {
+        serialize_item_list(
+            &self.items,
+            self.fields
+                .as_deref(),
+        )
+    }
+}
+
+pub fn serialize_item_list(
+    items: &[api::BaseItemDto],
+    fields: Option<&[api::ItemFields]>,
+) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| item_to_list_value(item, fields))
+        .collect()
 }
 
 fn apply_permissions(item: &mut api::BaseItemDto, user: &db::User) {
@@ -64,6 +85,7 @@ pub struct ItemsQueryResultBuilder {
     hide_sources: bool,
     /// Per-client override for CollectionType::Mixed. None = leave as Mixed.
     mixed_collection_type: Option<api::CollectionType>,
+    fields: Option<Vec<api::ItemFields>>,
 }
 
 impl ItemsQueryResultBuilder {
@@ -79,6 +101,7 @@ impl ItemsQueryResultBuilder {
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
+            fields: None,
         }
     }
 
@@ -94,6 +117,7 @@ impl ItemsQueryResultBuilder {
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
+            fields: None,
         }
     }
 
@@ -123,12 +147,21 @@ impl ItemsQueryResultBuilder {
         self
     }
 
+    pub fn with_fields(mut self, fields: Option<Vec<api::ItemFields>>) -> Self {
+        self.fields = fields;
+        self
+    }
+
     pub fn build(self) -> ItemsQueryResult {
+        let fields = self
+            .fields
+            .as_deref();
         let mut items: Vec<api::BaseItemDto> = match self.items {
             ItemsSource::Raw(media) => media
                 .into_iter()
                 .map(|m| {
-                    let mut dto = api::db_media_to_item(m, self.hide_sources);
+                    let mut dto =
+                        api::db_media_to_item_for_list(m, self.hide_sources, fields);
                     if self.apply_permissions {
                         apply_permissions(
                             &mut dto,
@@ -168,8 +201,44 @@ impl ItemsQueryResultBuilder {
         ItemsQueryResult {
             items,
             total_count: self.total_count,
+            fields: self.fields,
         }
     }
+}
+
+/// Lists include Jellyfin's basic fields by default, plus only the requested
+/// `ItemFields`. Detail endpoints continue to serialize the full DTO.
+fn item_to_list_value(
+    item: &api::BaseItemDto,
+    fields: Option<&[api::ItemFields]>,
+) -> serde_json::Value {
+    use api::ItemFields as F;
+    let includes = |field| fields.is_some_and(|fields| fields.contains(&field));
+    let mut value = serde_json::to_value(item).unwrap_or_default();
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+
+    for (field, names) in [
+        (F::ExternalUrls, &["ExternalUrls"][..]),
+        (F::Genres, &["Genres", "GenreItems"][..]),
+        (F::MediaSources, &["MediaSources"][..]),
+        (F::Overview, &["Overview"][..]),
+        (F::Path, &["Path"][..]),
+        (F::People, &["People"][..]),
+        (F::ProductionLocations, &["ProductionLocations"][..]),
+        (F::ProviderIds, &["ProviderIds"][..]),
+        (F::Studios, &["Studios"][..]),
+        (F::Taglines, &["Taglines"][..]),
+        (F::Tags, &["Tags"][..]),
+    ] {
+        if !includes(field) {
+            for name in names {
+                object.remove(*name);
+            }
+        }
+    }
+    value
 }
 
 /// `GET /api/danmu/{item_id}/raw` — danmu not supported; return 404 so clients don't get SPA HTML.
@@ -467,6 +536,10 @@ pub async fn get_items(
                 session,
                 paged_items,
                 total_count,
+            )
+            .with_fields(
+                q.fields
+                    .clone(),
             ));
         }
     }
@@ -536,7 +609,11 @@ pub async fn get_items(
                     }
                 }
             }
-            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
+            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total)
+                .with_fields(
+                    q.fields
+                        .clone(),
+                ));
         }
 
         // collection browse
@@ -569,6 +646,10 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
@@ -602,6 +683,10 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
@@ -628,6 +713,10 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
@@ -743,6 +832,10 @@ pub async fn get_items(
                 session,
                 result.records,
                 result.total_count as i64,
+            )
+            .with_fields(
+                q.fields
+                    .clone(),
             ));
         }
 
@@ -841,7 +934,11 @@ pub async fn get_items(
             )
             .await?;
             if let Some(media) = media {
-                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1));
+                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1)
+                    .with_fields(
+                        q.fields
+                            .clone(),
+                    ));
             }
         }
     }
@@ -850,6 +947,10 @@ pub async fn get_items(
         session,
         result.records,
         result.total_count as i64,
+    )
+    .with_fields(
+        q.fields
+            .clone(),
     ))
 }
 
@@ -916,7 +1017,7 @@ pub async fn items_flat(
         .with_permissions()
         .with_client_patches()
         .build();
-    Ok(Json::<Vec<api::BaseItemDto>>(items.items))
+    Ok(Json(items.serialized_items()))
 }
 
 #[get("/items")]
@@ -963,14 +1064,11 @@ pub async fn items(
         .with_client_patches()
         .build();
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or_else(|| 0),
-        ..Default::default()
-    })
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    }))
     .into_response())
 }
 
@@ -2421,14 +2519,11 @@ pub async fn persons(
         .with_permissions()
         .with_client_patches()
         .build();
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 #[get("/items/filters")]
@@ -2830,6 +2925,18 @@ pub async fn genres(
             offset: q.start_index,
             total_count: true,
             include_child_count: want_item_counts,
+            include_relations: api::fields_include_relations(
+                q.fields
+                    .as_deref(),
+            ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
+            include_tags: Some(api::fields_include_tags(
+                q.fields
+                    .as_deref(),
+            )),
             genre_related_kinds,
             parent_id: q.parent_id,
             parent,
@@ -2858,18 +2965,23 @@ pub async fn genres(
     )
     .await?;
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, false))
-            .collect(),
-        total_record_count: result.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    let items = result
+        .records
+        .into_iter()
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 /// Favorite filter for the name-list endpoints (`/Studios`, `/Genres`), which
@@ -2926,6 +3038,18 @@ pub async fn music_genres(
             offset: q.start_index,
             total_count: true,
             include_child_count: want_item_counts,
+            include_relations: api::fields_include_relations(
+                q.fields
+                    .as_deref(),
+            ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
+            include_tags: Some(api::fields_include_tags(
+                q.fields
+                    .as_deref(),
+            )),
             genre_related_kinds,
             policy_filter: policy
                 .and_then(|p| {
@@ -2950,18 +3074,23 @@ pub async fn music_genres(
     )
     .await?;
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, false))
-            .collect(),
-        total_record_count: result.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    let items = result
+        .records
+        .into_iter()
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 /// `/MusicGenres/{name}` — returns a single music genre item by display name.
@@ -3174,9 +3303,11 @@ pub async fn items_similar(
     .await?;
 
     if scored_ids.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult {
-            ..Default::default()
-        }));
+        return Ok(Json(serde_json::json!({
+            "Items": [],
+            "TotalRecordCount": total,
+            "StartIndex": offset,
+        })));
     }
 
     // Fetch full items in score order.
@@ -3194,6 +3325,18 @@ pub async fn items_similar(
                     .id,
             )),
         include_user_state: true,
+        include_relations: api::fields_include_relations(
+            q.fields
+                .as_deref(),
+        ),
+        include_people: Some(api::fields_include_people(
+            q.fields
+                .as_deref(),
+        )),
+        include_tags: Some(api::fields_include_tags(
+            q.fields
+                .as_deref(),
+        )),
         ..Default::default()
     };
     let result = db::Media::get_by_filter(
@@ -3210,7 +3353,14 @@ pub async fn items_similar(
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
         .collect();
     items.sort_by_key(|item| {
         let id = item.id;
@@ -3222,12 +3372,11 @@ pub async fn items_similar(
         )
     });
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items,
-        total_record_count: total,
-        start_index: offset,
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": total,
+        "StartIndex": offset,
+    })))
 }
 
 #[get("/items/{id}/thememedia")]
@@ -5337,6 +5486,274 @@ mod tests {
             recursive.contains(&"Some movie".to_string()),
             "got: {recursive:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn item_lists_only_serialize_requested_extended_fields() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let (id, external_ids) =
+            make_content_ids(db::MediaKind::Movie, "tt-fields-test");
+        let mut movie = db::Media {
+            id,
+            title: "Fields test movie".to_string(),
+            kind: db::MediaKind::Movie,
+            description: Some("A test overview".to_string()),
+            released_at: Some(Utc::now().naive_utc()),
+            external_ids,
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut person = db::Media {
+            title: "Fields test person".to_string(),
+            kind: db::MediaKind::Person,
+            ..Default::default()
+        };
+        let mut studio = db::Media {
+            title: "Fields test studio".to_string(),
+            kind: db::MediaKind::Studio,
+            ..Default::default()
+        };
+        let mut genre = db::Media {
+            title: "Fields test genre".to_string(),
+            kind: db::MediaKind::Genre,
+            ..Default::default()
+        };
+        for related in [&mut person, &mut studio, &mut genre] {
+            related
+                .save(db)
+                .await
+                .unwrap();
+        }
+        let mut person_ids = vec![person.id];
+        for n in 0..29 {
+            let mut payload_person = db::Media {
+                title: format!("Payload performer {n:02} with a longer fixture name"),
+                kind: db::MediaKind::Person,
+                ..Default::default()
+            };
+            payload_person
+                .save(db)
+                .await
+                .unwrap();
+            person_ids.push(payload_person.id);
+        }
+        let mut movie_relations = [
+            (studio.id, Some(db::RelationRole::Catalog)),
+            (genre.id, Some(db::RelationRole::Catalog)),
+        ]
+        .into_iter()
+        .map(|(right_media_id, role)| db::MediaRelation {
+            left_media_id: movie.id,
+            right_media_id,
+            role,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+        movie_relations.extend(
+            person_ids
+                .iter()
+                .map(|right_media_id| db::MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: *right_media_id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                }),
+        );
+        db::MediaRelation::upsert(db, &movie_relations)
+            .await
+            .unwrap();
+
+        let mut channel = db::Media {
+            title: "Fields test channel".to_string(),
+            kind: db::MediaKind::TvChannel,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://example.com/live.m3u8",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        channel
+            .save(db)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(movie.id)
+            .bind("Fields test tag")
+            .execute(db)
+            .await
+            .unwrap();
+
+        let request = |path: &'static str| {
+            server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+        let bare_response: serde_json::Value = request("/items?recursive=true")
+            .await
+            .json();
+        let bare_items = bare_response["Items"]
+            .as_array()
+            .unwrap();
+        let bare = bare_items
+            .iter()
+            .find(|item| item["Name"] == "Fields test movie")
+            .expect("movie should be present in recursive item list");
+        for key in [
+            "People",
+            "MediaSources",
+            "Studios",
+            "GenreItems",
+            "Tags",
+            "ExternalUrls",
+            "Path",
+            "Overview",
+            "ProviderIds",
+        ] {
+            assert!(
+                bare.get(key)
+                    .is_none(),
+                "unexpected {key}: {bare}"
+            );
+        }
+        assert!(
+            bare.get("PremiereDate")
+                .is_some(),
+            "PremiereDate should be present in bare lists: {bare}"
+        );
+
+        let bare_channel = bare_items
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(bare_channel["LocationType"], "Remote");
+        assert_eq!(bare_channel["CanDelete"], false);
+        assert_eq!(bare_channel["CanDownload"], false);
+        assert_eq!(bare_channel["LockData"], false);
+        assert_eq!(bare_channel["IsPlaceHolder"], false);
+        assert!(
+            bare_channel
+                .get("MediaSources")
+                .is_none()
+        );
+
+        let detailed_response: serde_json::Value = request(
+            "/items?recursive=true&fields=People,MediaSources,Studios,Genres,Tags,ExternalUrls,Path,Overview,ProviderIds",
+        )
+        .await
+        .json();
+        let detailed = detailed_response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == "Fields test movie")
+            .expect("movie should be present in recursive item list");
+        for key in [
+            "People",
+            "MediaSources",
+            "Studios",
+            "GenreItems",
+            "Tags",
+            "ExternalUrls",
+            "Path",
+            "Overview",
+            "ProviderIds",
+        ] {
+            assert!(
+                detailed
+                    .get(key)
+                    .is_some(),
+                "missing {key}: {detailed}"
+            );
+        }
+        assert!(
+            detailed["People"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|person| person["Name"] == "Fields test person")
+        );
+        assert_eq!(detailed["Studios"][0]["Name"], "Fields test studio");
+        assert_eq!(detailed["GenreItems"][0]["Name"], "Fields test genre");
+        assert_eq!(detailed["Tags"][0], "Fields test tag");
+        assert_eq!(detailed["Overview"], "A test overview");
+
+        let detailed_channel = detailed_response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(
+            detailed_channel["MediaSources"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(detailed_channel["MediaSources"][0]["IsRemote"], true);
+
+        for n in 0..44 {
+            let (id, external_ids) = make_content_ids(
+                db::MediaKind::Movie,
+                &format!("tt-fields-payload-{n}"),
+            );
+            db::Media {
+                id,
+                title: format!("Payload movie {n}"),
+                kind: db::MediaKind::Movie,
+                external_ids,
+                ..Default::default()
+            }
+            .save(db)
+            .await
+            .unwrap();
+            db::MediaRelation::upsert(
+                db,
+                &person_ids
+                    .iter()
+                    .map(|right_media_id| db::MediaRelation {
+                        left_media_id: id,
+                        right_media_id: *right_media_id,
+                        role: Some(db::RelationRole::Actor),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+        }
+        let measured: serde_json::Value =
+            request("/items?recursive=true&limit=45&fields=ProviderIds,Genres")
+                .await
+                .json();
+        assert_eq!(
+            measured["Items"]
+                .as_array()
+                .map(Vec::len),
+            Some(45)
+        );
+        let payload_bytes = serde_json::to_vec(&measured)
+            .unwrap()
+            .len();
+        assert!(
+            payload_bytes < 100_000,
+            "45-item list payload exceeded 100 KB: {} bytes",
+            payload_bytes
+        );
+        println!("45-item list payload: {payload_bytes} bytes");
     }
 
     // Regression #414: a promoted collection-of-collections must disappear

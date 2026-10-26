@@ -51,14 +51,11 @@ pub async fn shows_seasons(
         .with_client_patches()
         .build();
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 #[get("/shows/{id}/episodes")]
@@ -131,14 +128,11 @@ pub async fn shows_episodes(
         .with_client_patches()
         .build();
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 #[get("/shows/nextup")]
@@ -541,7 +535,11 @@ async fn shows_nextup_all(
 ) -> Result<impl IntoResponse> {
     let candidates = next_up_candidates(&state, &session, &q).await?;
     if candidates.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult::default()));
+        return Ok(Json(serde_json::json!({
+            "Items": [],
+            "TotalRecordCount": 0,
+            "StartIndex": q.start_index.unwrap_or_default(),
+        })));
     }
     let order: HashMap<Uuid, usize> = candidates
         .iter()
@@ -567,24 +565,22 @@ async fn shows_nextup_all(
         .items;
     items.sort_by_key(|item| order[&item.id]);
     let total = items.len() as i64;
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items
-            .into_iter()
-            .skip(
-                q.start_index
-                    .unwrap_or(0) as usize,
-            )
-            .take(
-                q.limit
-                    .unwrap_or(u32::MAX) as usize,
-            )
-            .collect(),
-        total_record_count: total,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    let items: Vec<_> = items
+        .into_iter()
+        .skip(
+            q.start_index
+                .unwrap_or(0) as usize,
+        )
+        .take(
+            q.limit
+                .unwrap_or(u32::MAX) as usize,
+        )
+        .collect();
+    Ok(Json(serde_json::json!({
+        "Items": super::items::serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": total,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 /// Upcoming episodes sorted by premiere date, soonest first.
@@ -671,6 +667,18 @@ pub async fn shows_upcoming(
             total_count: q
                 .enable_total_record_count
                 .unwrap_or(true),
+            include_relations: api::fields_include_relations(
+                q.fields
+                    .as_deref(),
+            ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
+            include_tags: Some(api::fields_include_tags(
+                q.fields
+                    .as_deref(),
+            )),
             max_parental_rating: policy.and_then(|p| p.max_parental_rating),
             blocked_tags: policy
                 .map(|p| {
@@ -698,17 +706,21 @@ pub async fn shows_upcoming(
     let items = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
         .collect::<Vec<_>>();
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        total_record_count: result.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        items,
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": super::items::serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 // --------------------------------------------------------------------------

@@ -4,6 +4,23 @@ use crate::{common, db};
 use anyhow::Result;
 use chrono::Datelike;
 
+pub fn fields_include_relations(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| {
+        fields.contains(&ItemFields::People)
+            || fields.contains(&ItemFields::Genres)
+            || fields.contains(&ItemFields::Studios)
+            || fields.contains(&ItemFields::ProductionLocations)
+    })
+}
+
+pub fn fields_include_people(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| fields.contains(&ItemFields::People))
+}
+
+pub fn fields_include_tags(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| fields.contains(&ItemFields::Tags))
+}
+
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     let next_idx = source
         .media_streams
@@ -339,6 +356,25 @@ fn community_rating(media: &db::Media) -> Option<f64> {
 }
 
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
+    db_media_to_item_inner(media, hide_sources, true)
+}
+
+pub fn db_media_to_item_for_list(
+    media: db::Media,
+    hide_sources: bool,
+    fields: Option<&[ItemFields]>,
+) -> BaseItemDto {
+    let include_sources = fields.is_some_and(|fields| {
+        fields.contains(&ItemFields::MediaSources) || fields.contains(&ItemFields::Path)
+    });
+    db_media_to_item_inner(media, hide_sources, include_sources)
+}
+
+fn db_media_to_item_inner(
+    media: db::Media,
+    hide_sources: bool,
+    include_sources: bool,
+) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
     let type_ = media
@@ -1088,41 +1124,43 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             || media.kind == db::MediaKind::Track)
     {
         item.can_download = Some(true);
-        item.media_sources = match media
-            .sources
-            .clone()
-        {
-            Some(sources) if sources.is_empty() => Some(stub_sources(&media)),
-            Some(sources) => {
-                let mut infos: Vec<MediaSourceInfo> = sources
-                    .into_iter()
-                    .map(MediaSourceInfo::from)
-                    .collect();
-                // Clients expect the first source's ID to equal the parent item's ID.
-                if !infos.is_empty() {
-                    infos[0].id = media.id;
-                    infos[0].e_tag = media.id;
-                }
-                Some(infos)
-            }
-            None => Some(stub_sources(&media)),
-        };
-        item.path = item
-            .media_sources
-            .as_ref()
-            .and_then(|s| s.first())
-            .and_then(|s| {
-                s.path
-                    .as_deref()
-            })
-            .map(|p| format!("{}.strm", p));
-        item.bitrate = item
-            .media_sources
-            .as_ref()
-            .and_then(|s| s.first())
-            .and_then(|s| s.bitrate);
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
+        }
+        if include_sources {
+            item.media_sources = match media
+                .sources
+                .clone()
+            {
+                Some(sources) if sources.is_empty() => Some(stub_sources(&media)),
+                Some(sources) => {
+                    let mut infos: Vec<MediaSourceInfo> = sources
+                        .into_iter()
+                        .map(MediaSourceInfo::from)
+                        .collect();
+                    // Clients expect the first source's ID to equal the parent item's ID.
+                    if !infos.is_empty() {
+                        infos[0].id = media.id;
+                        infos[0].e_tag = media.id;
+                    }
+                    Some(infos)
+                }
+                None => Some(stub_sources(&media)),
+            };
+            item.path = item
+                .media_sources
+                .as_ref()
+                .and_then(|s| s.first())
+                .and_then(|s| {
+                    s.path
+                        .as_deref()
+                })
+                .map(|p| format!("{}.strm", p));
+            item.bitrate = item
+                .media_sources
+                .as_ref()
+                .and_then(|s| s.first())
+                .and_then(|s| s.bitrate);
         }
     }
 
@@ -1153,33 +1191,35 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         item.can_download = Some(false);
         item.lock_data = Some(false);
         item.is_place_holder = Some(false);
-        // Channels use direct-play passthrough — no GStreamer probe needed.
-        item.media_sources = Some(vec![MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some(
-                media
-                    .title
-                    .clone(),
-            ),
-            path: media
-                .stream_info
-                .as_ref()
-                .and_then(|si| {
-                    si.descriptor
-                        .as_http_url()
-                        .map(str::to_owned)
-                }),
-            protocol: MediaProtocol::Http,
-            is_remote: true,
-            is_infinite_stream: true,
-            supports_direct_play: true,
-            supports_direct_stream: true,
-            supports_transcoding: true,
-            type_: MediaSourceType::Placeholder,
-            video_type: VideoType::VideoFile,
-            ..Default::default()
-        }]);
+        if include_sources {
+            // Channels use direct-play passthrough — no GStreamer probe needed.
+            item.media_sources = Some(vec![MediaSourceInfo {
+                id: media.id,
+                e_tag: media.id,
+                name: Some(
+                    media
+                        .title
+                        .clone(),
+                ),
+                path: media
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| {
+                        si.descriptor
+                            .as_http_url()
+                            .map(str::to_owned)
+                    }),
+                protocol: MediaProtocol::Http,
+                is_remote: true,
+                is_infinite_stream: true,
+                supports_direct_play: true,
+                supports_direct_stream: true,
+                supports_transcoding: true,
+                type_: MediaSourceType::Placeholder,
+                video_type: VideoType::VideoFile,
+                ..Default::default()
+            }]);
+        }
     }
 
     if media.kind == db::MediaKind::Collection {
