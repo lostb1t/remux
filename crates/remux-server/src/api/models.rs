@@ -13,6 +13,10 @@ pub fn fields_include_relations(fields: Option<&[ItemFields]>) -> bool {
     })
 }
 
+pub fn fields_include_people(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| fields.contains(&ItemFields::People))
+}
+
 pub fn fields_include_tags(fields: Option<&[ItemFields]>) -> bool {
     fields.is_some_and(|fields| fields.contains(&ItemFields::Tags))
 }
@@ -1181,39 +1185,41 @@ fn db_media_to_item_inner(
         item.lock_data = Some(false);
     }
 
-    if include_sources && media.kind == db::MediaKind::TvChannel {
+    if media.kind == db::MediaKind::TvChannel {
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
         item.lock_data = Some(false);
         item.is_place_holder = Some(false);
-        // Channels use direct-play passthrough — no GStreamer probe needed.
-        item.media_sources = Some(vec![MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some(
-                media
-                    .title
-                    .clone(),
-            ),
-            path: media
-                .stream_info
-                .as_ref()
-                .and_then(|si| {
-                    si.descriptor
-                        .as_http_url()
-                        .map(str::to_owned)
-                }),
-            protocol: MediaProtocol::Http,
-            is_remote: true,
-            is_infinite_stream: true,
-            supports_direct_play: true,
-            supports_direct_stream: true,
-            supports_transcoding: true,
-            type_: MediaSourceType::Placeholder,
-            video_type: VideoType::VideoFile,
-            ..Default::default()
-        }]);
+        if include_sources {
+            // Channels use direct-play passthrough — no GStreamer probe needed.
+            item.media_sources = Some(vec![MediaSourceInfo {
+                id: media.id,
+                e_tag: media.id,
+                name: Some(
+                    media
+                        .title
+                        .clone(),
+                ),
+                path: media
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| {
+                        si.descriptor
+                            .as_http_url()
+                            .map(str::to_owned)
+                    }),
+                protocol: MediaProtocol::Http,
+                is_remote: true,
+                is_infinite_stream: true,
+                supports_direct_play: true,
+                supports_direct_stream: true,
+                supports_transcoding: true,
+                type_: MediaSourceType::Placeholder,
+                video_type: VideoType::VideoFile,
+                ..Default::default()
+            }]);
+        }
     }
 
     if media.kind == db::MediaKind::Collection {

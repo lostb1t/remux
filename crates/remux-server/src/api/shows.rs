@@ -671,6 +671,10 @@ pub async fn shows_upcoming(
                 q.fields
                     .as_deref(),
             ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
             include_tags: Some(api::fields_include_tags(
                 q.fields
                     .as_deref(),

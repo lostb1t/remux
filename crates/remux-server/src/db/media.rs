@@ -1404,6 +1404,9 @@ pub struct MediaFilter {
     pub include_user_state: bool,
     pub include_child_count: bool,
     pub include_relations: bool,
+    /// `Some(false)` skips person relations for Jellyfin list queries without
+    /// `Fields=People`; `None` preserves the historical internal-query behavior.
+    pub include_people: Option<bool>,
     /// `None` preserves the internal query's historical behavior; Jellyfin
     /// list queries set this from `Fields=Tags` to avoid unnecessary tag reads.
     pub include_tags: Option<bool>,
@@ -5427,7 +5430,14 @@ impl Media {
                     for id in chunk {
                         sep.push_bind(id);
                     }
-                    g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+                    g_qb.push(")");
+                    if filter.include_people == Some(false) {
+                        g_qb.push(
+                            " AND (mr.role IS NULL OR mr.role NOT IN \
+                             ('actor', 'director', 'writer', 'producer', 'creator'))",
+                        );
+                    }
+                    g_qb.push(" ORDER BY mr.left_media_id, mr.weight");
                     rows.extend(
                         g_qb.build()
                             .fetch_all(db)
@@ -6746,6 +6756,11 @@ impl Media {
                         .fields
                         .as_deref(),
                 ),
+                include_people: Some(api::fields_include_people(
+                    filter
+                        .fields
+                        .as_deref(),
+                )),
                 include_tags: Some(api::fields_include_tags(
                     filter
                         .fields
@@ -12899,6 +12914,85 @@ mod relation_delete_tests {
         ];
         expected.sort();
         assert_eq!(pairs, expected);
+    }
+
+    #[tokio::test]
+    async fn get_by_filter_skips_person_rows_when_people_not_requested() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut movie = Media {
+            title: "Movie with cast and genre".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt6000001".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut person = Media {
+            title: "Cast member".into(),
+            kind: MediaKind::Person,
+            ..Default::default()
+        };
+        let mut genre = Media {
+            title: "Drama".into(),
+            kind: MediaKind::Genre,
+            ..Default::default()
+        };
+        for item in [&mut movie, &mut person, &mut genre] {
+            item.save(db)
+                .await
+                .unwrap();
+        }
+        MediaRelation::upsert(
+            db,
+            &[
+                MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: person.id,
+                    role: Some(RelationRole::Actor),
+                    ..Default::default()
+                },
+                MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: genre.id,
+                    role: Some(RelationRole::Catalog),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                id: Some(vec![movie.id]),
+                include_relations: true,
+                include_people: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let relations = result.records[0]
+            .relations
+            .as_ref()
+            .unwrap();
+        assert!(
+            relations
+                .iter()
+                .any(|(_, related)| related.kind == MediaKind::Genre)
+        );
+        assert!(
+            relations
+                .iter()
+                .all(|(_, related)| related.kind != MediaKind::Person)
+        );
     }
 }
 

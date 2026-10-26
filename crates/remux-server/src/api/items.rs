@@ -226,7 +226,6 @@ fn item_to_list_value(
         (F::Overview, &["Overview"][..]),
         (F::Path, &["Path"][..]),
         (F::People, &["People"][..]),
-        (F::PremiereDate, &["PremiereDate"][..]),
         (F::ProductionLocations, &["ProductionLocations"][..]),
         (F::ProviderIds, &["ProviderIds"][..]),
         (F::Studios, &["Studios"][..]),
@@ -2930,6 +2929,10 @@ pub async fn genres(
                 q.fields
                     .as_deref(),
             ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
             include_tags: Some(api::fields_include_tags(
                 q.fields
                     .as_deref(),
@@ -3039,6 +3042,10 @@ pub async fn music_genres(
                 q.fields
                     .as_deref(),
             ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
             include_tags: Some(api::fields_include_tags(
                 q.fields
                     .as_deref(),
@@ -3322,6 +3329,10 @@ pub async fn items_similar(
             q.fields
                 .as_deref(),
         ),
+        include_people: Some(api::fields_include_people(
+            q.fields
+                .as_deref(),
+        )),
         include_tags: Some(api::fields_include_tags(
             q.fields
                 .as_deref(),
@@ -5521,22 +5532,61 @@ mod tests {
                 .await
                 .unwrap();
         }
-        db::MediaRelation::upsert(
-            db,
-            &[
-                (person.id, Some(db::RelationRole::Actor)),
-                (studio.id, Some(db::RelationRole::Catalog)),
-                (genre.id, Some(db::RelationRole::Catalog)),
-            ]
-            .map(|(right_media_id, role)| db::MediaRelation {
-                left_media_id: movie.id,
-                right_media_id,
-                role,
+        let mut person_ids = vec![person.id];
+        for n in 0..29 {
+            let mut payload_person = db::Media {
+                title: format!("Payload performer {n:02} with a longer fixture name"),
+                kind: db::MediaKind::Person,
+                ..Default::default()
+            };
+            payload_person
+                .save(db)
+                .await
+                .unwrap();
+            person_ids.push(payload_person.id);
+        }
+        let mut movie_relations = [
+            (studio.id, Some(db::RelationRole::Catalog)),
+            (genre.id, Some(db::RelationRole::Catalog)),
+        ]
+        .into_iter()
+        .map(|(right_media_id, role)| db::MediaRelation {
+            left_media_id: movie.id,
+            right_media_id,
+            role,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+        movie_relations.extend(
+            person_ids
+                .iter()
+                .map(|right_media_id| db::MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: *right_media_id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                }),
+        );
+        db::MediaRelation::upsert(db, &movie_relations)
+            .await
+            .unwrap();
+
+        let mut channel = db::Media {
+            title: "Fields test channel".to_string(),
+            kind: db::MediaKind::TvChannel,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://example.com/live.m3u8",
+                ),
                 ..Default::default()
             }),
-        )
-        .await
-        .unwrap();
+            ..Default::default()
+        };
+        channel
+            .save(db)
+            .await
+            .unwrap();
+
         sqlx::query("INSERT INTO media_tags (media_id, tag) VALUES (?, ?)")
             .bind(movie.id)
             .bind("Fields test tag")
@@ -5552,12 +5602,13 @@ mod tests {
                     HeaderValue::from_str(&auth).unwrap(),
                 )
         };
-        let bare: serde_json::Value = request("/items?recursive=true")
+        let bare_response: serde_json::Value = request("/items?recursive=true")
             .await
             .json();
-        let bare = bare["Items"]
+        let bare_items = bare_response["Items"]
             .as_array()
-            .unwrap()
+            .unwrap();
+        let bare = bare_items
             .iter()
             .find(|item| item["Name"] == "Fields test movie")
             .expect("movie should be present in recursive item list");
@@ -5571,7 +5622,6 @@ mod tests {
             "Path",
             "Overview",
             "ProviderIds",
-            "PremiereDate",
         ] {
             assert!(
                 bare.get(key)
@@ -5579,13 +5629,33 @@ mod tests {
                 "unexpected {key}: {bare}"
             );
         }
+        assert!(
+            bare.get("PremiereDate")
+                .is_some(),
+            "PremiereDate should be present in bare lists: {bare}"
+        );
 
-        let detailed: serde_json::Value = request(
-            "/items?recursive=true&fields=People,MediaSources,Studios,Genres,Tags,ExternalUrls,Path,Overview,ProviderIds,PremiereDate",
+        let bare_channel = bare_items
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(bare_channel["LocationType"], "Remote");
+        assert_eq!(bare_channel["CanDelete"], false);
+        assert_eq!(bare_channel["CanDownload"], false);
+        assert_eq!(bare_channel["LockData"], false);
+        assert_eq!(bare_channel["IsPlaceHolder"], false);
+        assert!(
+            bare_channel
+                .get("MediaSources")
+                .is_none()
+        );
+
+        let detailed_response: serde_json::Value = request(
+            "/items?recursive=true&fields=People,MediaSources,Studios,Genres,Tags,ExternalUrls,Path,Overview,ProviderIds",
         )
         .await
         .json();
-        let detailed = detailed["Items"]
+        let detailed = detailed_response["Items"]
             .as_array()
             .unwrap()
             .iter()
@@ -5601,7 +5671,6 @@ mod tests {
             "Path",
             "Overview",
             "ProviderIds",
-            "PremiereDate",
         ] {
             assert!(
                 detailed
@@ -5610,11 +5679,31 @@ mod tests {
                 "missing {key}: {detailed}"
             );
         }
-        assert_eq!(detailed["People"][0]["Name"], "Fields test person");
+        assert!(
+            detailed["People"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|person| person["Name"] == "Fields test person")
+        );
         assert_eq!(detailed["Studios"][0]["Name"], "Fields test studio");
         assert_eq!(detailed["GenreItems"][0]["Name"], "Fields test genre");
         assert_eq!(detailed["Tags"][0], "Fields test tag");
         assert_eq!(detailed["Overview"], "A test overview");
+
+        let detailed_channel = detailed_response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(
+            detailed_channel["MediaSources"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(detailed_channel["MediaSources"][0]["IsRemote"], true);
 
         for n in 0..44 {
             let (id, external_ids) = make_content_ids(
@@ -5629,6 +5718,20 @@ mod tests {
                 ..Default::default()
             }
             .save(db)
+            .await
+            .unwrap();
+            db::MediaRelation::upsert(
+                db,
+                &person_ids
+                    .iter()
+                    .map(|right_media_id| db::MediaRelation {
+                        left_media_id: id,
+                        right_media_id: *right_media_id,
+                        role: Some(db::RelationRole::Actor),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .await
             .unwrap();
         }
