@@ -17,15 +17,18 @@ async fn artists_response(
 ) -> Result<impl IntoResponse> {
     q.include_item_types = Some(vec![api::MediaType::MusicArtist]);
     q.recursive = true;
+    let start_index = q
+        .start_index
+        .unwrap_or_default();
     let result = get_items(state, session, q, true)
         .await?
         .with_client_patches()
         .build();
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result.items,
-        total_record_count: result.total_count,
-        start_index: 0,
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": result.serialized_items(),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": start_index,
+    })))
 }
 
 /// `/Artists` — returns all artists in the library.

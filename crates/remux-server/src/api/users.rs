@@ -1821,12 +1821,11 @@ async fn resume_items(
             .take(limit as usize)
             .collect();
     }
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items,
-        total_record_count: total,
-        start_index: start,
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": super::items::serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": total,
+        "StartIndex": start,
+    })))
 }
 
 #[get("/users/{user_id}/items/resume")]
