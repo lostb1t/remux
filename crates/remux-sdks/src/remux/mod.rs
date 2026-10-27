@@ -2189,6 +2189,10 @@ pub struct TranscodingProfile {
         serialize_with = "ser_csv"
     )]
     pub audio_codec: Option<Vec<AudioCodec>>,
+    /// Channel cap for audio the server re-encodes for this profile. Clients
+    /// send it as a string (`"6"`).
+    #[serde(deserialize_with = "deserialize_option_number_from_string")]
+    pub max_audio_channels: Option<i64>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
