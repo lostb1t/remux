@@ -4,7 +4,11 @@ use axum::{
 };
 use remux_macros::{get, query};
 use serde::Serialize;
-use std::{collections::VecDeque, path::PathBuf, time::SystemTime};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{AppState, db::auth};
@@ -12,7 +16,7 @@ use axum_anyhow::ApiResult as Result;
 
 const MAX_LOG_FILES: usize = 14;
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_ENTRIES: usize = 1000;
+const MAX_EXPLICIT_LIMIT: usize = 1000;
 
 #[query]
 pub struct GetLogsQuery {
@@ -47,16 +51,20 @@ pub async fn get_logs(
         .config
         .data_dir
         .join("logs");
-    let mut dir = match tokio::fs::read_dir(&log_dir).await {
+    let entries = load_log_entries(&log_dir, &query).await?;
+    Ok(Json(LogsResult { entries }))
+}
+
+async fn load_log_entries(
+    log_dir: &Path,
+    query: &GetLogsQuery,
+) -> std::io::Result<Vec<LogEntry>> {
+    let mut dir = match tokio::fs::read_dir(log_dir).await {
         Ok(dir) => dir,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Json(LogsResult {
-                entries: Vec::new(),
-            }));
+            return Ok(Vec::new());
         }
-        Err(error) => {
-            return Err(anyhow::anyhow!("failed to read log directory: {error}").into());
-        }
+        Err(error) => return Err(error),
     };
 
     let mut files: Vec<(SystemTime, PathBuf)> = Vec::new();
@@ -101,9 +109,8 @@ pub async fn get_logs(
         .to_lowercase();
     let limit = query
         .limit
-        .unwrap_or(500)
-        .clamp(1, MAX_ENTRIES);
-    let mut entries = VecDeque::with_capacity(limit);
+        .map(|limit| limit.clamp(1, MAX_EXPLICIT_LIMIT));
+    let mut entries = VecDeque::new();
     for (_, path) in files
         .into_iter()
         .rev()
@@ -129,14 +136,18 @@ pub async fn get_logs(
                 level,
                 message,
             });
-            if entries.len() > limit {
-                entries.pop_front();
+            if let Some(limit) = limit {
+                if entries.len() > limit {
+                    entries.pop_front();
+                }
             }
         }
     }
-    Ok(Json(LogsResult {
-        entries: entries.into(),
-    }))
+    let mut entries: Vec<_> = entries
+        .into_iter()
+        .collect();
+    entries.reverse();
+    Ok(entries)
 }
 
 async fn read_log_tail(path: PathBuf) -> std::io::Result<String> {
@@ -198,7 +209,7 @@ fn parse_log_line(line: &str) -> (String, String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_LOG_BYTES, parse_log_line, read_log_tail};
+    use super::{MAX_LOG_BYTES, load_log_entries, parse_log_line, read_log_tail};
 
     #[test]
     fn parses_compact_tracing_lines() {
@@ -233,6 +244,82 @@ mod tests {
         assert_eq!(
             parse_log_line("plain output"),
             ("".into(), "INFO".into(), "plain output".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_all_matching_entries_newest_first_when_limit_is_omitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("remux.log");
+        let content = (0..1105)
+            .map(|index| format!("12:34:{:02} INFO remux: entry-{index}\n", index % 60))
+            .collect::<String>();
+        tokio::fs::write(path, content)
+            .await
+            .unwrap();
+
+        let entries = load_log_entries(
+            dir.path(),
+            &super::GetLogsQuery {
+                limit: None,
+                level: None,
+                search: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(entries.len(), 1105);
+        assert_eq!(
+            entries
+                .first()
+                .unwrap()
+                .message,
+            "entry-1104"
+        );
+        assert_eq!(
+            entries
+                .last()
+                .unwrap()
+                .message,
+            "entry-0"
+        );
+    }
+
+    #[tokio::test]
+    async fn applies_explicit_limit_after_ordering_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("remux.log");
+        let content = (0..5)
+            .map(|index| format!("12:34:{:02} INFO remux: entry-{index}\n", index))
+            .collect::<String>();
+        tokio::fs::write(path, content)
+            .await
+            .unwrap();
+
+        let entries = load_log_entries(
+            dir.path(),
+            &super::GetLogsQuery {
+                limit: Some(2),
+                level: None,
+                search: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry
+                    .message
+                    .as_str())
+                .collect::<Vec<_>>(),
+            ["entry-4", "entry-3"]
         );
     }
 

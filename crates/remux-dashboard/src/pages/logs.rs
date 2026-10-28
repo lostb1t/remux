@@ -32,7 +32,7 @@ pub fn LogsPage(app_state: AppState) -> Element {
         spawn(async move {
             let result = client
                 .execute(GetLogs {
-                    limit: Some(500),
+                    limit: None,
                     level: Some(level_filter),
                     search: if query.is_empty() { None } else { Some(query) },
                 })
@@ -55,28 +55,32 @@ pub fn LogsPage(app_state: AppState) -> Element {
 
     rsx! {
         Card { title: "Server Logs".to_string(), tight: true,
-            div { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px",
+            div { class: "logs-toolbar",
                 input {
                     r#type: "search",
-                    class: "input",
-                    style: "flex:1;min-width:220px",
+                    class: "field-input logs-search",
+                    aria_label: "Search log messages",
                     placeholder: "Search log messages…",
                     value: "{search.read()}",
                     oninput: move |evt| search.set(evt.value()),
                 }
-                select {
-                    class: "select-input",
-                    value: "{level.read()}",
-                    onchange: move |evt| level.set(evt.value()),
-                    option { value: "all", "All levels" }
-                    option { value: "trace", "Trace" }
-                    option { value: "debug", "Debug" }
-                    option { value: "info", "Info" }
-                    option { value: "warn", "Warn" }
-                    option { value: "error", "Error" }
+                div { class: "logs-level-field",
+                    label { r#for: "log-level", class: "field-label", "Level" }
+                    select {
+                        id: "log-level",
+                        class: "select-input logs-level-select",
+                        value: "{level.read()}",
+                        onchange: move |evt| level.set(evt.value()),
+                        option { value: "all", "All levels" }
+                        option { value: "trace", "Trace" }
+                        option { value: "debug", "Debug" }
+                        option { value: "info", "Info" }
+                        option { value: "warn", "Warn" }
+                        option { value: "error", "Error" }
+                    }
                 }
                 button {
-                    class: "btn btn-ghost",
+                    class: "btn btn-ghost logs-refresh",
                     disabled: *loading.read(),
                     onclick: move |_| { let next = *refresh.peek() + 1; refresh.set(next); },
                     "Refresh"
@@ -100,7 +104,6 @@ pub fn LogsPage(app_state: AppState) -> Element {
                         }
                     }
                 }
-                div { style: "color:var(--text-dim);font-size:.75rem;margin-top:8px", "Showing the latest matching entries (up to 500)." }
             }
         }
     }
