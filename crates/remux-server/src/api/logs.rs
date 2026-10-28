@@ -166,19 +166,25 @@ async fn read_log_tail(path: PathBuf) -> std::io::Result<String> {
 
 fn parse_log_line(line: &str) -> (String, String, String) {
     // The compact tracing formatter starts with HH:MM:SS LEVEL target: message.
-    let mut parts = line.splitn(3, ' ');
+    // split_whitespace handles the formatter's level-column padding.
+    let mut parts = line.split_whitespace();
     let first = parts
         .next()
         .unwrap_or("");
     let second = parts
         .next()
         .unwrap_or("");
-    let third = parts
-        .next()
-        .unwrap_or("");
     let (timestamp, level, rest) =
         if ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"].contains(&second) {
-            (first.to_string(), second.to_string(), third)
+            let rest_start = line
+                .find(second)
+                .unwrap_or(line.len())
+                + second.len();
+            (
+                first.to_string(),
+                second.to_string(),
+                line[rest_start..].trim_start(),
+            )
         } else {
             (String::new(), "INFO".to_string(), line)
         };
@@ -199,6 +205,20 @@ mod tests {
         assert_eq!(
             parse_log_line(
                 "12:34:56 ERROR remux_server::api: failed request: timed out"
+            ),
+            (
+                "12:34:56".into(),
+                "ERROR".into(),
+                "failed request: timed out".into()
+            )
+        );
+    }
+
+    #[test]
+    fn parses_compact_lines_with_formatter_padding() {
+        assert_eq!(
+            parse_log_line(
+                "12:34:56  ERROR remux_server::api: failed request: timed out"
             ),
             (
                 "12:34:56".into(),

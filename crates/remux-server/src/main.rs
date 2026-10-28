@@ -48,7 +48,7 @@ fn cleanup_old_logs(dir: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("remux-") && name.ends_with(".log") {
+        if name.starts_with("remux.") && name.ends_with(".log") {
             if let Ok(metadata) = entry.metadata() {
                 if metadata
                     .modified()
@@ -131,13 +131,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let stale_log = dir
             .path()
-            .join("remux-2020-01-01.log");
+            .join("remux.2020-01-01.log");
         let unrelated = dir
             .path()
             .join("other-2020-01-01.log");
         let fresh_log = dir
             .path()
-            .join("remux-current.log");
+            .join("remux.2026-10-28.log");
         std::fs::write(&stale_log, "old").unwrap();
         std::fs::write(&unrelated, "keep").unwrap();
         std::fs::write(&fresh_log, "keep").unwrap();

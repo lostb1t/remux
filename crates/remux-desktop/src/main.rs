@@ -68,7 +68,7 @@ fn cleanup_old_logs(dir: &Path) {
             .file_name()
             .to_string_lossy()
             .into_owned();
-        if name.starts_with("remux-") && name.ends_with(".log") {
+        if name.starts_with("remux.") && name.ends_with(".log") {
             if let Ok(meta) = entry.metadata() {
                 if meta
                     .modified()
