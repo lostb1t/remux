@@ -82,6 +82,15 @@ fn cleanup_old_logs(dir: &Path) {
     }
 }
 
+fn spawn_periodic_log_cleanup(dir: PathBuf) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+            cleanup_old_logs(&dir);
+        }
+    });
+}
+
 fn main() -> Result<()> {
     let log_dir = log_dir();
     std::fs::create_dir_all(&log_dir)?;
@@ -101,11 +110,13 @@ fn main() -> Result<()> {
     // Start the remux server in a background tokio thread with embedded assets.
     let rt = tokio::runtime::Runtime::new()?;
     let server_config = config.clone();
+    let cleanup_dir = log_dir.clone();
     let data_dir_for_ffmpeg = config
         .data_dir
         .clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
+            spawn_periodic_log_cleanup(cleanup_dir);
             if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
                 tracing::warn!(
                     "ffmpeg could not be downloaded and was not found on this system: {e:#}. \
