@@ -2275,6 +2275,26 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
     } else {
         "mp4a.40.2"
     };
+    // A probed source without a video stream (a music track): the playlist
+    // must not advertise a video codec, resolution or frame rate.
+    let audio_only = session
+        .source_video_codec
+        .is_none()
+        && session
+            .source_video_width
+            .is_none()
+        && session
+            .source_audio_codec
+            .is_some();
+    if audio_only {
+        return format!(
+            "#EXTM3U\n\
+             #EXT-X-VERSION:6\n\
+             #EXT-X-INDEPENDENT-SEGMENTS\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=320000,AVERAGE-BANDWIDTH=320000,CODECS=\"{audio_codec_str}\"\n\
+             main.m3u8?PlaySessionId={play_session_id}\n"
+        );
+    }
     let codecs = format!("{},{}", video_codec_str, audio_codec_str);
 
     // VIDEO-RANGE: only meaningful for copy-mode (passthrough) video. Transcoded output is SDR.
@@ -3076,6 +3096,25 @@ mod tests {
         session.source_audio_codec = Some("truehd".into());
         let playlist = generate_master_playlist(&session);
         assert!(playlist.contains(",mp4a.40.2\""), "playlist: {playlist}");
+    }
+
+    #[test]
+    fn master_playlist_for_a_track_advertises_audio_only() {
+        let mut session = hevc_session("copy", None);
+        session.source_video_codec = None;
+        session.source_video_width = None;
+        session.source_video_height = None;
+        session.source_frame_rate = None;
+        session.audio_codec = "aac".into();
+        session.source_audio_codec = Some("opus".into());
+        let playlist = generate_master_playlist(&session);
+        assert!(
+            playlist.contains("CODECS=\"mp4a.40.2\""),
+            "playlist: {playlist}"
+        );
+        for video_attr in ["avc1", "hvc1", "RESOLUTION", "FRAME-RATE", "VIDEO-RANGE"] {
+            assert!(!playlist.contains(video_attr), "playlist: {playlist}");
+        }
     }
 
     #[test]

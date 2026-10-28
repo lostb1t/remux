@@ -699,9 +699,97 @@ impl HttpSource {
                     .saturating_add(1);
                 (start, end, length)
             });
+        let client_range = headers
+            .get(http::header::RANGE)
+            .and_then(|value| {
+                value
+                    .to_str()
+                    .ok()
+            });
+        // The upstream ignored the Range request and sent the whole body
+        // (typical for plain file servers behind a .strm). Serve the range
+        // ourselves by skipping into the upstream body.
+        let upstream_length = upstream_headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| {
+                value
+                    .to_str()
+                    .ok()
+            })
+            .and_then(|value| {
+                value
+                    .parse::<u64>()
+                    .ok()
+            });
+        let self_served = (client_range.is_some()
+            && requested_range.is_none()
+            && upstream_status == http::StatusCode::OK)
+            .then(|| match (client_range, upstream_length) {
+                (range, Some(total)) => match resolve_range(range, total) {
+                    RangeRequest::Partial(start, end) => {
+                        Some((start, end, Some(total)))
+                    }
+                    RangeRequest::Unsatisfiable => {
+                        Some((u64::MAX, u64::MAX, Some(total)))
+                    }
+                    RangeRequest::Full => None,
+                },
+                // Unknown length: the real bounds cannot be determined, so
+                // keep the plain 200 rather than advertise made-up offsets.
+                _ => None,
+            })
+            .flatten();
+        if let Some((u64::MAX, _, Some(total))) = self_served {
+            return Ok(range_not_satisfiable(total));
+        }
         let stream = upstream
             .bytes_stream()
             .map_err(io::Error::other);
+        if let Some((start, end, total)) = self_served {
+            let end = total
+                .map(|total| end.min(total.saturating_sub(1)))
+                .unwrap_or(end);
+            let length = end - start + 1;
+            let mut reader = Box::pin(StreamReader::new(stream));
+            tokio::io::copy(&mut (&mut reader).take(start), &mut tokio::io::sink())
+                .await
+                .context_bad_request("upstream read failed")?;
+            let mut resp = Response::builder()
+                .status(http::StatusCode::PARTIAL_CONTENT)
+                .body(Body::from_stream(ReaderStream::new(reader.take(length))))
+                .unwrap();
+            let out = resp.headers_mut();
+            if let Some(v) = upstream_headers.get(http::header::CONTENT_TYPE) {
+                out.insert(http::header::CONTENT_TYPE, v.clone());
+            } else {
+                out.insert(
+                    http::header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("application/octet-stream"),
+                );
+            }
+            out.insert(
+                http::header::ACCEPT_RANGES,
+                http::HeaderValue::from_static("bytes"),
+            );
+            if total.is_some() {
+                out.insert(
+                    http::header::CONTENT_LENGTH,
+                    http::HeaderValue::from_str(&length.to_string())
+                        .expect("range length is a valid header"),
+                );
+            }
+            out.insert(
+                http::header::CONTENT_RANGE,
+                http::HeaderValue::from_str(&format!(
+                    "bytes {start}-{end}/{}",
+                    total
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "*".to_string())
+                ))
+                .expect("range is a valid header"),
+            );
+            return Ok(resp);
+        }
         let body = if let Some((_, _, length)) = bounded_range {
             Body::from_stream(ReaderStream::new(StreamReader::new(stream).take(length)))
         } else {
@@ -747,6 +835,8 @@ impl HttpSource {
                 http::HeaderValue::from_static("application/octet-stream"),
             );
         }
+        out.entry(http::header::ACCEPT_RANGES)
+            .or_insert(http::HeaderValue::from_static("bytes"));
 
         Ok(resp)
     }
@@ -792,47 +882,48 @@ impl StreamSource for LocalSource {
         let file_size = metadata.len();
         let content_type = mime_from_path(&self.path);
 
-        let range_str = headers
+        let range_header = headers
             .get(http::header::RANGE)
             .and_then(|v| {
                 v.to_str()
                     .ok()
-            })
-            .map(str::to_owned);
+            });
 
-        if let Some(range) = range_str {
-            let (start, end) = parse_range(&range, file_size)
-                .context_bad_request("invalid Range header")?;
-            let length = end - start + 1;
+        match resolve_range(range_header, file_size) {
+            RangeRequest::Unsatisfiable => Ok(range_not_satisfiable(file_size)),
+            RangeRequest::Partial(start, end) => {
+                let length = end - start + 1;
 
-            let mut file = file;
-            file.seek(std::io::SeekFrom::Start(start))
-                .await
-                .context_bad_request("seek failed")?;
+                let mut file = file;
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .context_bad_request("seek failed")?;
 
-            let body = Body::from_stream(ReaderStream::new(file.take(length)));
+                let body = Body::from_stream(ReaderStream::new(file.take(length)));
 
-            Ok(Response::builder()
-                .status(http::StatusCode::PARTIAL_CONTENT)
-                .header(http::header::CONTENT_TYPE, content_type)
-                .header(http::header::CONTENT_LENGTH, length)
-                .header(http::header::ACCEPT_RANGES, "bytes")
-                .header(
-                    http::header::CONTENT_RANGE,
-                    format!("bytes {}-{}/{}", start, end, file_size),
-                )
-                .body(body)
-                .unwrap())
-        } else {
-            let body = Body::from_stream(ReaderStream::new(file));
+                Ok(Response::builder()
+                    .status(http::StatusCode::PARTIAL_CONTENT)
+                    .header(http::header::CONTENT_TYPE, content_type)
+                    .header(http::header::CONTENT_LENGTH, length)
+                    .header(http::header::ACCEPT_RANGES, "bytes")
+                    .header(
+                        http::header::CONTENT_RANGE,
+                        format!("bytes {}-{}/{}", start, end, file_size),
+                    )
+                    .body(body)
+                    .unwrap())
+            }
+            RangeRequest::Full => {
+                let body = Body::from_stream(ReaderStream::new(file));
 
-            Ok(Response::builder()
-                .status(http::StatusCode::OK)
-                .header(http::header::CONTENT_TYPE, content_type)
-                .header(http::header::CONTENT_LENGTH, file_size)
-                .header(http::header::ACCEPT_RANGES, "bytes")
-                .body(body)
-                .unwrap())
+                Ok(Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(http::header::CONTENT_TYPE, content_type)
+                    .header(http::header::CONTENT_LENGTH, file_size)
+                    .header(http::header::ACCEPT_RANGES, "bytes")
+                    .body(body)
+                    .unwrap())
+            }
         }
     }
 }
@@ -875,29 +966,64 @@ impl StreamSource for TorrentSource {
     }
 }
 
-pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
-    let bytes = range
-        .strip_prefix("bytes=")
-        .ok_or_else(|| anyhow::anyhow!("expected bytes= prefix"))?;
-    let (start_str, end_str) = bytes
-        .split_once('-')
-        .ok_or_else(|| anyhow::anyhow!("malformed range"))?;
+/// How a request's `Range` header applies to a body of known size.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RangeRequest {
+    /// No usable `Range`: serve the whole body. Malformed and multi-range
+    /// headers land here too, which RFC 9110 allows.
+    Full,
+    /// Inclusive byte range to serve with a 206.
+    Partial(u64, u64),
+    /// Nothing of the body is in range: answer 416.
+    Unsatisfiable,
+}
 
-    if start_str.is_empty() {
-        let suffix: u64 = end_str.parse()?;
-        return Ok((file_size.saturating_sub(suffix), file_size - 1));
-    }
-
-    let start: u64 = start_str.parse()?;
-    let end: u64 = if end_str.is_empty() {
-        file_size - 1
-    } else {
-        end_str
-            .parse::<u64>()?
-            .min(file_size - 1)
+pub fn resolve_range(range: Option<&str>, total: u64) -> RangeRequest {
+    let Some(spec) = range.and_then(|r| r.strip_prefix("bytes=")) else {
+        return RangeRequest::Full;
     };
+    let Some((start, end)) = spec
+        .split_once('-')
+        .filter(|_| !spec.contains(','))
+    else {
+        return RangeRequest::Full;
+    };
+    let (start, end) = (start.trim(), end.trim());
+    if start.is_empty() {
+        let Ok(suffix) = end.parse::<u64>() else {
+            return RangeRequest::Full;
+        };
+        return if suffix == 0 || total == 0 {
+            RangeRequest::Unsatisfiable
+        } else {
+            RangeRequest::Partial(total.saturating_sub(suffix), total - 1)
+        };
+    }
+    let Ok(start) = start.parse::<u64>() else {
+        return RangeRequest::Full;
+    };
+    let end = if end.is_empty() {
+        u64::MAX
+    } else {
+        match end.parse::<u64>() {
+            Ok(end) if end >= start => end,
+            _ => return RangeRequest::Full,
+        }
+    };
+    if start >= total {
+        return RangeRequest::Unsatisfiable;
+    }
+    RangeRequest::Partial(start, end.min(total - 1))
+}
 
-    Ok((start, end))
+pub fn range_not_satisfiable(total: u64) -> Response {
+    Response::builder()
+        .status(http::StatusCode::RANGE_NOT_SATISFIABLE)
+        .header(http::header::ACCEPT_RANGES, "bytes")
+        .header(http::header::CONTENT_RANGE, format!("bytes */{total}"))
+        .header(http::header::CONTENT_LENGTH, 0)
+        .body(Body::empty())
+        .unwrap()
 }
 
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
@@ -940,9 +1066,10 @@ fn extract_query_param(url: &str, param: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpSource, STREAM_PROXY_CLIENT, StreamDescriptor, StreamInfo, TrackerUrl,
-        is_tracker_url, mime_from_path,
+        HttpSource, RangeRequest, STREAM_PROXY_CLIENT, StreamDescriptor, StreamInfo,
+        TrackerUrl, is_tracker_url, mime_from_path, resolve_range,
     };
+    use axum::response::Response;
     use std::path::Path;
 
     #[test]
@@ -1137,6 +1264,145 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.len(), 2048);
+    }
+
+    #[test]
+    fn resolve_range_handles_every_range_form() {
+        let r = |range, total| resolve_range(Some(range), total);
+        assert_eq!(r("bytes=100-199", 1000), RangeRequest::Partial(100, 199));
+        assert_eq!(r("bytes=900-", 1000), RangeRequest::Partial(900, 999));
+        assert_eq!(r("bytes=-50", 1000), RangeRequest::Partial(950, 999));
+        assert_eq!(r("bytes=-5000", 1000), RangeRequest::Partial(0, 999));
+        assert_eq!(r("bytes=0-5000", 1000), RangeRequest::Partial(0, 999));
+        assert_eq!(r("bytes=1000-", 1000), RangeRequest::Unsatisfiable);
+        assert_eq!(r("bytes=-0", 1000), RangeRequest::Unsatisfiable);
+        assert_eq!(r("bytes=0-1", 0), RangeRequest::Unsatisfiable);
+        assert_eq!(r("bytes=5-1", 1000), RangeRequest::Full);
+        assert_eq!(r("bytes=0-1,5-6", 1000), RangeRequest::Full);
+        assert_eq!(r("items=0-1", 1000), RangeRequest::Full);
+        assert_eq!(resolve_range(None, 1000), RangeRequest::Full);
+    }
+
+    async fn serve_from_upstream_without_range_support(
+        range: Option<&'static str>,
+    ) -> Response {
+        let server = httpmock::MockServer::start();
+        let payload: Vec<u8> = (0..=255u8)
+            .cycle()
+            .take(1000)
+            .collect();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/file.mp3");
+            then.status(200)
+                .header("Content-Type", "audio/mpeg")
+                .body(payload);
+        });
+        let source = HttpSource {
+            url: format!("{}/file.mp3", server.base_url()),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        let mut headers = http::HeaderMap::new();
+        if let Some(range) = range {
+            headers.insert(http::header::RANGE, http::HeaderValue::from_static(range));
+        }
+        source
+            .serve_inner(&headers, false)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_source_serves_ranges_itself_when_upstream_ignores_them() {
+        let response =
+            serve_from_upstream_without_range_support(Some("bytes=100-199")).await;
+        assert_eq!(response.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "100");
+        assert_eq!(
+            response.headers()[http::header::CONTENT_RANGE],
+            "bytes 100-199/1000"
+        );
+        assert_eq!(response.headers()[http::header::ACCEPT_RANGES], "bytes");
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 100);
+        assert_eq!(body[0], 100);
+        assert_eq!(body[99], 199);
+
+        let response =
+            serve_from_upstream_without_range_support(Some("bytes=-10")).await;
+        assert_eq!(response.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_RANGE],
+            "bytes 990-999/1000"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_source_keeps_the_full_response_when_upstream_has_no_length() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener
+            .local_addr()
+            .unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = socket
+                .read(&mut buf)
+                .await;
+            // No Content-Length: the body ends when the connection closes.
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789")
+                .await
+                .unwrap();
+        });
+        let source = HttpSource {
+            url: format!("http://{addr}/file.mp3"),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_static("bytes=0-"),
+        );
+        let response = source
+            .serve_inner(&headers, false)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(
+            !response
+                .headers()
+                .contains_key(http::header::CONTENT_RANGE)
+        );
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"0123456789");
+    }
+
+    #[tokio::test]
+    async fn http_source_answers_416_and_advertises_ranges() {
+        let response =
+            serve_from_upstream_without_range_support(Some("bytes=5000-")).await;
+        assert_eq!(response.status(), http::StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_RANGE],
+            "bytes */1000"
+        );
+
+        let response = serve_from_upstream_without_range_support(None).await;
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers()[http::header::ACCEPT_RANGES], "bytes");
     }
 
     #[tokio::test]

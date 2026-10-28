@@ -1828,7 +1828,7 @@ pub async fn audio_universal(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
-    Query(q): Query<api::HlsVideoQuery>,
+    Query(q): Query<UniversalAudioQuery>,
 ) -> Result<impl IntoResponse> {
     let mut media = db::Media::get_by_id(
         &state
@@ -1862,18 +1862,111 @@ pub async fn audio_universal(
                 .to_string()
         });
 
-    let transcoding_url = format!(
-        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
+    // Like Jellyfin: a source the client lists in `Container` is served as is,
+    // anything else is transcoded to HLS. Inspect the very source the static
+    // endpoint will serve (same lookup as PlaybackInfo and `/stream`), and pin
+    // it in the redirect so both sides agree.
+    let source = crate::services::stream_service::StreamService::lookup(
+        &state.ctx,
         id,
-        play_session_id,
-        id,
-        session
-            .device
-            .access_token
-            .expose()
-    );
+        q.media_source_id,
+        Some(
+            &session
+                .device
+                .id,
+        ),
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    .ok();
+    let direct = source
+        .as_ref()
+        .and_then(|s| {
+            s.probe_data
+                .as_ref()
+        })
+        .is_some_and(|p| {
+            universal_can_direct_play(
+                q.container
+                    .as_deref(),
+                p.container
+                    .as_ref(),
+                p.media_streams
+                    .iter()
+                    .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
+                    .and_then(|s| {
+                        s.codec
+                            .as_deref()
+                    }),
+            )
+        });
+    let source_id = source
+        .as_ref()
+        .map_or(id, |s| s.id);
 
-    Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
+    let token = session
+        .device
+        .access_token
+        .expose();
+    let url = if direct {
+        format!(
+            "/audio/{id}/stream?Static=true&PlaySessionId={play_session_id}&MediaSourceId={source_id}&ApiKey={token}"
+        )
+    } else {
+        format!(
+            "/videos/{id}/master.m3u8?PlaySessionId={play_session_id}&MediaSourceId={id}&VideoCodec=copy&AudioCodec=aac&ApiKey={token}"
+        )
+    };
+
+    Ok(axum::response::Redirect::temporary(&url).into_response())
+}
+
+/// Whether the client's `Container` list (comma separated) covers the source.
+/// An entry must name the source's container, optionally qualified with its
+/// audio codec as `container|codec`. A codec alone says nothing about the
+/// container (AAC inside Matroska), so it never matches.
+fn universal_can_direct_play(
+    client_containers: Option<&str>,
+    source_container: Option<&remux_sdks::remux::VideoContainer>,
+    source_audio_codec: Option<&str>,
+) -> bool {
+    let (Some(list), Some(container)) = (client_containers, source_container) else {
+        return false;
+    };
+    let container = container.to_string();
+    let same_container = |wanted: &str| {
+        let wanted = wanted.trim();
+        wanted.eq_ignore_ascii_case(&container)
+            || matches!(
+                (
+                    wanted.parse::<remux_sdks::remux::VideoContainer>(),
+                    container.parse::<remux_sdks::remux::VideoContainer>()
+                ),
+                (Ok(a), Ok(b)) if a == b
+            )
+    };
+    list.split(',')
+        .any(|entry| match entry.split_once('|') {
+            Some((c, codec)) => {
+                same_container(c)
+                    && source_audio_codec
+                        .is_some_and(|a| a.eq_ignore_ascii_case(codec.trim()))
+            }
+            None => same_container(entry),
+        })
+}
+
+#[query]
+pub struct UniversalAudioQuery {
+    pub container: Option<String>,
+    #[serde(alias = "playSessionId")]
+    pub play_session_id: Option<String>,
+    #[serde(alias = "mediaSourceId")]
+    pub media_source_id: Option<Uuid>,
 }
 
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.
@@ -1910,6 +2003,54 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn universal_direct_plays_only_what_the_client_lists() {
+        use remux_sdks::remux::VideoContainer;
+        let webm = VideoContainer::Webm;
+        let list = Some("mp3,aac,m4a|aac,flac");
+        // Container list names neither webm nor opus: transcode.
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&webm),
+            Some("opus")
+        ));
+        // A listed codec alone is not enough: AAC inside WebM/Matroska stays
+        // unreadable for the client.
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&webm),
+            Some("aac")
+        ));
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&VideoContainer::Mkv),
+            Some("aac")
+        ));
+        // Listed by container, and by container|codec pair.
+        assert!(super::universal_can_direct_play(
+            Some("webm"),
+            Some(&webm),
+            Some("opus")
+        ));
+        assert!(super::universal_can_direct_play(
+            Some("mp4|aac"),
+            Some(&VideoContainer::Mp4),
+            Some("AAC")
+        ));
+        assert!(!super::universal_can_direct_play(
+            Some("mp4|aac"),
+            Some(&VideoContainer::Mp4),
+            Some("alac")
+        ));
+        assert!(!super::universal_can_direct_play(
+            None,
+            Some(&webm),
+            Some("opus")
+        ));
+        // Unprobed source: nothing to negotiate on.
+        assert!(!super::universal_can_direct_play(list, None, None));
+    }
 
     #[test]
     fn mkv_source_direct_path_accepts_bare_and_copy_mkv_requests() {
