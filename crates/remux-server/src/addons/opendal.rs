@@ -924,17 +924,20 @@ impl StreamAddon for OpendalAddon {
         let file_size = meta.content_length();
         let content_type = crate::stream::mime_from_path(std::path::Path::new(path));
 
-        let range_str = headers
+        let range_header = headers
             .get(http::header::RANGE)
             .and_then(|v| {
                 v.to_str()
                     .ok()
-            })
-            .map(str::to_owned);
+            });
 
-        if let Some(range) = range_str {
-            let (start, end) = crate::stream::parse_range(&range, file_size)
-                .context_bad_request("invalid Range header")?;
+        use crate::stream::RangeRequest;
+        let range = crate::stream::resolve_range(range_header, file_size);
+        if range == RangeRequest::Unsatisfiable {
+            return Ok(crate::stream::range_not_satisfiable(file_size));
+        }
+
+        if let RangeRequest::Partial(start, end) = range {
             let length = end - start + 1;
 
             let reader = self
