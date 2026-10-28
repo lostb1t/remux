@@ -2,10 +2,10 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use chrono::{DateTime, NaiveDate, NaiveTime};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use regex::Regex;
 use remux_macros::get;
-use remux_sdks::remux::{GetLogs, LogEntry, LogsResult};
+use remux_sdks::remux::{GetLogs, LogEntry, LogLevel, LogsResult};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -18,10 +18,11 @@ use crate::{AppState, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 const MAX_LOG_BYTES_PER_FILE: u64 = 8 * 1024 * 1024;
-const MAX_EXPLICIT_LIMIT: usize = 1000;
+const DEFAULT_PAGE_SIZE: usize = 200;
+const MAX_PAGE_SIZE: usize = 1000;
 
 static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|cookie)\b(\s*[:=]\s*)(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s&;,"']+)"#).unwrap()
+    Regex::new(r#"(?i)(["']?\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|cookie)\b["']?\s*[:=]\s*)(["']?)(?:bearer\s+)?([^,\s&;,"'}]+)(["']?)"#).unwrap()
 });
 static BARE_BEARER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+").unwrap());
@@ -51,14 +52,14 @@ pub async fn get_logs(
         load_log_entries(&log_dir, &query, max_files)
     })
     .await??;
-    Ok(Json(LogsResult { entries }))
+    Ok(Json(entries))
 }
 
 fn load_log_entries(
     log_dir: &Path,
     query: &GetLogs,
     max_files: usize,
-) -> std::io::Result<Vec<LogEntry>> {
+) -> std::io::Result<LogsResult> {
     let mut files = match fs::read_dir(log_dir) {
         Ok(dir) => dir
             .filter_map(|entry| entry.ok())
@@ -87,7 +88,10 @@ fn load_log_entries(
             })
             .collect::<Vec<_>>(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Vec::new());
+            return Ok(LogsResult {
+                entries: Vec::new(),
+                has_more: false,
+            });
         }
         Err(error) => return Err(error),
     };
@@ -107,41 +111,46 @@ fn load_log_entries(
         .unwrap_or_default()
         .trim()
         .to_lowercase();
-    let wanted_level = query
-        .level
-        .as_deref()
-        .unwrap_or("all")
-        .to_ascii_lowercase();
     let limit = query
         .limit
-        .map(|limit| limit.clamp(1, MAX_EXPLICIT_LIMIT));
-    let mut result = Vec::new();
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
+    let mut remaining_offset = query
+        .offset
+        .unwrap_or_default();
+    let mut result = Vec::with_capacity(limit);
+    let mut has_more = false;
 
-    // Visit each file and line newest-first. The reverse reader fetches only
-    // enough chunks to satisfy an explicit limit, then returns immediately.
+    // Pages stay small even when no limit is supplied. Offset pagination lets
+    // an admin request older entries without rendering the full log tail at once.
     for (_, path) in files {
-        let reached_limit = match append_newest_log_entries(
+        has_more = match append_newest_log_entries(
             &path,
             &needle,
-            &wanted_level,
+            query.level,
+            &mut remaining_offset,
             limit,
             &mut result,
         ) {
-            Ok(reached_limit) => reached_limit,
+            Ok(has_more) => has_more,
             Err(_) => continue,
         };
-        if reached_limit {
+        if has_more {
             break;
         }
     }
-    Ok(result)
+    Ok(LogsResult {
+        entries: result,
+        has_more,
+    })
 }
 
 fn append_newest_log_entries(
     path: &Path,
     needle: &str,
-    wanted_level: &str,
-    limit: Option<usize>,
+    wanted_level: LogLevel,
+    remaining_offset: &mut usize,
+    limit: usize,
     result: &mut Vec<LogEntry>,
 ) -> std::io::Result<bool> {
     let mut lines = ReverseLineReader::new(path)?;
@@ -163,11 +172,15 @@ fn append_newest_log_entries(
                 level,
                 message: redact_sensitive_values(&message),
             };
-            if entry_matches(&entry, needle, wanted_level) {
-                result.push(entry);
-                if limit.is_some_and(|limit| result.len() >= limit) {
-                    return Ok(true);
-                }
+            if push_matching_entry(
+                entry,
+                needle,
+                wanted_level,
+                remaining_offset,
+                limit,
+                result,
+            ) {
+                return Ok(true);
             }
         } else {
             continuations.push(redact_sensitive_values(&line));
@@ -190,17 +203,43 @@ fn append_newest_log_entries(
             level: "INFO".to_string(),
             message,
         };
-        if entry_matches(&entry, needle, wanted_level) {
-            result.push(entry);
-            if limit.is_some_and(|limit| result.len() >= limit) {
-                return Ok(true);
-            }
+        if push_matching_entry(
+            entry,
+            needle,
+            wanted_level,
+            remaining_offset,
+            limit,
+            result,
+        ) {
+            return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn entry_matches(entry: &LogEntry, needle: &str, wanted_level: &str) -> bool {
+fn push_matching_entry(
+    entry: LogEntry,
+    needle: &str,
+    wanted_level: LogLevel,
+    remaining_offset: &mut usize,
+    limit: usize,
+    result: &mut Vec<LogEntry>,
+) -> bool {
+    if !entry_matches(&entry, needle, wanted_level) {
+        return false;
+    }
+    if *remaining_offset > 0 {
+        *remaining_offset -= 1;
+        return false;
+    }
+    if result.len() >= limit {
+        return true;
+    }
+    result.push(entry);
+    false
+}
+
+fn entry_matches(entry: &LogEntry, needle: &str, wanted_level: LogLevel) -> bool {
     level_matches(&entry.level, wanted_level)
         && (needle.is_empty()
             || format!("{} {} {}", entry.timestamp, entry.level, entry.message)
@@ -214,6 +253,7 @@ struct ReverseLineReader {
     min_offset: u64,
     buffer: Vec<u8>,
     skip_trailing_empty: bool,
+    #[cfg(test)]
     bytes_read: u64,
 }
 
@@ -240,6 +280,7 @@ impl ReverseLineReader {
             min_offset,
             buffer: Vec::new(),
             skip_trailing_empty,
+            #[cfg(test)]
             bytes_read: 0,
         })
     }
@@ -288,7 +329,10 @@ impl ReverseLineReader {
                 .seek(SeekFrom::Start(start))?;
             self.file
                 .read_exact(&mut chunk)?;
-            self.bytes_read += chunk.len() as u64;
+            #[cfg(test)]
+            {
+                self.bytes_read += chunk.len() as u64;
+            }
             chunk.extend(std::mem::take(&mut self.buffer));
             self.buffer = chunk;
             self.next_end = start;
@@ -296,6 +340,7 @@ impl ReverseLineReader {
     }
 }
 
+#[cfg(test)]
 fn read_log_tail(path: &Path) -> std::io::Result<String> {
     let mut file = File::open(path)?;
     let length = file
@@ -328,6 +373,31 @@ fn log_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
+fn legacy_timestamp_for_file_date<Tz: TimeZone>(
+    utc_file_date: NaiveDate,
+    local_time: NaiveTime,
+    timezone: &Tz,
+) -> Option<NaiveDateTime> {
+    [
+        utc_file_date.pred_opt(),
+        Some(utc_file_date),
+        utc_file_date.succ_opt(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|local_date| {
+        let local_datetime = timezone
+            .from_local_datetime(&local_date.and_time(local_time))
+            .earliest()?;
+        (local_datetime
+            .with_timezone(&Utc)
+            .date_naive()
+            == utc_file_date)
+            .then_some(local_datetime.naive_local())
+    })
+}
+
+#[cfg(test)]
 fn parse_log_file(content: &str, date: Option<NaiveDate>) -> Vec<LogEntry> {
     let mut entries: Vec<LogEntry> = Vec::new();
     for line in content.lines() {
@@ -373,23 +443,45 @@ fn parse_log_line(
     } else {
         let time = NaiveTime::parse_from_str(time_or_datetime, "%H:%M:%S%.f").ok()?;
         match date {
-            Some(date) => format!("{date} {time}"),
+            Some(date) => legacy_timestamp_for_file_date(date, time, &Local)
+                .map(|timestamp| timestamp.to_string())
+                .unwrap_or_else(|| format!("{date} {time}")),
             None => time.to_string(),
         }
     };
 
     let level_end = line.find(level)? + level.len();
     let target_and_message = line[level_end..].trim_start();
-    let message = target_and_message
-        .split_once(": ")
-        .map(|(_, message)| message)
-        .unwrap_or(target_and_message)
-        .to_string();
+    let message = strip_target_and_span_prefix(target_and_message).to_string();
     Some((timestamp, level.to_string(), message))
 }
 
-fn level_matches(actual: &str, wanted: &str) -> bool {
-    if wanted == "all" {
+fn strip_target_and_span_prefix(target_and_message: &str) -> &str {
+    let mut search_from = 0;
+    while let Some(relative_separator) = target_and_message[search_from..].find(": ") {
+        let separator = search_from + relative_separator;
+        let prefix = &target_and_message[..separator];
+        let has_source_line = prefix
+            .rsplit_once(':')
+            .is_some_and(|(_, line)| {
+                !line.is_empty()
+                    && line
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+            });
+        if has_source_line {
+            return &target_and_message[separator + 2..];
+        }
+        search_from = separator + 2;
+    }
+    target_and_message
+        .split_once(": ")
+        .map(|(_, message)| message)
+        .unwrap_or(target_and_message)
+}
+
+fn level_matches(actual: &str, wanted: LogLevel) -> bool {
+    if wanted == LogLevel::All {
         return true;
     }
     let rank = |level: &str| match level
@@ -403,6 +495,14 @@ fn level_matches(actual: &str, wanted: &str) -> bool {
         "error" => Some(4),
         _ => None,
     };
+    let wanted = match wanted {
+        LogLevel::All => return true,
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    };
     match (rank(actual), rank(wanted)) {
         (Some(actual), Some(wanted)) => actual >= wanted,
         _ => false,
@@ -410,7 +510,7 @@ fn level_matches(actual: &str, wanted: &str) -> bool {
 }
 
 fn redact_sensitive_values(message: &str) -> String {
-    let assigned = SECRET_ASSIGNMENT.replace_all(message, "$1$2[REDACTED]");
+    let assigned = SECRET_ASSIGNMENT.replace_all(message, "$1$2[REDACTED]$4");
     BARE_BEARER
         .replace_all(&assigned, "Bearer [REDACTED]")
         .into_owned()
@@ -419,8 +519,8 @@ fn redact_sensitive_values(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_LOG_BYTES_PER_FILE, level_matches, load_log_entries, parse_log_file,
-        parse_log_line, read_log_tail,
+        LogLevel, MAX_LOG_BYTES_PER_FILE, level_matches, load_log_entries,
+        parse_log_file, parse_log_line, read_log_tail,
     };
     use axum::http::{HeaderValue, StatusCode, header::AUTHORIZATION};
     use chrono::NaiveDate;
@@ -470,15 +570,77 @@ mod tests {
     }
 
     #[test]
+    fn removes_span_and_target_prefixes_without_truncating_message_colons() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        assert_eq!(
+            parse_log_line(
+                "12:34:56 INFO request:refresh_streams: remux_server::addons:3472: streams synced: 3",
+                Some(date)
+            )
+            .unwrap()
+            .2,
+            "streams synced: 3"
+        );
+    }
+
+    #[test]
+    fn resolves_legacy_local_times_against_utc_rolling_file_dates() {
+        use chrono::{FixedOffset, NaiveTime};
+
+        let utc_file_date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let local_midnight = NaiveTime::from_hms_opt(0, 30, 0).unwrap();
+        let utc_plus_one = FixedOffset::east_opt(3600).unwrap();
+        assert_eq!(
+            super::legacy_timestamp_for_file_date(
+                utc_file_date,
+                local_midnight,
+                &utc_plus_one
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 10, 28)
+                    .unwrap()
+                    .and_time(local_midnight)
+            )
+        );
+
+        let utc_file_date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let local_late_evening = NaiveTime::from_hms_opt(23, 30, 0).unwrap();
+        let utc_minus_five = FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(
+            super::legacy_timestamp_for_file_date(
+                utc_file_date,
+                local_late_evening,
+                &utc_minus_five
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 10, 27)
+                    .unwrap()
+                    .and_time(local_late_evening)
+            )
+        );
+    }
+
+    #[test]
+    fn redacts_json_quoted_sensitive_values() {
+        let message =
+            r#"payload={"ApiKey":"x","Authorization":"Bearer y","password":"z"}"#;
+        let redacted = super::redact_sensitive_values(message);
+        assert_eq!(
+            redacted,
+            r#"payload={"ApiKey":"[REDACTED]","Authorization":"[REDACTED]","password":"[REDACTED]"}"#
+        );
+    }
+
+    #[test]
     fn levels_include_more_severe_entries() {
-        assert!(level_matches("ERROR", "warn"));
-        assert!(level_matches("WARN", "warn"));
-        assert!(!level_matches("INFO", "warn"));
-        assert!(level_matches("TRACE", "all"));
+        assert!(level_matches("ERROR", LogLevel::Warn));
+        assert!(level_matches("WARN", LogLevel::Warn));
+        assert!(!level_matches("INFO", LogLevel::Warn));
+        assert!(level_matches("TRACE", LogLevel::All));
     }
 
     #[tokio::test]
-    async fn returns_all_entries_newest_first_when_limit_is_omitted() {
+    async fn defaults_to_a_bounded_newest_first_page_when_limit_is_omitted() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir
             .path()
@@ -497,9 +659,16 @@ mod tests {
             5,
         )
         .unwrap();
-        assert_eq!(entries.len(), 1105);
         assert_eq!(
             entries
+                .entries
+                .len(),
+            200
+        );
+        assert!(entries.has_more);
+        assert_eq!(
+            entries
+                .entries
                 .first()
                 .unwrap()
                 .message,
@@ -507,11 +676,47 @@ mod tests {
         );
         assert_eq!(
             entries
+                .entries
                 .last()
                 .unwrap()
                 .message,
-            "entry-0"
+            "entry-905"
         );
+        let older = load_log_entries(
+            &path
+                .parent()
+                .unwrap(),
+            &GetLogs {
+                limit: Some(200),
+                offset: Some(200),
+                ..Default::default()
+            },
+            5,
+        )
+        .unwrap();
+        assert_eq!(
+            older
+                .entries
+                .len(),
+            200
+        );
+        assert_eq!(
+            older
+                .entries
+                .first()
+                .unwrap()
+                .message,
+            "entry-904"
+        );
+        assert_eq!(
+            older
+                .entries
+                .last()
+                .unwrap()
+                .message,
+            "entry-705"
+        );
+        assert!(older.has_more);
     }
 
     #[test]
@@ -525,14 +730,20 @@ mod tests {
             dir.path(),
             &GetLogs {
                 limit: Some(1),
-                level: Some("warn".into()),
+                offset: None,
+                level: LogLevel::Warn,
                 search: Some("match".into()),
             },
             5,
         )
         .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].message, "match three");
+        assert_eq!(
+            entries
+                .entries
+                .len(),
+            1
+        );
+        assert_eq!(entries.entries[0].message, "match three");
     }
 
     #[test]
@@ -573,12 +784,17 @@ mod tests {
         .unwrap();
         let entries = load_log_entries(dir.path(), &GetLogs::default(), 5).unwrap();
 
-        assert_eq!(entries.len(), 2);
         assert_eq!(
-            entries[0].message,
+            entries
+                .entries
+                .len(),
+            2
+        );
+        assert_eq!(
+            entries.entries[0].message,
             "newest\ntrace frame one\ntrace frame two"
         );
-        assert_eq!(entries[1].message, "older");
+        assert_eq!(entries.entries[1].message, "older");
     }
 
     #[tokio::test]
@@ -715,5 +931,84 @@ mod tests {
                 .message
                 .contains("secret")
         );
+    }
+
+    #[tokio::test]
+    async fn endpoint_defaults_to_bounded_pages_and_loads_older_entries() {
+        let (server, _guard, temp, admin_token) = logs_server().await;
+        let log_dir = temp
+            .path()
+            .join("logs");
+        let content = (0..205)
+            .map(|index| {
+                format!(
+                    "2026-10-28T12:34:{:02}+00:00 INFO remux: endpoint-{index}\n",
+                    index % 60
+                )
+            })
+            .collect::<String>();
+        fs::write(log_dir.join("remux.2026-10-28.log"), content).unwrap();
+        let admin_header =
+            crate::integration_test::auth_header_with_token(&admin_token);
+
+        let first_response = server
+            .get("/remux/logs?level=all")
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&admin_header).unwrap())
+            .await;
+        first_response.assert_status_ok();
+        let first: LogsResult = first_response.json();
+        assert_eq!(
+            first
+                .entries
+                .len(),
+            200
+        );
+        assert_eq!(
+            first
+                .entries
+                .first()
+                .unwrap()
+                .message,
+            "endpoint-204"
+        );
+        assert_eq!(
+            first
+                .entries
+                .last()
+                .unwrap()
+                .message,
+            "endpoint-5"
+        );
+        assert!(first.has_more);
+
+        let older_response = server
+            .get("/remux/logs?level=all&limit=200&offset=200")
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&admin_header).unwrap())
+            .await;
+        older_response.assert_status_ok();
+        let older: LogsResult = older_response.json();
+        assert_eq!(
+            older
+                .entries
+                .len(),
+            5
+        );
+        assert_eq!(
+            older
+                .entries
+                .first()
+                .unwrap()
+                .message,
+            "endpoint-4"
+        );
+        assert_eq!(
+            older
+                .entries
+                .last()
+                .unwrap()
+                .message,
+            "endpoint-0"
+        );
+        assert!(!older.has_more);
     }
 }

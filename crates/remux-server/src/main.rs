@@ -86,12 +86,10 @@ async fn main() -> Result<()> {
         remux_server::logging::cleanup_old_logs(
             &log_dir,
             config.log_file_retention_days,
-            config.log_file_max_files,
         );
         remux_server::logging::start_periodic_cleanup(
             log_dir,
             config.log_file_retention_days,
-            config.log_file_max_files,
         );
     }
 

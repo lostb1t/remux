@@ -984,7 +984,9 @@ pub fn setup_logging(
             Ok(appender) => Some(
                 fmt::layer()
                     .with_ansi(false)
-                    .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+                    // Daily rolling filenames are UTC; explicit UTC timestamps keep
+                    // entries immediately after midnight on the matching date.
+                    .with_timer(fmt::time::ChronoUtc::new("%+".to_string()))
                     .with_target(true)
                     .with_line_number(true)
                     .with_file(false)

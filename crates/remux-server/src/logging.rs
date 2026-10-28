@@ -30,20 +30,22 @@ pub fn prepare_log_dir(enabled: bool, log_dir: Option<&Path>) -> Option<PathBuf>
     }
 }
 
-/// Remove expired logs and enforce the configured rolling-file count.
-/// A zero value disables that particular cleanup limit.
-pub fn cleanup_old_logs(dir: &Path, retention_days: u32, max_files: usize) {
+/// Remove daily logs older than the configured retention period. The rolling
+/// appender independently enforces the configured maximum file count.
+pub fn cleanup_old_logs(dir: &Path, retention_days: u32) {
+    if retention_days == 0 {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
 
     let now = SystemTime::now();
-    let cutoff = (retention_days > 0)
-        .then(|| {
-            now.checked_sub(Duration::from_secs(u64::from(retention_days) * 86_400))
-        })
-        .flatten();
-    let mut files = Vec::new();
+    let Some(cutoff) =
+        now.checked_sub(Duration::from_secs(u64::from(retention_days) * 86_400))
+    else {
+        return;
+    };
 
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -62,36 +64,22 @@ pub fn cleanup_old_logs(dir: &Path, retention_days: u32, max_files: usize) {
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        let modified = metadata
+        if metadata
             .modified()
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        if cutoff.is_some_and(|cutoff| modified < cutoff) {
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+            < cutoff
+        {
             let _ = fs::remove_file(entry.path());
-            continue;
         }
-        files.push((modified, entry.path()));
-    }
-
-    if max_files == 0 {
-        return;
-    }
-    files.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-    });
-    for (_, path) in files
-        .into_iter()
-        .skip(max_files)
-    {
-        let _ = fs::remove_file(path);
     }
 }
 
-/// Periodically reapply age and file-count retention while the server runs.
-pub fn start_periodic_cleanup(dir: PathBuf, retention_days: u32, max_files: usize) {
+/// Periodically remove expired daily logs while the server runs.
+pub fn start_periodic_cleanup(dir: PathBuf, retention_days: u32) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
-            cleanup_old_logs(&dir, retention_days, max_files);
+            cleanup_old_logs(&dir, retention_days);
         }
     });
 }
@@ -116,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_enforces_age_and_file_count_without_touching_other_files() {
+    fn cleanup_removes_expired_files_without_enforcing_count_again() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
         let now = SystemTime::now();
@@ -139,7 +127,7 @@ mod tests {
         let unrelated = dir.join("other.log");
         fs::write(&unrelated, "keep").unwrap();
 
-        cleanup_old_logs(dir, 5, 2);
+        cleanup_old_logs(dir, 5);
 
         assert!(
             !dir.join("remux.2020-01-01.log")
@@ -154,7 +142,7 @@ mod tests {
                 .exists()
         );
         assert!(
-            !dir.join("remux.2026-10-26.log")
+            dir.join("remux.2026-10-26.log")
                 .exists()
         );
         assert!(unrelated.exists());

@@ -70,7 +70,6 @@ fn main() -> Result<()> {
         remux_server::logging::cleanup_old_logs(
             log_dir,
             config.log_file_retention_days,
-            config.log_file_max_files,
         );
     }
     ensure_data_dirs(&config)?;
@@ -80,7 +79,6 @@ fn main() -> Result<()> {
     let server_config = config.clone();
     let cleanup_dir = log_dir.clone();
     let cleanup_retention = config.log_file_retention_days;
-    let cleanup_max_files = config.log_file_max_files;
     let data_dir_for_ffmpeg = config
         .data_dir
         .clone();
@@ -90,7 +88,6 @@ fn main() -> Result<()> {
                 remux_server::logging::start_periodic_cleanup(
                     log_dir,
                     cleanup_retention,
-                    cleanup_max_files,
                 );
             }
             if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
@@ -122,7 +119,7 @@ fn main() -> Result<()> {
     };
 
     let open_item = MenuItem::new("Open", true, None);
-    let logs_item = MenuItem::new("Logs", true, None);
+    let logs_item = MenuItem::new("Logs", log_dir.is_some(), None);
     let quit_item = MenuItem::new("Quit", true, None);
     let open_id = open_item
         .id()

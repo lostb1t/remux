@@ -2145,6 +2145,12 @@ html[data-theme="light"] [class~="dxc-system"] {
   background: var(--bg-elevated);
 }
 
+.logs-load-older {
+  display: flex;
+  justify-content: center;
+  margin: 0 20px 16px;
+}
+
 .logs-row {
   display: grid;
   grid-template-columns: minmax(150px, 190px) 64px minmax(0, 1fr);
@@ -2170,5 +2176,6 @@ html[data-theme="light"] [class~="dxc-system"] {
   .logs-refresh { margin-left: auto; }
   .logs-disclaimer { margin: 10px 16px; }
   .logs-list { margin: 0 16px 14px; }
+  .logs-load-older { margin: 0 16px 14px; }
   .logs-row { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 10px; }
 }
