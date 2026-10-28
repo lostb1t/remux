@@ -15,6 +15,47 @@ use crate::{
     stream::{StreamDescriptor, StreamInfo},
 };
 
+/// Eclipse manifests are not Stremio manifests: `resources` also lists
+/// Eclipse-only entries (`settings`, `isrc`, `resolve`, ...) that the Stremio
+/// parser rejects, so read only what we need and ignore the rest.
+#[derive(Deserialize)]
+struct EclipseManifest {
+    #[serde(default)]
+    resources: Vec<String>,
+    #[serde(default)]
+    types: Vec<String>,
+}
+
+impl EclipseManifest {
+    fn info(&self) -> super::ManifestInfo {
+        let resources = self
+            .resources
+            .iter()
+            .filter_map(|r| {
+                r.parse::<ResourceType>()
+                    .ok()
+            })
+            .filter(|r| matches!(r, ResourceType::Stream | ResourceType::Search))
+            .map(|name| remux_sdks::stremio::ResourceRef {
+                name,
+                types: self
+                    .types
+                    .clone(),
+                id_prefixes: None,
+            })
+            .collect();
+        let types = self
+            .types
+            .iter()
+            .map(|t| {
+                serde_json::from_value(serde_json::Value::String(t.clone()))
+                    .unwrap_or(remux_sdks::stremio::MediaType::Other(t.clone()))
+            })
+            .collect();
+        (resources, types)
+    }
+}
+
 #[derive(Deserialize)]
 struct EclipseSearchResponse {
     tracks: Vec<EclipseTrack>,
@@ -51,8 +92,11 @@ fn eclipse_preset_options(
     }]
 }
 
+/// Builds the addon from `cfg.manifest_url`, falling back to `default_url`
+/// for the legacy presets that ship one. The generic [`EclipsePreset`] has no
+/// default: every user brings their own manifest.
 fn eclipse_from_cfg(
-    default_url: &'static str,
+    default_url: Option<&'static str>,
     cfg: &serde_json::Value,
 ) -> Result<AddonCapabilities> {
     let raw_url = cfg
@@ -62,7 +106,8 @@ fn eclipse_from_cfg(
             !s.trim()
                 .is_empty()
         })
-        .unwrap_or(default_url)
+        .or(default_url)
+        .ok_or_else(|| anyhow!("manifest_url is required"))?
         .to_string();
     let manifest_url = StremioManifestUrl::try_new(raw_url)
         .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
@@ -79,6 +124,63 @@ fn eclipse_from_cfg(
     })
 }
 
+/// Generic Eclipse addon: the user pastes their own manifest URL.
+pub struct EclipsePreset;
+
+inventory::submit! {
+    AddonPresetRegistration(|| Box::new(EclipsePreset))
+}
+
+impl AddonPreset for EclipsePreset {
+    fn id(&self) -> &'static str {
+        "eclipse"
+    }
+
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
+            id: "eclipse".to_string(),
+            display_name: "Eclipse".to_string(),
+            description: "Search and stream music from an Eclipse addon manifest"
+                .to_string(),
+            icon: None,
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Search),
+            ],
+            supported_types: vec![
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
+            ],
+            supported_resources_user: vec![ResourceType::Stream, ResourceType::Search],
+            supported_types_user: vec![
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
+            ],
+            options: vec![AddonOption {
+                id: "manifest_url".to_string(),
+                name: "Manifest URL".to_string(),
+                description: Some(
+                    "The manifest.json URL of your Eclipse addon".to_string(),
+                ),
+                required: true,
+                default: None,
+                kind: AddonOptionType::Url,
+            }],
+        }
+    }
+
+    fn from_cfg(
+        &self,
+        _id: Uuid,
+        cfg: &serde_json::Value,
+        _config: &crate::Config,
+    ) -> Result<AddonCapabilities> {
+        eclipse_from_cfg(None, cfg)
+    }
+}
+
 const MONOCHROME_URL: &str = "https://monochrome1.cyrusna29.workers.dev/u/206f62ce5c9a5c710f2178a16238/manifest.json";
 const MONOCHROME_GENERATE_URL: &str = "https://monochrome1.cyrusna29.workers.dev";
 
@@ -89,6 +191,10 @@ inventory::submit! {
 }
 
 impl AddonPreset for MonochromePreset {
+    fn deprecated(&self) -> bool {
+        true
+    }
+
     fn id(&self) -> &'static str {
         "monochrome"
     }
@@ -124,7 +230,7 @@ impl AddonPreset for MonochromePreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        eclipse_from_cfg(MONOCHROME_URL, cfg)
+        eclipse_from_cfg(Some(MONOCHROME_URL), cfg)
     }
 }
 
@@ -139,6 +245,10 @@ inventory::submit! {
 }
 
 impl AddonPreset for SpotiFLACPreset {
+    fn deprecated(&self) -> bool {
+        true
+    }
+
     fn id(&self) -> &'static str {
         "eclipse_spotiflac"
     }
@@ -174,7 +284,7 @@ impl AddonPreset for SpotiFLACPreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        eclipse_from_cfg(SPOTIFLAC_URL, cfg)
+        eclipse_from_cfg(Some(SPOTIFLAC_URL), cfg)
     }
 }
 
@@ -213,10 +323,14 @@ impl AddonKind for EclipseAddon {
             .manifest
             .get_or_fetch(|| async {
                 let manifest = self
-                    .service()?
-                    .get_manifest()
+                    .client
+                    .get(format!("{}/manifest.json", self.base_url()))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<EclipseManifest>()
                     .await?;
-                Ok(parse_manifest_info(&manifest))
+                Ok(manifest.info())
             })
             .await?;
         Ok(Some(info))
@@ -307,4 +421,62 @@ async fn eclipse_streams(
         duration: Some(track.duration),
         ..Default::default()
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn generic_preset_requires_a_manifest_url() {
+        assert!(eclipse_from_cfg(None, &json!({})).is_err());
+        assert!(eclipse_from_cfg(None, &json!({ "manifest_url": "  " })).is_err());
+        assert!(
+            eclipse_from_cfg(
+                None,
+                &json!({ "manifest_url": "https://example.com/abc/manifest.json" })
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn manifest_with_eclipse_only_resources_parses() {
+        let manifest: EclipseManifest = serde_json::from_value(json!({
+            "id": "x", "name": "x", "version": "1.0.0",
+            "types": ["track", "album"],
+            "resources": ["search", "stream", "settings", "catalog", "isrc"],
+        }))
+        .unwrap();
+        let (resources, types) = manifest.info();
+        let names: Vec<_> = resources
+            .iter()
+            .map(|r| {
+                r.name
+                    .clone()
+            })
+            .collect();
+        assert_eq!(names, vec![ResourceType::Search, ResourceType::Stream]);
+        assert_eq!(types.len(), 2);
+    }
+
+    #[test]
+    fn legacy_presets_still_load_without_a_stored_url() {
+        assert!(eclipse_from_cfg(Some(MONOCHROME_URL), &json!({})).is_ok());
+        assert!(eclipse_from_cfg(Some(SPOTIFLAC_URL), &json!({})).is_ok());
+    }
+
+    #[test]
+    fn only_the_generic_preset_is_offered_for_new_addons() {
+        assert!(MonochromePreset.deprecated());
+        assert!(SpotiFLACPreset.deprecated());
+        assert!(!EclipsePreset.deprecated());
+        assert!(
+            EclipsePreset
+                .metadata()
+                .options[0]
+                .required
+        );
+    }
 }

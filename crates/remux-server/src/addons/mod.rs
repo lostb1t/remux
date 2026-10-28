@@ -679,6 +679,13 @@ pub fn registered_presets() -> Vec<Box<dyn AddonPreset>> {
 pub trait AddonPreset: Send + Sync {
     fn id(&self) -> &'static str;
     fn metadata(&self) -> AddonMetadata;
+
+    /// Deprecated presets keep loading for existing instances but are hidden
+    /// from the "add addon" picker and rejected on create.
+    fn deprecated(&self) -> bool {
+        false
+    }
+
     fn from_cfg(
         &self,
         addon_id: Uuid,
