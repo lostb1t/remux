@@ -669,6 +669,16 @@ impl HttpSource {
             .context_bad_request("upstream request failed")?;
 
         let upstream_status = upstream.status();
+        // reqwest follows redirects that carry a usable `Location`, so a 3xx
+        // reaching us has none (or the hop limit ran out). Mirroring it would
+        // send the client a redirect with no target, as the header whitelist
+        // below drops `Location`; fail loudly instead.
+        if upstream_status.is_redirection() {
+            return Err(anyhow::anyhow!(
+                "upstream answered {upstream_status} without a followable Location"
+            ))
+            .context_bad_gateway("upstream redirect has no usable target");
+        }
         let upstream_headers = upstream
             .headers()
             .clone();
@@ -1229,6 +1239,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn static_stream_never_mirrors_a_redirect_without_location() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/no-target");
+            then.status(307);
+        });
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/hop");
+            then.status(307)
+                .header("Location", "/file.flac");
+        });
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/file.flac");
+            then.status(200)
+                .body(vec![b'x'; 16]);
+        });
+
+        let serve = |path: &str| {
+            let source = HttpSource {
+                url: format!("{}{path}", server.base_url()),
+                request_headers: Default::default(),
+                response_headers: Default::default(),
+            };
+            async move {
+                let mut headers = http::HeaderMap::new();
+                headers.insert(
+                    http::header::RANGE,
+                    http::HeaderValue::from_static("bytes=0-"),
+                );
+                source
+                    .serve_inner(&headers, false)
+                    .await
+            }
+        };
+
+        // A 3xx with no Location must not reach the client as a 3xx.
+        assert!(
+            serve("/no-target")
+                .await
+                .is_err()
+        );
+
+        // A redirect with a Location is followed, not mirrored.
+        let followed = serve("/hop")
+            .await
+            .unwrap();
+        assert!(
+            followed
+                .status()
+                .is_success()
+        );
     }
 
     #[tokio::test]
