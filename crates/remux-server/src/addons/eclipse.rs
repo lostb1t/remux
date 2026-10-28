@@ -75,8 +75,8 @@ struct EclipseStreamResponse {
     quality: String,
 }
 
-/// Eclipse request timeout: covers connecting, the whole response and its
-/// body, so a provider that stalls cannot hang startup or an addon reload.
+/// Per-request timeout, set on each call (the shared client has none): covers
+/// connecting, the whole response and its body, so a provider that stalls cannot hang startup or an addon reload.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn eclipse_from_cfg(cfg: &serde_json::Value) -> Result<AddonCapabilities> {
@@ -91,10 +91,7 @@ fn eclipse_from_cfg(cfg: &serde_json::Value) -> Result<AddonCapabilities> {
         .to_string();
     let manifest_url = StremioManifestUrl::try_new(raw_url)
         .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-    let client = reqwest::Client::builder()
-        .user_agent("remux-server/1.0")
-        .timeout(REQUEST_TIMEOUT)
-        .build()?;
+    let client = super::make_http_client();
     let addon = Arc::new(EclipseAddon {
         manifest_url,
         client,
@@ -213,6 +210,7 @@ impl AddonKind for EclipseAddon {
                 let manifest = self
                     .client
                     .get(endpoint(self.base_url(), &["manifest.json"], &[])?)
+                    .timeout(REQUEST_TIMEOUT)
                     .send()
                     .await?
                     .error_for_status()?
@@ -266,6 +264,7 @@ async fn eclipse_streams(
     let search_url = endpoint(base_url, &["search"], &[("q", &query)])?;
     let resp = client
         .get(search_url)
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?
         .error_for_status()?
@@ -296,6 +295,7 @@ async fn eclipse_streams(
     let stream_url = endpoint(base_url, &["stream", &track.id], &[])?;
     let stream_resp = client
         .get(stream_url)
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?
         .error_for_status()?
