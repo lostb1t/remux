@@ -198,7 +198,6 @@ pub async fn list_addon_kinds(
     Ok(Json(
         registered_presets()
             .iter()
-            .filter(|p| !p.deprecated())
             .map(|p| p.metadata())
             .collect(),
     ))
@@ -278,14 +277,6 @@ pub async fn create_addon(
             )
         })
         .context_bad_request("Unknown addon kind")?;
-    if preset.deprecated() {
-        return Err(anyhow::anyhow!(
-            "addon kind {} is no longer supported",
-            preset.id()
-        ))
-        .context_bad_request("This addon kind is no longer supported");
-    }
-
     let addon_id = Uuid::new_v4();
     let normalized_config = preset
         .normalize_cfg(
