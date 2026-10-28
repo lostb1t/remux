@@ -734,11 +734,8 @@ impl HttpSource {
                     }
                     RangeRequest::Full => None,
                 },
-                // Unknown length: only `a-b` and `a-` can be served.
-                (Some(range), None) => match parse_open_or_finite_range(range) {
-                    Some((start, end)) => Some((start, end.unwrap_or(u64::MAX), None)),
-                    None => None,
-                },
+                // Unknown length: the real bounds cannot be determined, so
+                // keep the plain 200 rather than advertise made-up offsets.
                 _ => None,
             })
             .flatten();
@@ -1341,6 +1338,56 @@ mod tests {
             response.headers()[http::header::CONTENT_RANGE],
             "bytes 990-999/1000"
         );
+    }
+
+    #[tokio::test]
+    async fn http_source_keeps_the_full_response_when_upstream_has_no_length() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener
+            .local_addr()
+            .unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = socket
+                .read(&mut buf)
+                .await;
+            // No Content-Length: the body ends when the connection closes.
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789")
+                .await
+                .unwrap();
+        });
+        let source = HttpSource {
+            url: format!("http://{addr}/file.mp3"),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::RANGE,
+            http::HeaderValue::from_static("bytes=0-"),
+        );
+        let response = source
+            .serve_inner(&headers, false)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(
+            !response
+                .headers()
+                .contains_key(http::header::CONTENT_RANGE)
+        );
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"0123456789");
     }
 
     #[tokio::test]
