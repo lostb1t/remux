@@ -74,6 +74,12 @@ services:
       - /remux/data:/data
 ```
 
+### Server logs
+
+File logging is enabled by default and writes daily rolling logs under `<data_dir>/logs`. It retains at most five log files and removes files older than five days. Configure `log_file_enabled` (`LOG_FILE_ENABLED=false` to use stdout only), `log_dir` (`LOG_DIR` to move the files), `log_file_max_files` (`LOG_FILE_MAX_FILES`; `0` disables the count cap), and `log_file_retention_days` (`LOG_FILE_RETENTION_DAYS`; `0` disables age cleanup) through the normal Remux config system. If the directory is unavailable, Remux warns and continues with stdout logging.
+
+The dashboard log endpoint requires an administrator session and redacts common credential-shaped values, but arbitrary log content can still contain sensitive information. Treat logs as sensitive and do not rely on redaction as a complete secret scanner.
+
 ### Development
 
 Install cargo make

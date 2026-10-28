@@ -3,10 +3,7 @@
 mod ffmpeg;
 
 use anyhow::Result;
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime},
-};
+use std::path::PathBuf;
 use tao::event_loop::{ControlFlow, EventLoop};
 use tray_icon::{
     TrayIconBuilder,
@@ -23,10 +20,6 @@ fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("remux")
-}
-
-fn log_dir() -> PathBuf {
-    data_dir().join("logs")
 }
 
 fn server_url(config: &remux_server::Config) -> String {
@@ -56,67 +49,50 @@ fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
     Ok(())
 }
 
-fn cleanup_old_logs(dir: &Path) {
-    let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(5 * 24 * 3600))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .into_owned();
-        if name.starts_with("remux.") && name.ends_with(".log") {
-            if let Ok(meta) = entry.metadata() {
-                if meta
-                    .modified()
-                    .map(|t| t < cutoff)
-                    .unwrap_or(false)
-                {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
-}
-
-fn spawn_periodic_log_cleanup(dir: PathBuf) {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
-            cleanup_old_logs(&dir);
-        }
-    });
-}
-
 fn main() -> Result<()> {
-    let log_dir = log_dir();
-    std::fs::create_dir_all(&log_dir)?;
-    cleanup_old_logs(&log_dir);
-
     let mut config = remux_server::load_config_from_env()?;
     config.data_dir = data_dir();
     let config = config.resolve();
+    let log_dir = remux_server::logging::prepare_log_dir(
+        config.log_file_enabled,
+        config
+            .log_dir
+            .as_deref(),
+    );
     remux_server::setup_logging(
-        Some(&log_dir),
+        log_dir.as_deref(),
+        config.log_file_max_files,
         config
             .otlp_endpoint
             .as_deref(),
     );
+    if let Some(log_dir) = &log_dir {
+        remux_server::logging::cleanup_old_logs(
+            log_dir,
+            config.log_file_retention_days,
+            config.log_file_max_files,
+        );
+    }
     ensure_data_dirs(&config)?;
 
     // Start the remux server in a background tokio thread with embedded assets.
     let rt = tokio::runtime::Runtime::new()?;
     let server_config = config.clone();
     let cleanup_dir = log_dir.clone();
+    let cleanup_retention = config.log_file_retention_days;
+    let cleanup_max_files = config.log_file_max_files;
     let data_dir_for_ffmpeg = config
         .data_dir
         .clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
-            spawn_periodic_log_cleanup(cleanup_dir);
+            if let Some(log_dir) = cleanup_dir {
+                remux_server::logging::start_periodic_cleanup(
+                    log_dir,
+                    cleanup_retention,
+                    cleanup_max_files,
+                );
+            }
             if let Err(e) = ffmpeg::ensure_ffmpeg(&data_dir_for_ffmpeg).await {
                 tracing::warn!(
                     "ffmpeg could not be downloaded and was not found on this system: {e:#}. \
@@ -183,7 +159,9 @@ fn main() -> Result<()> {
                 tracing::info!("opening {url}");
                 let _ = open::that(&url);
             } else if ev.id == logs_id {
-                let _ = open::that(&log_dir);
+                if let Some(log_dir) = &log_dir {
+                    let _ = open::that(log_dir);
+                }
             } else if ev.id == quit_id {
                 tracing::info!("quit");
                 *control_flow = ControlFlow::Exit;

@@ -5677,7 +5677,7 @@ pub struct LogsResult {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GetLogs {
     pub limit: Option<usize>,
     pub level: Option<String>,
