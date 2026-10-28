@@ -1,7 +1,7 @@
 [application]
 name = "dashboard"
 default_platform = "web"
-asset_dir = "assets"
+public_dir = "assets"
 
 [web.app]
 title = "Remux Admin"
