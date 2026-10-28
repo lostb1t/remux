@@ -1863,22 +1863,32 @@ pub async fn audio_universal(
         });
 
     // Like Jellyfin: a source the client lists in `Container` is served as is,
-    // anything else is transcoded to HLS.
-    let probe = media
-        .streams(
-            &state
-                .ctx
-                .db,
-        )
-        .await
-        .ok()
-        .and_then(|streams| {
-            streams
-                .into_iter()
-                .find_map(|s| s.probe_data)
-        });
-    let direct = probe
+    // anything else is transcoded to HLS. Inspect the very source the static
+    // endpoint will serve (same lookup as PlaybackInfo and `/stream`), and pin
+    // it in the redirect so both sides agree.
+    let source = crate::services::stream_service::StreamService::lookup(
+        &state.ctx,
+        id,
+        q.media_source_id,
+        Some(
+            &session
+                .device
+                .id,
+        ),
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    .ok();
+    let direct = source
         .as_ref()
+        .and_then(|s| {
+            s.probe_data
+                .as_ref()
+        })
         .is_some_and(|p| {
             universal_can_direct_play(
                 q.container
@@ -1894,6 +1904,9 @@ pub async fn audio_universal(
                     }),
             )
         });
+    let source_id = source
+        .as_ref()
+        .map_or(id, |s| s.id);
 
     let token = session
         .device
@@ -1901,7 +1914,7 @@ pub async fn audio_universal(
         .expose();
     let url = if direct {
         format!(
-            "/audio/{id}/stream?Static=true&PlaySessionId={play_session_id}&MediaSourceId={id}&ApiKey={token}"
+            "/audio/{id}/stream?Static=true&PlaySessionId={play_session_id}&MediaSourceId={source_id}&ApiKey={token}"
         )
     } else {
         format!(
@@ -1912,42 +1925,38 @@ pub async fn audio_universal(
     Ok(axum::response::Redirect::temporary(&url).into_response())
 }
 
-/// Whether the client's `Container` list (comma separated; entries are
-/// containers, audio codecs, or `container|codec` pairs) covers the source.
+/// Whether the client's `Container` list (comma separated) covers the source.
+/// An entry must name the source's container, optionally qualified with its
+/// audio codec as `container|codec`. A codec alone says nothing about the
+/// container (AAC inside Matroska), so it never matches.
 fn universal_can_direct_play(
     client_containers: Option<&str>,
     source_container: Option<&remux_sdks::remux::VideoContainer>,
     source_audio_codec: Option<&str>,
 ) -> bool {
-    let Some(list) = client_containers else {
+    let (Some(list), Some(container)) = (client_containers, source_container) else {
         return false;
     };
-    let container = source_container.map(|c| c.to_string());
-    let matches = |wanted: &str, have: Option<&str>| {
+    let container = container.to_string();
+    let same_container = |wanted: &str| {
         let wanted = wanted.trim();
-        have.is_some_and(|have| {
-            wanted.eq_ignore_ascii_case(have)
-                || matches!(
-                    (
-                        wanted.parse::<remux_sdks::remux::VideoContainer>(),
-                        have.parse::<remux_sdks::remux::VideoContainer>()
-                    ),
-                    (Ok(a), Ok(b)) if a == b
-                )
-        })
+        wanted.eq_ignore_ascii_case(&container)
+            || matches!(
+                (
+                    wanted.parse::<remux_sdks::remux::VideoContainer>(),
+                    container.parse::<remux_sdks::remux::VideoContainer>()
+                ),
+                (Ok(a), Ok(b)) if a == b
+            )
     };
     list.split(',')
         .any(|entry| match entry.split_once('|') {
             Some((c, codec)) => {
-                matches(c, container.as_deref())
+                same_container(c)
                     && source_audio_codec
                         .is_some_and(|a| a.eq_ignore_ascii_case(codec.trim()))
             }
-            None => {
-                matches(entry, container.as_deref())
-                    || source_audio_codec
-                        .is_some_and(|a| a.eq_ignore_ascii_case(entry.trim()))
-            }
+            None => same_container(entry),
         })
 }
 
@@ -1956,6 +1965,8 @@ pub struct UniversalAudioQuery {
     pub container: Option<String>,
     #[serde(alias = "playSessionId")]
     pub play_session_id: Option<String>,
+    #[serde(alias = "mediaSourceId")]
+    pub media_source_id: Option<Uuid>,
 }
 
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.
@@ -2004,10 +2015,16 @@ mod tests {
             Some(&webm),
             Some("opus")
         ));
-        // Listed by audio codec.
-        assert!(super::universal_can_direct_play(
+        // A listed codec alone is not enough: AAC inside WebM/Matroska stays
+        // unreadable for the client.
+        assert!(!super::universal_can_direct_play(
             list,
             Some(&webm),
+            Some("aac")
+        ));
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&VideoContainer::Mkv),
             Some("aac")
         ));
         // Listed by container, and by container|codec pair.
@@ -2031,6 +2048,8 @@ mod tests {
             Some(&webm),
             Some("opus")
         ));
+        // Unprobed source: nothing to negotiate on.
+        assert!(!super::universal_can_direct_play(list, None, None));
     }
 
     #[test]
