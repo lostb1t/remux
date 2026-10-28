@@ -5662,6 +5662,40 @@ pub struct GetActivityLog {
     pub search_term: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogsResult {
+    pub entries: Vec<LogEntry>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetLogs {
+    pub limit: Option<usize>,
+    pub level: Option<String>,
+    pub search: Option<String>,
+}
+
+impl Endpoint for GetLogs {
+    type Output = LogsResult;
+
+    fn path(&self) -> String {
+        "/remux/logs".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
 impl Endpoint for GetActivityLog {
     type Output = ActivityLogResult;
 

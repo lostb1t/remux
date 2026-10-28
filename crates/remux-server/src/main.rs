@@ -67,14 +67,19 @@ async fn main() -> Result<()> {
     }
 
     // Needs config loaded first — the OTLP endpoint (if any) lives there.
+    let config = config.resolve();
+    let log_dir = config
+        .data_dir
+        .join("logs");
+    std::fs::create_dir_all(&log_dir)?;
     setup_logging(
-        None,
+        Some(&log_dir),
         config
             .otlp_endpoint
             .as_deref(),
     );
 
-    serve(config.resolve(), load_paths()).await
+    serve(config, load_paths()).await
 }
 
 #[cfg(test)]
