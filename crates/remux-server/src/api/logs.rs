@@ -22,7 +22,10 @@ const DEFAULT_PAGE_SIZE: usize = 200;
 const MAX_PAGE_SIZE: usize = 1000;
 
 static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(["']?\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|cookie)\b["']?\s*[:=]\s*)(["']?)(?:bearer\s+)?([^,\s&;,"'}]+)(["']?)"#).unwrap()
+    Regex::new(
+        r#"(?i)(["']?\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|cookie)\b["']?[ \t]*[:=][ \t]*)"#,
+    )
+    .unwrap()
 });
 static BARE_BEARER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+").unwrap());
@@ -510,9 +513,105 @@ fn level_matches(actual: &str, wanted: LogLevel) -> bool {
 }
 
 fn redact_sensitive_values(message: &str) -> String {
-    let assigned = SECRET_ASSIGNMENT.replace_all(message, "$1$2[REDACTED]$4");
+    let mut redacted = String::with_capacity(message.len());
+    let mut cursor = 0;
+    for captures in SECRET_ASSIGNMENT.captures_iter(message) {
+        let prefix = captures
+            .get(1)
+            .unwrap();
+        if prefix.start() < cursor {
+            continue;
+        }
+        redacted.push_str(&message[cursor..prefix.end()]);
+        let rest = &message[prefix.end()..];
+        let Some(first) = rest
+            .as_bytes()
+            .first()
+            .copied()
+        else {
+            cursor = prefix.end();
+            continue;
+        };
+
+        let (value_len, replacement) = if first == 34 || first == 39 {
+            let mut index = 1;
+            let mut closing = None;
+            while index < rest.len() {
+                let byte = rest.as_bytes()[index];
+                if byte == 92 {
+                    index = (index + 2).min(rest.len());
+                    continue;
+                }
+                if byte == first {
+                    closing = Some(index + 1);
+                    break;
+                }
+                if byte == b'\n' {
+                    break;
+                }
+                index += 1;
+            }
+            if let Some(end) = closing {
+                let quote = char::from(first);
+                (end, format!("{quote}[REDACTED]{quote}"))
+            } else {
+                (
+                    rest.find('\n')
+                        .unwrap_or(rest.len()),
+                    format!("{}[REDACTED]", char::from(first)),
+                )
+            }
+        } else {
+            let mut token_start = 0;
+            if rest
+                .get(..6)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer"))
+            {
+                let mut after_scheme = 6;
+                while matches!(
+                    rest.as_bytes()
+                        .get(after_scheme),
+                    Some(b' ' | b'\t')
+                ) {
+                    after_scheme += 1;
+                }
+                if after_scheme > 6 {
+                    token_start = after_scheme;
+                }
+            }
+            let mut end = token_start;
+            while let Some(byte) = rest
+                .as_bytes()
+                .get(end)
+            {
+                if matches!(
+                    *byte,
+                    b' ' | b'\t'
+                        | b'\r'
+                        | b'\n'
+                        | b','
+                        | b'&'
+                        | b';'
+                        | b'"'
+                        | b'\''
+                        | b'}'
+                ) {
+                    break;
+                }
+                end += 1;
+            }
+            if end > token_start {
+                (end, "[REDACTED]".to_string())
+            } else {
+                (0, String::new())
+            }
+        };
+        redacted.push_str(&replacement);
+        cursor = prefix.end() + value_len;
+    }
+    redacted.push_str(&message[cursor..]);
     BARE_BEARER
-        .replace_all(&assigned, "Bearer [REDACTED]")
+        .replace_all(&redacted, "Bearer [REDACTED]")
         .into_owned()
 }
 
@@ -628,6 +727,15 @@ mod tests {
         assert_eq!(
             redacted,
             r#"payload={"ApiKey":"[REDACTED]","Authorization":"[REDACTED]","password":"[REDACTED]"}"#
+        );
+    }
+
+    #[test]
+    fn redacts_complete_quoted_secret_values() {
+        let message = r#"payload={"password":"my pass","apiKey":"x,y","token":"quote \" suffix"}"#;
+        assert_eq!(
+            super::redact_sensitive_values(message),
+            r#"payload={"password":"[REDACTED]","apiKey":"[REDACTED]","token":"[REDACTED]"}"#
         );
     }
 
