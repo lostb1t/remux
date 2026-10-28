@@ -8,5 +8,5 @@ title = "Remux Admin"
 base_path = "/admin"
 
 [web.resource]
-style = ["./tailwind.css", "./theme.css"]
+style = ["/admin/tailwind.css", "/admin/theme.css"]
 
