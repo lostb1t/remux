@@ -295,11 +295,7 @@ impl StreamDescriptor {
             .status()
             .as_u16()
             >= 400
-            || response
-                .url()
-                .path()
-                .rsplit_once("/static/")
-                .is_some_and(|(_, clip)| AIOSTREAMS_ERROR_CLIPS.contains(&clip))
+            || is_aiostreams_error_clip(response.url())
         {
             return false;
         }
@@ -604,6 +600,13 @@ const AIOSTREAMS_ERROR_CLIPS: &[&str] = &[
     "payment_required.mp4",
 ];
 
+/// Whether `url` (after redirects) is one of [`AIOSTREAMS_ERROR_CLIPS`].
+fn is_aiostreams_error_clip(url: &reqwest::Url) -> bool {
+    url.path()
+        .rsplit_once("/static/")
+        .is_some_and(|(_, clip)| AIOSTREAMS_ERROR_CLIPS.contains(&clip))
+}
+
 /// Archive signatures (RAR, 7z, ZIP) occasionally served by debrid links in
 /// place of the video file; ffmpeg cannot play them.
 const ARCHIVE_MAGIC: &[&[u8]] =
@@ -710,6 +713,15 @@ impl HttpSource {
             .send()
             .await
             .context_bad_request("upstream request failed")?;
+
+        // A resolve can fail after any liveness check; AIOStreams then
+        // redirects to an error clip, which is not the release.
+        if is_aiostreams_error_clip(upstream.url()) {
+            return Err(anyhow::anyhow!(
+                "upstream redirected to an AIOStreams error clip"
+            ))
+            .context_bad_gateway("upstream redirected to an error clip");
+        }
 
         let upstream_status = upstream.status();
         // reqwest follows redirects that carry a usable `Location`, so a 3xx
@@ -1319,6 +1331,35 @@ mod tests {
                 .status()
                 .is_success()
         );
+    }
+
+    #[tokio::test]
+    async fn static_stream_refuses_an_aiostreams_error_clip() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/playback/blocked");
+            then.status(307)
+                .header("Location", "/static/unavailable_for_legal_reasons.mp4");
+        });
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/static/unavailable_for_legal_reasons.mp4");
+            then.status(200)
+                .body("error clip");
+        });
+        let source = HttpSource {
+            url: server.url("/playback/blocked"),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        };
+
+        let blocked = source
+            .serve_inner(&http::HeaderMap::new(), false)
+            .await
+            .err()
+            .expect("the error clip must not be served");
+        assert_eq!(blocked.status(), http::StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]

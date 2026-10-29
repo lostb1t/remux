@@ -1313,6 +1313,22 @@ pub(crate) enum ProbeOutcome {
     Probed,
 }
 
+/// [`StreamDescriptor::is_alive`](crate::stream::StreamDescriptor::is_alive)
+/// for a stored source; one without a descriptor counts as alive.
+pub(crate) async fn source_is_alive(stream: &db::Media) -> bool {
+    match stream
+        .stream_info
+        .as_ref()
+    {
+        Some(si) => {
+            si.descriptor
+                .is_alive()
+                .await
+        }
+        None => true,
+    }
+}
+
 /// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
 pub(crate) async fn probe_stream(
     stream: &db::Media,
@@ -1354,18 +1370,7 @@ pub(crate) async fn probe_stream(
         });
     if let Some(cached) = &stream.probe_data {
         if reuses_cached_probe(stream, cached, store) {
-            let alive = match stream
-                .stream_info
-                .as_ref()
-                .map(|si| &si.descriptor)
-            {
-                Some(d) => {
-                    d.is_alive()
-                        .await
-                }
-                None => true,
-            };
-            if alive {
+            if source_is_alive(stream).await {
                 debug!(id = %stream.id, "probe cache hit, url alive");
                 let mut info = api::MediaSourceInfo::from(stream.clone());
                 apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
