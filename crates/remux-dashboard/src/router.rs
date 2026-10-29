@@ -47,6 +47,8 @@ pub enum Route {
     DevicesRoute,
     #[route("/activity")]
     ActivityRoute,
+    #[route("/logs")]
+    LogsRoute,
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -164,6 +166,12 @@ pub(crate) fn DevicesRoute() -> Element {
 pub(crate) fn ActivityRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { ActivityCard { app_state } }
+}
+
+#[component]
+pub(crate) fn LogsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { LogsPage { app_state } }
 }
 
 #[component]

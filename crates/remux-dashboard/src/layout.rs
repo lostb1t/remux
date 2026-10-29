@@ -4,6 +4,7 @@ use crate::{
 };
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
+use remux_sdks::remux::DefaultWebClient;
 
 #[component]
 pub(crate) fn NavItem(
@@ -115,6 +116,7 @@ pub fn DashboardLayout() -> Element {
         Route::TasksRoute => "Tasks",
         Route::DevicesRoute => "Devices",
         Route::ActivityRoute => "Activity",
+        Route::LogsRoute => "Logs",
         Route::NotFound { .. } => "",
     };
 
@@ -149,6 +151,11 @@ pub fn DashboardLayout() -> Element {
                         label: "Tasks",
                         active: route == Route::TasksRoute,
                         on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Logs",
+                        active: route == Route::LogsRoute,
+                        on_click: move |_| { navigator().push(Route::LogsRoute); sidebar_open.set(false); },
                     }
 
                     div { class: "nav-divider" }
@@ -271,11 +278,13 @@ pub fn DashboardLayout() -> Element {
                 }
 
                 div { class: "sidebar-footer",
-                    a {
-                        class: "btn btn-ghost",
-                        style: "width:100%;margin-bottom:8px",
-                        href: "/",
-                        "Jellyfin Web"
+                    for client in DefaultWebClient::ALL {
+                        a {
+                            class: "btn btn-ghost",
+                            style: "width:100%;margin-bottom:8px",
+                            href: client.path(),
+                            "{client.label()}"
+                        }
                     }
                     button {
                         class: "btn btn-ghost",

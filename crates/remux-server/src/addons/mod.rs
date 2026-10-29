@@ -679,6 +679,7 @@ pub fn registered_presets() -> Vec<Box<dyn AddonPreset>> {
 pub trait AddonPreset: Send + Sync {
     fn id(&self) -> &'static str;
     fn metadata(&self) -> AddonMetadata;
+
     fn from_cfg(
         &self,
         addon_id: Uuid,

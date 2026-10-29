@@ -16,6 +16,7 @@ pub mod intro;
 pub mod items;
 pub mod livetv;
 pub mod localization;
+pub mod logs;
 pub mod lyrics;
 pub mod metadata;
 pub mod movies;

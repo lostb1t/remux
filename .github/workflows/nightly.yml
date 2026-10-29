@@ -139,6 +139,12 @@ jobs:
           name: jellyfin-web-dist
           path: jellyfin-web-dist/
 
+      - name: Download remux-web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remux-web-dist
+          path: remux-web-dist/
+
       - name: Prepare release assets
         run: |
           VERSION="${{ needs.version.outputs.version }}"
@@ -151,6 +157,7 @@ jobs:
           mv remux-desktop-windows-x86_64.zip "remux-desktop-${VERSION}-windows-x86_64.zip"
           (cd dashboard-dist   && zip -r "../remux-dashboard-${VERSION}.zip" .)
           (cd jellyfin-web-dist && zip -r "../jellyfin-web-${VERSION}.zip" .)
+          (cd remux-web-dist   && zip -r "../remux-web-${VERSION}.zip" .)
 
       - name: Delete existing nightly release
         env:
@@ -180,4 +187,5 @@ jobs:
             "remux-desktop-${VERSION}-macos-x86_64.dmg" \
             "remux-desktop-${VERSION}-windows-x86_64.zip" \
             "remux-dashboard-${VERSION}.zip" \
-            "jellyfin-web-${VERSION}.zip"
+            "jellyfin-web-${VERSION}.zip" \
+            "remux-web-${VERSION}.zip"

@@ -527,17 +527,44 @@ where
 pub enum DefaultWebClient {
     #[default]
     Jellyfin,
+    Remux,
 }
 
 impl DefaultWebClient {
+    pub const ALL: [Self; 2] = [Self::Jellyfin, Self::Remux];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Jellyfin => "jellyfin",
+            Self::Remux => "remux",
         }
     }
 
-    pub fn from_str_lossy(_value: &str) -> Self {
-        Self::Jellyfin
+    /// Where the server mounts this client.
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::Jellyfin => "/web/",
+            Self::Remux => "/remux/",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Jellyfin => "Jellyfin Web",
+            Self::Remux => "Remux Web",
+        }
+    }
+
+    /// Unknown values (an older or hand-edited config) fall back to Jellyfin.
+    pub fn from_str_lossy(value: &str) -> Self {
+        match value
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "remux" => Self::Remux,
+            _ => Self::Jellyfin,
+        }
     }
 }
 
@@ -2146,7 +2173,7 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
     #[serde(deserialize_with = "deser_opt_video_container")]
@@ -2166,7 +2193,7 @@ pub struct TranscodingProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
     pub name: Option<String>,
@@ -2181,7 +2208,7 @@ pub struct DeviceProfile {
     pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
     #[serde(
@@ -2203,7 +2230,7 @@ pub struct DirectPlayProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
     #[serde(rename = "Type")]
@@ -2212,7 +2239,7 @@ pub struct ContainerProfile {
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     #[serde(rename = "Type")]
@@ -2224,7 +2251,7 @@ pub struct CodecProfile {
     pub apply_conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
     pub format: Option<String>,
@@ -2328,7 +2355,7 @@ impl<'de> Deserialize<'de> for ProfileConditionProperty {
     }
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
     pub condition: Option<ProfileConditionType>,
@@ -4469,6 +4496,12 @@ pub struct ClientCapabilitiesDto {
     pub supported_commands: Vec<String>,
     pub supports_media_control: bool,
     pub supports_persistent_identifier: bool,
+    #[serde(default)]
+    pub device_profile: Option<DeviceProfile>,
+    #[serde(default)]
+    pub app_store_url: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, default2::Default, Serialize, Deserialize)]
@@ -5627,6 +5660,89 @@ pub struct GetActivityLog {
     pub limit: Option<i64>,
     #[serde(rename = "searchTerm")]
     pub search_term: Option<String>,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum LogLevel {
+    #[default]
+    All,
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogsResult {
+    pub entries: Vec<LogEntry>,
+    pub has_more: bool,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GetLogs {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub level: LogLevel,
+    pub search: Option<String>,
+}
+
+impl Endpoint for GetLogs {
+    type Output = LogsResult;
+
+    fn path(&self) -> String {
+        "/remux/logs".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[cfg(test)]
+mod log_query_tests {
+    use super::{GetLogs, LogLevel};
+
+    #[test]
+    fn query_round_trips_typed_log_level_and_pagination() {
+        let query = GetLogs {
+            limit: Some(200),
+            offset: Some(200),
+            level: LogLevel::Warn,
+            search: None,
+        };
+        let encoded = serde_urlencoded::to_string(&query).unwrap();
+        assert_eq!(encoded, "limit=200&offset=200&level=warn");
+        let decoded: GetLogs = serde_urlencoded::from_str(&encoded).unwrap();
+        assert_eq!(decoded.limit, Some(200));
+        assert_eq!(decoded.offset, Some(200));
+        assert_eq!(decoded.level, LogLevel::Warn);
+        assert_eq!(decoded.search, None);
+    }
 }
 
 impl Endpoint for GetActivityLog {

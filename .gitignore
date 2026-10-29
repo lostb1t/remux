@@ -23,3 +23,4 @@ transcode_sessions
 jellyfin-web/
 jellyfin-ffmpeg/
 .aider*
+remux-web/

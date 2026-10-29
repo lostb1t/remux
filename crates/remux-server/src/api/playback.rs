@@ -1828,7 +1828,7 @@ pub async fn audio_universal(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
-    Query(q): Query<api::HlsVideoQuery>,
+    Query(q): Query<UniversalAudioQuery>,
 ) -> Result<impl IntoResponse> {
     let mut media = db::Media::get_by_id(
         &state
@@ -1862,18 +1862,111 @@ pub async fn audio_universal(
                 .to_string()
         });
 
-    let transcoding_url = format!(
-        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
+    // Like Jellyfin: a source the client lists in `Container` is served as is,
+    // anything else is transcoded to HLS. Inspect the very source the static
+    // endpoint will serve (same lookup as PlaybackInfo and `/stream`), and pin
+    // it in the redirect so both sides agree.
+    let source = crate::services::stream_service::StreamService::lookup(
+        &state.ctx,
         id,
-        play_session_id,
-        id,
-        session
-            .device
-            .access_token
-            .expose()
-    );
+        q.media_source_id,
+        Some(
+            &session
+                .device
+                .id,
+        ),
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    .ok();
+    let direct = source
+        .as_ref()
+        .and_then(|s| {
+            s.probe_data
+                .as_ref()
+        })
+        .is_some_and(|p| {
+            universal_can_direct_play(
+                q.container
+                    .as_deref(),
+                p.container
+                    .as_ref(),
+                p.media_streams
+                    .iter()
+                    .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
+                    .and_then(|s| {
+                        s.codec
+                            .as_deref()
+                    }),
+            )
+        });
+    let source_id = source
+        .as_ref()
+        .map_or(id, |s| s.id);
 
-    Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
+    let token = session
+        .device
+        .access_token
+        .expose();
+    let url = if direct {
+        format!(
+            "/audio/{id}/stream?Static=true&PlaySessionId={play_session_id}&MediaSourceId={source_id}&ApiKey={token}"
+        )
+    } else {
+        format!(
+            "/videos/{id}/master.m3u8?PlaySessionId={play_session_id}&MediaSourceId={id}&VideoCodec=copy&AudioCodec=aac&ApiKey={token}"
+        )
+    };
+
+    Ok(axum::response::Redirect::temporary(&url).into_response())
+}
+
+/// Whether the client's `Container` list (comma separated) covers the source.
+/// An entry must name the source's container, optionally qualified with its
+/// audio codec as `container|codec`. A codec alone says nothing about the
+/// container (AAC inside Matroska), so it never matches.
+fn universal_can_direct_play(
+    client_containers: Option<&str>,
+    source_container: Option<&remux_sdks::remux::VideoContainer>,
+    source_audio_codec: Option<&str>,
+) -> bool {
+    let (Some(list), Some(container)) = (client_containers, source_container) else {
+        return false;
+    };
+    let container = container.to_string();
+    let same_container = |wanted: &str| {
+        let wanted = wanted.trim();
+        wanted.eq_ignore_ascii_case(&container)
+            || matches!(
+                (
+                    wanted.parse::<remux_sdks::remux::VideoContainer>(),
+                    container.parse::<remux_sdks::remux::VideoContainer>()
+                ),
+                (Ok(a), Ok(b)) if a == b
+            )
+    };
+    list.split(',')
+        .any(|entry| match entry.split_once('|') {
+            Some((c, codec)) => {
+                same_container(c)
+                    && source_audio_codec
+                        .is_some_and(|a| a.eq_ignore_ascii_case(codec.trim()))
+            }
+            None => same_container(entry),
+        })
+}
+
+#[query]
+pub struct UniversalAudioQuery {
+    pub container: Option<String>,
+    #[serde(alias = "playSessionId")]
+    pub play_session_id: Option<String>,
+    #[serde(alias = "mediaSourceId")]
+    pub media_source_id: Option<Uuid>,
 }
 
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.
@@ -1910,6 +2003,54 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[test]
+    fn universal_direct_plays_only_what_the_client_lists() {
+        use remux_sdks::remux::VideoContainer;
+        let webm = VideoContainer::Webm;
+        let list = Some("mp3,aac,m4a|aac,flac");
+        // Container list names neither webm nor opus: transcode.
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&webm),
+            Some("opus")
+        ));
+        // A listed codec alone is not enough: AAC inside WebM/Matroska stays
+        // unreadable for the client.
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&webm),
+            Some("aac")
+        ));
+        assert!(!super::universal_can_direct_play(
+            list,
+            Some(&VideoContainer::Mkv),
+            Some("aac")
+        ));
+        // Listed by container, and by container|codec pair.
+        assert!(super::universal_can_direct_play(
+            Some("webm"),
+            Some(&webm),
+            Some("opus")
+        ));
+        assert!(super::universal_can_direct_play(
+            Some("mp4|aac"),
+            Some(&VideoContainer::Mp4),
+            Some("AAC")
+        ));
+        assert!(!super::universal_can_direct_play(
+            Some("mp4|aac"),
+            Some(&VideoContainer::Mp4),
+            Some("alac")
+        ));
+        assert!(!super::universal_can_direct_play(
+            None,
+            Some(&webm),
+            Some("opus")
+        ));
+        // Unprobed source: nothing to negotiate on.
+        assert!(!super::universal_can_direct_play(list, None, None));
+    }
 
     #[test]
     fn mkv_source_direct_path_accepts_bare_and_copy_mkv_requests() {
@@ -3498,6 +3639,125 @@ mod tests {
             .as_str()
             .expect("TranscodingUrl should be present");
         assert!(url.contains("MaxStreamingBitrate=2000000"), "{url}");
+    }
+
+    /// The Remux web client's profile: it direct plays mp4/mov/webm/mkv and
+    /// asks for HLS in TS segments when it has to transcode.
+    fn web_client_profile() -> serde_json::Value {
+        json!({
+            "Name": "Remux Web",
+            "MaxStreamingBitrate": 120_000_000i64,
+            "DirectPlayProfiles": [
+                {
+                    "Type": "Video",
+                    "Container": "mp4,m4v,mov",
+                    "VideoCodec": "h264,hevc,av1,vp9",
+                    "AudioCodec": "aac,mp3,opus,flac,ac3,eac3"
+                },
+                {
+                    "Type": "Video",
+                    "Container": "webm",
+                    "VideoCodec": "vp8,vp9,av1",
+                    "AudioCodec": "opus,vorbis"
+                },
+                {
+                    "Type": "Video",
+                    "Container": "mkv",
+                    "VideoCodec": "h264,hevc,av1,vp9",
+                    "AudioCodec": "aac,mp3,opus,flac,ac3,eac3"
+                }
+            ],
+            "TranscodingProfiles": [{
+                "Type": "Video",
+                "Context": "Streaming",
+                "Protocol": "hls",
+                "Container": "ts",
+                "VideoCodec": "h264",
+                "AudioCodec": "aac"
+            }],
+            "CodecProfiles": [],
+            "SubtitleProfiles": []
+        })
+    }
+
+    async fn playback_info(
+        server: &axum_test::TestServer,
+        token: &str,
+        item_id: uuid::Uuid,
+        profile: serde_json::Value,
+    ) -> serde_json::Value {
+        server
+            .post(&format!("/items/{item_id}/playbackinfo"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
+            )
+            .json(&json!({ "DeviceProfile": profile }))
+            .await
+            .json::<serde_json::Value>()
+    }
+
+    /// A raw MPEG-TS stream is not an HLS playlist. The web client's transcoding
+    /// container is "ts" (HLS segments), which used to match a live source in
+    /// "ts" and turn the copy-copy remux into a "direct play" of the raw
+    /// stream, one a browser cannot play and the device's direct-play
+    /// profiles do not list.
+    #[tokio::test]
+    async fn live_ts_source_is_not_direct_played_by_a_browser() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = crate::integration_test::insert_test_source_with_container(
+            &guard.0,
+            crate::db::MediaKind::TvChannel,
+            VideoContainer::Ts,
+        )
+        .await;
+
+        let body = playback_info(&server, &token, media.id, web_client_profile()).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], false, "{source}");
+        assert!(
+            source["TranscodingUrl"]
+                .as_str()
+                .is_some(),
+            "a TS source must come back as an HLS transcode: {source}"
+        );
+    }
+
+    /// The same profile still direct plays a source it lists.
+    #[tokio::test]
+    async fn mp4_h264_aac_source_still_direct_plays_in_a_browser() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = insert_test_source(&guard.0).await;
+
+        let body = playback_info(&server, &token, media.id, web_client_profile()).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], true, "{source}");
+        assert!(source["TranscodingUrl"].is_null(), "{source}");
+    }
+
+    /// A native player that lists ts in its direct-play profiles keeps
+    /// playing the raw stream directly.
+    #[tokio::test]
+    async fn live_ts_source_still_direct_plays_when_the_device_lists_ts() {
+        let (server, guard, token) = authenticated_server().await;
+        let media = crate::integration_test::insert_test_source_with_container(
+            &guard.0,
+            crate::db::MediaKind::TvChannel,
+            VideoContainer::Ts,
+        )
+        .await;
+        let mut profile = web_client_profile();
+        profile["Name"] = json!("MPV");
+        profile["DirectPlayProfiles"] = json!([{
+            "Type": "Video",
+            "Container": "mp4,mkv,ts",
+            "VideoCodec": "h264,hevc",
+            "AudioCodec": "aac,mp3,ac3"
+        }]);
+
+        let body = playback_info(&server, &token, media.id, profile).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], true, "{source}");
     }
 
     /// `enable_direct_play: false` must force transcoding even with a matching
