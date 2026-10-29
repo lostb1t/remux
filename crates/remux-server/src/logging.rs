@@ -84,9 +84,31 @@ pub fn start_periodic_cleanup(dir: PathBuf, retention_days: u32) {
     });
 }
 
+/// `path?query` for request logs, with the value of any credential-looking
+/// parameter masked: Jellyfin clients put `ApiKey`/`api_key` in the URL.
+pub fn loggable_uri(uri: &axum::http::Uri) -> String {
+    let Some(query) = uri.query() else {
+        return uri
+            .path()
+            .to_string();
+    };
+    let masked = url::form_urlencoded::parse(query.as_bytes())
+        .map(|(key, value)| {
+            let lower = key.to_ascii_lowercase();
+            let secret = ["key", "token", "password", "secret", "auth"]
+                .iter()
+                .any(|needle| lower.contains(needle));
+            let value = if secret { "<redacted>".into() } else { value };
+            format!("{key}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{}?{masked}", uri.path())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_old_logs, prepare_log_dir};
+    use super::{cleanup_old_logs, loggable_uri, prepare_log_dir};
     use std::{
         fs,
         time::{Duration, SystemTime},
@@ -146,5 +168,21 @@ mod tests {
                 .exists()
         );
         assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn request_logs_mask_credential_query_parameters() {
+        let uri: axum::http::Uri =
+            "/items?ApiKey=abc&api_key=def&X-Emby-Token=ghi&limit=5&parentId=1"
+                .parse()
+                .unwrap();
+        assert_eq!(
+            loggable_uri(&uri),
+            "/items?ApiKey=<redacted>&api_key=<redacted>&X-Emby-Token=<redacted>&limit=5&parentId=1"
+        );
+        let plain: axum::http::Uri = "/items"
+            .parse()
+            .unwrap();
+        assert_eq!(loggable_uri(&plain), "/items");
     }
 }

@@ -3,14 +3,12 @@ use axum::{
     extract::{Query, State},
 };
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use regex::Regex;
 use remux_macros::get;
 use remux_sdks::remux::{GetLogs, LogEntry, LogLevel, LogsResult};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::Path,
-    sync::LazyLock,
     time::SystemTime,
 };
 
@@ -21,18 +19,9 @@ const MAX_LOG_BYTES_PER_FILE: u64 = 8 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE: usize = 200;
 const MAX_PAGE_SIZE: usize = 1000;
 
-static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)(["']?\b(?:authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|cookie)\b["']?[ \t]*[:=][ \t]*)"#,
-    )
-    .unwrap()
-});
-static BARE_BEARER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+").unwrap());
-
-/// Read the bounded tail of rolling logs. This endpoint is admin-only; common
-/// credential-shaped values are redacted, but operators should still treat log
-/// messages as sensitive and disable file logging when it is not desired.
+/// Read the bounded tail of rolling logs. This endpoint is admin-only and
+/// returns lines exactly as written: secrets are kept out of the log at the
+/// call sites (`remux_utils::Secret`, `redact_url`), not scrubbed here.
 #[get("/remux/logs")]
 pub async fn get_logs(
     State(state): State<AppState>,
@@ -173,7 +162,7 @@ fn append_newest_log_entries(
             let entry = LogEntry {
                 timestamp,
                 level,
-                message: redact_sensitive_values(&message),
+                message,
             };
             if push_matching_entry(
                 entry,
@@ -186,7 +175,7 @@ fn append_newest_log_entries(
                 return Ok(true);
             }
         } else {
-            continuations.push(redact_sensitive_values(&line));
+            continuations.push(line);
         }
     }
 
@@ -408,7 +397,7 @@ fn parse_log_file(content: &str, date: Option<NaiveDate>) -> Vec<LogEntry> {
             entries.push(LogEntry {
                 timestamp,
                 level,
-                message: redact_sensitive_values(&message),
+                message,
             });
         } else if let Some(previous) = entries.last_mut() {
             previous
@@ -416,14 +405,14 @@ fn parse_log_file(content: &str, date: Option<NaiveDate>) -> Vec<LogEntry> {
                 .push('\n');
             previous
                 .message
-                .push_str(&redact_sensitive_values(line));
+                .push_str(line);
         } else {
             entries.push(LogEntry {
                 timestamp: date
                     .map(|d| d.to_string())
                     .unwrap_or_default(),
                 level: "INFO".to_string(),
-                message: redact_sensitive_values(line),
+                message: line.to_string(),
             });
         }
     }
@@ -512,109 +501,6 @@ fn level_matches(actual: &str, wanted: LogLevel) -> bool {
     }
 }
 
-fn redact_sensitive_values(message: &str) -> String {
-    let mut redacted = String::with_capacity(message.len());
-    let mut cursor = 0;
-    for captures in SECRET_ASSIGNMENT.captures_iter(message) {
-        let prefix = captures
-            .get(1)
-            .unwrap();
-        if prefix.start() < cursor {
-            continue;
-        }
-        redacted.push_str(&message[cursor..prefix.end()]);
-        let rest = &message[prefix.end()..];
-        let Some(first) = rest
-            .as_bytes()
-            .first()
-            .copied()
-        else {
-            cursor = prefix.end();
-            continue;
-        };
-
-        let (value_len, replacement) = if first == 34 || first == 39 {
-            let mut index = 1;
-            let mut closing = None;
-            while index < rest.len() {
-                let byte = rest.as_bytes()[index];
-                if byte == 92 {
-                    index = (index + 2).min(rest.len());
-                    continue;
-                }
-                if byte == first {
-                    closing = Some(index + 1);
-                    break;
-                }
-                if byte == b'\n' {
-                    break;
-                }
-                index += 1;
-            }
-            if let Some(end) = closing {
-                let quote = char::from(first);
-                (end, format!("{quote}[REDACTED]{quote}"))
-            } else {
-                (
-                    rest.find('\n')
-                        .unwrap_or(rest.len()),
-                    format!("{}[REDACTED]", char::from(first)),
-                )
-            }
-        } else {
-            let mut token_start = 0;
-            if rest
-                .get(..6)
-                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("Bearer"))
-            {
-                let mut after_scheme = 6;
-                while matches!(
-                    rest.as_bytes()
-                        .get(after_scheme),
-                    Some(b' ' | b'\t')
-                ) {
-                    after_scheme += 1;
-                }
-                if after_scheme > 6 {
-                    token_start = after_scheme;
-                }
-            }
-            let mut end = token_start;
-            while let Some(byte) = rest
-                .as_bytes()
-                .get(end)
-            {
-                if matches!(
-                    *byte,
-                    b' ' | b'\t'
-                        | b'\r'
-                        | b'\n'
-                        | b','
-                        | b'&'
-                        | b';'
-                        | b'"'
-                        | b'\''
-                        | b'}'
-                ) {
-                    break;
-                }
-                end += 1;
-            }
-            if end > token_start {
-                (end, "[REDACTED]".to_string())
-            } else {
-                (0, String::new())
-            }
-        };
-        redacted.push_str(&replacement);
-        cursor = prefix.end() + value_len;
-    }
-    redacted.push_str(&message[cursor..]);
-    BARE_BEARER
-        .replace_all(&redacted, "Bearer [REDACTED]")
-        .into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -644,27 +530,17 @@ mod tests {
     }
 
     #[test]
-    fn includes_multiline_continuations_and_redacts_credentials() {
+    fn includes_multiline_continuations() {
         let date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let entries = parse_log_file(
-            "12:34:56 ERROR remux::api: request failed Authorization: Bearer topsecret\n  at server.rs:12\nurl=https://host/?api_key=abc123",
+            "12:34:56 ERROR remux::api: request failed\n  at server.rs:12\nurl=https://host/",
             Some(date),
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].timestamp, "2026-10-28 12:34:56");
         assert_eq!(
             entries[0].message,
-            "request failed Authorization: [REDACTED]\n  at server.rs:12\nurl=https://host/?api_key=[REDACTED]"
-        );
-        assert!(
-            !entries[0]
-                .message
-                .contains("topsecret")
-        );
-        assert!(
-            !entries[0]
-                .message
-                .contains("abc123")
+            "request failed\n  at server.rs:12\nurl=https://host/"
         );
     }
 
@@ -716,26 +592,6 @@ mod tests {
                     .unwrap()
                     .and_time(local_late_evening)
             )
-        );
-    }
-
-    #[test]
-    fn redacts_json_quoted_sensitive_values() {
-        let message =
-            r#"payload={"ApiKey":"x","Authorization":"Bearer y","password":"z"}"#;
-        let redacted = super::redact_sensitive_values(message);
-        assert_eq!(
-            redacted,
-            r#"payload={"ApiKey":"[REDACTED]","Authorization":"[REDACTED]","password":"[REDACTED]"}"#
-        );
-    }
-
-    #[test]
-    fn redacts_complete_quoted_secret_values() {
-        let message = r#"payload={"password":"my pass","apiKey":"x,y","token":"quote \" suffix"}"#;
-        assert_eq!(
-            super::redact_sensitive_values(message),
-            r#"payload={"password":"[REDACTED]","apiKey":"[REDACTED]","token":"[REDACTED]"}"#
         );
     }
 
@@ -933,8 +789,10 @@ mod tests {
         tempfile::TempDir,
         String,
     ) {
-        use crate::Config;
-        use crate::integration_test::{AUTH_HEADER, new_test_server_with_config};
+        use crate::{
+            Config,
+            integration_test::{AUTH_HEADER, new_test_server_with_config},
+        };
         use http::header::HeaderValue;
         use remux_sdks::remux::AuthenticationInfo;
 

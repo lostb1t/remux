@@ -156,7 +156,7 @@ pub fn LogsPage(app_state: AppState) -> Element {
                     "Refresh"
                 }
             }
-            if *loading.read() {
+            if *loading.read() && entries.read().is_empty() {
                 LoadingText {}
             } else if let Some(message) = error.read().as_ref() {
                 ErrorAlert { message: message.clone() }

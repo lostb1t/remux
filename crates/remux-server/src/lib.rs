@@ -465,12 +465,7 @@ pub async fn init_app(
                     tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
-                    let uri = request.uri();
-                    let path = uri.path();
-                    let full = match uri.query() {
-                        Some(q) => format!("{path}?{q}"),
-                        None => path.to_string(),
-                    };
+                    let full = logging::loggable_uri(request.uri());
                     debug!(target: "remux_server::request", method = %request.method(), uri = %full, "→");
                 })
                 .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
@@ -1033,7 +1028,7 @@ pub fn setup_logging(
 }
 
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
-    debug!("404 - Not Found: {}", uri);
+    debug!("404 - Not Found: {}", logging::loggable_uri(&uri));
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
