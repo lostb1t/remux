@@ -135,7 +135,7 @@ impl AddonPreset for EclipsePreset {
     fn metadata(&self) -> AddonMetadata {
         AddonMetadata {
             id: "eclipse".to_string(),
-            display_name: "Eclipse".to_string(),
+            display_name: "Eclipse music".to_string(),
             description: "Search and stream music from an Eclipse addon manifest"
                 .to_string(),
             icon: None,
@@ -158,7 +158,11 @@ impl AddonPreset for EclipsePreset {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),
                 description: Some(
-                    "The manifest.json URL of your Eclipse addon".to_string(),
+                    "The manifest.json URL of your Eclipse addon. \
+                     Examples of sites where you can get a manifest: \
+                     https://nullbeat.thevolecitor.qzz.io, \
+                     https://tido.tido.tido.rickyaddons.dpdns.org"
+                        .to_string(),
                 ),
                 required: true,
                 default: None,
