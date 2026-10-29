@@ -214,7 +214,7 @@ impl Task for RefreshIptvTask {
                 continue;
             }
 
-            debug!(addon = %addon_id, channels = channel_refs.len(), url = %epg_url, "fetching EPG");
+            debug!(addon = %addon_id, channels = channel_refs.len(), url = %crate::playback::probe::redact_url(&epg_url), "fetching EPG");
             match crate::iptv::stream_import_epg(&client, &epg_url, &channel_refs, &ctx)
                 .await
             {

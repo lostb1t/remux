@@ -6922,6 +6922,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "wasm-bindgen",
  "web-sys",
 ]
 

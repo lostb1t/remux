@@ -392,7 +392,7 @@ impl CatalogAddon for IptvAddon {
                 }
             }
         } else {
-            debug!(url = %self.m3u_url, "fetching M3U playlist");
+            debug!(url = %crate::playback::probe::redact_url(&self.m3u_url), "fetching M3U playlist");
             let resp = client
                 .get(&self.m3u_url)
                 .send()
