@@ -101,6 +101,13 @@ pub(crate) fn is_release_match(
         })
 }
 
+/// A subtitle file sitting on the server's own disk, next to the library
+/// file (a local addon's sidecar). Someone put it there for this video, so it
+/// outranks anything a provider offers; no release-name guessing is needed.
+fn is_local_sidecar(sub: &SubtitleInfo) -> bool {
+    matches!(sub.url, Some(crate::stream::StreamDescriptor::Local(_)))
+}
+
 /// Ranks candidates release-aware and by language preference, without
 /// deduping to one-per-language. `select_external_subtitles` reduces this to
 /// its public one-per-language contract; kept separate so tests can inspect
@@ -128,16 +135,19 @@ fn ranked_external_subtitles<'a>(
                 sub,
                 lang,
                 rank.unwrap_or(usize::MAX),
+                is_local_sidecar(sub),
                 is_release_match(sub, source_filename),
             ))
         })
         .collect();
 
     candidates.sort_by(
-        |(a, lang_a, rank_a, match_a), (b, lang_b, rank_b, match_b)| {
+        |(a, lang_a, rank_a, local_a, match_a),
+         (b, lang_b, rank_b, local_b, match_b)| {
             rank_a
                 .cmp(rank_b)
                 .then_with(|| lang_a.cmp(lang_b))
+                .then_with(|| local_b.cmp(local_a))
                 .then_with(|| match_b.cmp(match_a))
                 .then_with(|| {
                     a.is_forced
@@ -318,6 +328,29 @@ mod tests {
             &punctuation,
             Some("Movie.2026.WEB-DL.mkv")
         ));
+    }
+
+    #[test]
+    fn local_sidecar_outranks_provider_subtitles_even_with_a_release_match() {
+        let mut local = sub("local", "Movie.2026.1080p.WEB-DL.en.srt", "eng");
+        local.url = Some(crate::stream::StreamDescriptor::Local(
+            "/media/Movie.2026.1080p.WEB-DL.en.srt".into(),
+        ));
+        let mut exact = sub("exact", "Movie.2026.1080p.WEB-DL.srt", "eng");
+        exact.from_trusted = Some(true);
+        let mut other_lang = sub("other_lang", "Movie.2026.1080p.WEB-DL.srt", "fra");
+        other_lang.from_trusted = Some(true);
+        let subs = [exact, other_lang, local];
+        let ranked =
+            ranked_external_subtitles(&subs, &[], Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let ids: Vec<_> = ranked
+            .iter()
+            .map(|s| {
+                s.id.as_str()
+            })
+            .collect();
+        // Within a language the sidecar goes first; languages stay ordered.
+        assert_eq!(ids, vec!["local", "exact", "other_lang"]);
     }
 
     #[test]
