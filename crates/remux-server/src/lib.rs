@@ -61,6 +61,7 @@ pub mod embedded_static;
 pub mod intro;
 mod iptv;
 pub mod localization;
+pub mod logging;
 pub mod playback;
 pub mod playback_session;
 pub mod services;
@@ -646,6 +647,18 @@ pub struct Config {
     pub activity_log_retention_days: u32,
     #[serde(default = "default_jellyfin_version")]
     pub jellyfin_version: String,
+    /// Log file output is best-effort; stdout logging remains enabled when false.
+    #[serde(default = "default_log_file_enabled")]
+    pub log_file_enabled: bool,
+    /// Optional log directory; defaults to `<data_dir>/logs` after `resolve()`.
+    #[serde(default)]
+    pub log_dir: Option<std::path::PathBuf>,
+    /// Maximum number of rolling log files retained. Zero disables the count cap.
+    #[serde(default = "default_log_file_max_files")]
+    pub log_file_max_files: usize,
+    /// Age-based log retention in days; zero disables age-based cleanup.
+    #[serde(default = "default_log_file_retention_days")]
+    pub log_file_retention_days: u32,
     /// OTLP gRPC endpoint (e.g. `http://jaeger-collector:4317`) to export
     /// tracing spans to. `None` (the default) disables tracing export
     /// entirely — normal log output is unaffected either way.
@@ -662,6 +675,18 @@ fn default_remuxdb_url() -> Option<String> {
 
 fn default_activity_log_retention_days() -> u32 {
     90
+}
+
+fn default_log_file_enabled() -> bool {
+    true
+}
+
+fn default_log_file_max_files() -> usize {
+    5
+}
+
+fn default_log_file_retention_days() -> u32 {
+    5
 }
 
 fn default_tmdb_base_url() -> String {
@@ -754,6 +779,15 @@ impl Config {
                     .into_owned(),
             );
         }
+        if self
+            .log_dir
+            .is_none()
+        {
+            self.log_dir = Some(
+                self.data_dir
+                    .join("logs"),
+            );
+        }
         self
     }
 }
@@ -776,6 +810,10 @@ impl Default for Config {
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),
+            log_file_enabled: default_log_file_enabled(),
+            log_dir: None,
+            log_file_max_files: default_log_file_max_files(),
+            log_file_retention_days: default_log_file_retention_days(),
             otlp_endpoint: None,
         }
         .resolve()
@@ -915,11 +953,16 @@ where
     Some(tracing_opentelemetry::layer().with_tracer(tracer))
 }
 
-/// `otlp_endpoint`: when set (e.g. `http://jaeger:4317`), tracing spans are
+/// `otlp_endpoint`: when set (e.g. `http://jaeger-collector:4317`), tracing spans are
 /// also exported via OTLP — see `Config::otlp_endpoint`. Gated by the same
 /// `RUST_LOG`/`EnvFilter` as normal log output, so raising the level to see
-/// more logs also sends more spans.
-pub fn setup_logging(log_dir: Option<&std::path::Path>, otlp_endpoint: Option<&str>) {
+/// more logs also sends more spans. File logging is best-effort: an unavailable
+/// directory or rolling appender leaves stdout logging active.
+pub fn setup_logging(
+    log_dir: Option<&std::path::Path>,
+    max_log_files: usize,
+    otlp_endpoint: Option<&str>,
+) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
@@ -930,21 +973,31 @@ pub fn setup_logging(log_dir: Option<&std::path::Path>, otlp_endpoint: Option<&s
         .with_file(false)
         .compact();
 
-    let file_layer = log_dir.map(|dir| {
+    let file_layer = log_dir.and_then(|dir| {
         let appender = tracing_appender::rolling::Builder::new()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
             .filename_prefix("remux")
             .filename_suffix("log")
-            .build(dir)
-            .expect("failed to create log appender");
-        fmt::layer()
-            .with_ansi(false)
-            .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
-            .with_target(true)
-            .with_line_number(true)
-            .with_file(false)
-            .compact()
-            .with_writer(appender)
+            .max_log_files(max_log_files)
+            .build(dir);
+        match appender {
+            Ok(appender) => Some(
+                fmt::layer()
+                    .with_ansi(false)
+                    // Daily rolling filenames are UTC; explicit UTC timestamps keep
+                    // entries immediately after midnight on the matching date.
+                    .with_timer(fmt::time::ChronoUtc::new("%+".to_string()))
+                    .with_target(true)
+                    .with_line_number(true)
+                    .with_file(false)
+                    .compact()
+                    .with_writer(appender),
+            ),
+            Err(error) => {
+                eprintln!("Remux file logging unavailable; continuing with stdout only: {error}");
+                None
+            }
+        }
     });
 
     // FmtSpan::CLOSE makes every span passing through a layer log its own
