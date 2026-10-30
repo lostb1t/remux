@@ -3,8 +3,8 @@ use gloo_storage::{LocalStorage, Storage};
 use remux_sdks::{
     remux::{
         AuthenticateUserByName, CountryInfo, GetCountries, GetCurrentUser,
-        GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
-        PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+        GetSsoProviders, GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
+        PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SsoProvider,
         StartupConfiguration, StartupUser, Username,
     },
     ClientError,
@@ -173,17 +173,29 @@ fn Login(on_login: EventHandler) -> Element {
     let mut password = use_signal(String::new);
     let mut error = use_signal(|| Option::<String>::None);
     let mut loading = use_signal(|| false);
+    let mut sso_providers: Signal<Vec<SsoProvider>> = use_signal(Vec::new);
 
     use_effect(move || {
         spawn(async move {
             let origin = get_origin();
-            let reachable = match remux_sdks::remux::client(&origin) {
-                Ok(c) => c
+            let client = remux_sdks::remux::client(&origin).ok();
+            let reachable = match &client {
+                Some(c) => c
                     .execute(PublicSystemInfo::default())
                     .await
                     .is_ok(),
-                Err(_) => false,
+                None => false,
             };
+            // SSO buttons only make sense for the server serving this page;
+            // the sign-in redirects come back here.
+            if let (true, Some(c)) = (reachable, &client) {
+                if let Ok(providers) = c
+                    .execute(GetSsoProviders)
+                    .await
+                {
+                    sso_providers.set(providers);
+                }
+            }
             server_url.set(Some(if reachable { origin } else { String::new() }));
         });
     });
@@ -339,6 +351,21 @@ fn Login(on_login: EventHandler) -> Element {
                                 class: "btn btn-primary login-btn",
                                 disabled: *loading.read(),
                                 if *loading.read() { "Signing in…" } else { "Sign In" }
+                            }
+                        }
+
+                        if !sso_providers.read().is_empty() {
+                            div {
+                                style: "display:flex;flex-direction:column;gap:10px;margin-top:14px;",
+                                for p in sso_providers.read().iter() {
+                                    a {
+                                        key: "{p.name}",
+                                        class: "btn btn-ghost login-btn",
+                                        // Provider names are URL-safe slugs (checked server-side).
+                                        href: "/sso/oid/start/{p.name}?redirect=%2Fadmin%2F",
+                                        "Sign in with {p.display_name}"
+                                    }
+                                }
                             }
                         }
                     }

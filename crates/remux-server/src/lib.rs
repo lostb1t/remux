@@ -62,6 +62,7 @@ pub mod intro;
 mod iptv;
 pub mod localization;
 pub mod logging;
+pub mod oidc;
 pub mod playback;
 pub mod playback_session;
 pub mod services;
@@ -368,6 +369,8 @@ pub async fn init_app(
         ws_tx: ws_tx.clone(),
     });
 
+    let oidc = oidc::OidcProvider::from_config(&config)?.map(Arc::new);
+
     let mut ctx = AppContext {
         config,
         db: conn.clone(),
@@ -384,6 +387,7 @@ pub async fn init_app(
         addons,
         signals,
         started_at: Utc::now(),
+        oidc,
     };
     ctx.signals
         .register(services::media_tracker::MediaTrackerSubscriber { ctx: ctx.clone() });
@@ -493,6 +497,8 @@ pub struct AppContext {
     pub signals: signals::Signals,
     /// When this server process started.
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// The OpenID Connect provider, when one is configured.
+    pub oidc: Option<Arc<oidc::OidcProvider>>,
 }
 
 impl AppContext {
@@ -658,6 +664,77 @@ pub struct Config {
     /// tracing spans to. `None` (the default) disables tracing export
     /// entirely — normal log output is unaffected either way.
     pub otlp_endpoint: Option<String>,
+
+    // ── OpenID Connect sign-in ────────────────────────────────────────────
+    // Setting `oidc_issuer_url` together with `oidc_client_id` adds a
+    // "Sign in with …" button to the web client and admin dashboard.
+    /// Issuer URL of the provider, e.g.
+    /// `https://auth.example.com/application/o/remux/`. Its
+    /// `.well-known/openid-configuration` document is fetched on first use.
+    pub oidc_issuer_url: Option<String>,
+    pub oidc_client_id: Option<String>,
+    /// Omit for public clients. Never serialized: the config is logged at startup.
+    #[serde(default, skip_serializing)]
+    pub oidc_client_secret: Option<remux_utils::Secret<String>>,
+    /// URL slug for the provider (`/sso/oid/start/{name}`).
+    #[serde(default = "default_oidc_provider_name")]
+    pub oidc_provider_name: String,
+    /// Shown on the login button as "Sign in with {display_name}".
+    #[serde(default = "default_oidc_display_name")]
+    pub oidc_display_name: String,
+    /// Space- or comma-separated; `openid` is always requested.
+    #[serde(default = "default_oidc_scopes")]
+    pub oidc_scopes: String,
+    /// Claim holding the local username. Falls back to `preferred_username`,
+    /// then `email`, when absent.
+    #[serde(default = "default_oidc_username_claim")]
+    pub oidc_username_claim: String,
+    /// Claim holding the user's groups or roles. Nested claims use dots,
+    /// e.g. `realm_access.roles` for Keycloak.
+    #[serde(default = "default_oidc_groups_claim")]
+    pub oidc_groups_claim: String,
+    /// Comma-separated. When set, the admin flag is synced on every sign-in:
+    /// members of any of these groups become admins, everyone else loses it.
+    pub oidc_admin_groups: Option<String>,
+    /// Comma-separated. When set, only members of these groups (or of
+    /// `oidc_admin_groups`) may sign in.
+    pub oidc_allowed_groups: Option<String>,
+    /// Create a local user on first sign-in when none is linked yet.
+    #[serde(default = "default_true")]
+    pub oidc_auto_create_users: bool,
+    /// Link a first-time sign-in to an existing local user with the same
+    /// username. Off by default: only enable it when the provider does not
+    /// let people choose their own username, or anyone could claim `admin`.
+    #[serde(default)]
+    pub oidc_link_existing_users: bool,
+    /// Full callback URL registered with the provider, e.g.
+    /// `https://media.example.com/sso/oid/redirect/oidc`. Derived from the
+    /// request's `Host` / `X-Forwarded-*` headers when unset.
+    pub oidc_redirect_url: Option<String>,
+}
+
+fn default_oidc_provider_name() -> String {
+    "oidc".to_string()
+}
+
+fn default_oidc_display_name() -> String {
+    "SSO".to_string()
+}
+
+fn default_oidc_scopes() -> String {
+    "openid profile email".to_string()
+}
+
+fn default_oidc_username_claim() -> String {
+    "preferred_username".to_string()
+}
+
+fn default_oidc_groups_claim() -> String {
+    "groups".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_jellyfin_version() -> String {
@@ -810,6 +887,19 @@ impl Default for Config {
             log_file_max_files: default_log_file_max_files(),
             log_file_retention_days: default_log_file_retention_days(),
             otlp_endpoint: None,
+            oidc_issuer_url: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            oidc_provider_name: default_oidc_provider_name(),
+            oidc_display_name: default_oidc_display_name(),
+            oidc_scopes: default_oidc_scopes(),
+            oidc_username_claim: default_oidc_username_claim(),
+            oidc_groups_claim: default_oidc_groups_claim(),
+            oidc_admin_groups: None,
+            oidc_allowed_groups: None,
+            oidc_auto_create_users: true,
+            oidc_link_existing_users: false,
+            oidc_redirect_url: None,
         }
         .resolve()
     }

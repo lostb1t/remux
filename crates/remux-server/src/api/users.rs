@@ -223,7 +223,7 @@ fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result
     Ok(())
 }
 
-fn build_auth_response(
+pub(crate) fn build_auth_response(
     data_dir: &std::path::Path,
     device: auth::Device,
     user: db::User,
