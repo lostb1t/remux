@@ -73,27 +73,8 @@ impl TorrentManager {
         disable_dht: bool,
         peer_port: Option<u16>,
     ) -> Result<Self> {
-        let session = Session::new_with_opts(
-            data_dir,
-            SessionOptions {
-                dht: (!disable_dht).then(|| DhtSessionConfig {
-                    persistence: Some(DhtPersistenceConfig {
-                        config_filename: Some(cache_dir.join("dht.json")),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                listen: peer_port.map(|port| ListenerOptions {
-                    listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
-                    ..Default::default()
-                }),
-                persistence: Some(SessionPersistenceConfig::Json {
-                    folder: Some(cache_dir.join("rqbit")),
-                }),
-                ..Default::default()
-            },
-        )
-        .await?;
+        let session =
+            Self::start_session(data_dir, cache_dir, disable_dht, peer_port).await?;
 
         // None → let the OS pick a free ephemeral port.
         let bind_port = http_port.unwrap_or(0);
@@ -119,6 +100,51 @@ impl TorrentManager {
             http_port: bound_port,
             leases: Default::default(),
         })
+    }
+
+    /// librqbit 9 listens on exactly one port, where 8 walked a range. Keep the
+    /// range so a taken port (another instance, parallel tests) moves on to
+    /// the next one instead of failing the whole session.
+    async fn start_session(
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+        disable_dht: bool,
+        peer_port: Option<u16>,
+    ) -> Result<Arc<Session>> {
+        const PEER_PORT_SPAN: u16 = 10;
+        let attempts = peer_port.map_or(1, |_| PEER_PORT_SPAN);
+        let mut last_error = None;
+        for offset in 0..attempts {
+            let options = SessionOptions {
+                dht: (!disable_dht).then(|| DhtSessionConfig {
+                    persistence: Some(DhtPersistenceConfig {
+                        config_filename: Some(cache_dir.join("dht.json")),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                listen: peer_port.map(|port| ListenerOptions {
+                    listen_addr: (
+                        std::net::Ipv6Addr::UNSPECIFIED,
+                        port.saturating_add(offset),
+                    )
+                        .into(),
+                    ..Default::default()
+                }),
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(cache_dir.join("rqbit")),
+                }),
+                ..Default::default()
+            };
+            match Session::new_with_opts(data_dir.clone(), options).await {
+                Ok(session) => return Ok(session),
+                Err(error) => {
+                    debug!(offset, "torrent session failed to start: {error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.expect("at least one attempt"))
     }
 
     pub async fn acquire(self: &Arc<Self>, hash: &str) -> Arc<TorrentLease> {
