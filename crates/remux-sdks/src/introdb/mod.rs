@@ -10,9 +10,27 @@ const BASE_URL: &str = "https://api.introdb.app";
 const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct IntroDbResponse {
+struct IntroDbSegment {
     start_sec: Option<f64>,
     end_sec: Option<f64>,
+}
+
+/// `/segments` returns every known segment type for an episode; any of them may be null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IntroDbResponse {
+    intro: Option<IntroDbSegment>,
+    recap: Option<IntroDbSegment>,
+    outro: Option<IntroDbSegment>,
+}
+
+fn to_segment(s: &Option<IntroDbSegment>) -> Option<Segment> {
+    match s {
+        Some(IntroDbSegment { start_sec: Some(start), end_sec: Some(end) }) if end > start => Some(Segment {
+            start_ticks: secs_to_ticks(*start),
+            end_ticks: secs_to_ticks(*end),
+        }),
+        _ => None,
+    }
 }
 
 fn secs_to_ticks(secs: f64) -> i64 {
@@ -31,7 +49,7 @@ impl Endpoint for EpisodeEndpoint {
 
     fn path(&self) -> String {
         format!(
-            "/intro?imdb_id={}&season={}&episode={}",
+            "/segments?imdb_id={}&season={}&episode={}",
             self.imdb_id, self.season, self.episode
         )
     }
@@ -62,14 +80,10 @@ pub async fn fetch_episode_segments(
         Err(e) => return Err(anyhow!("introdb request failed: {e}")),
     };
 
-    let mut segs = MediaSegments::default();
-
-    if let (Some(start), Some(end)) = (resp.start_sec, resp.end_sec) {
-        segs.intro = Some(Segment {
-            start_ticks: secs_to_ticks(start),
-            end_ticks: secs_to_ticks(end),
-        });
-    }
-
-    Ok(segs)
+    Ok(MediaSegments {
+        intro: to_segment(&resp.intro),
+        recap: to_segment(&resp.recap),
+        outro: to_segment(&resp.outro),
+        ..MediaSegments::default()
+    })
 }
