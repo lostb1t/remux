@@ -918,7 +918,7 @@ impl StreamService {
             {
                 match media_info_from_probe(&source, &effective_stream, item.as_ref()) {
                     Ok(mi) => {
-                        debug!(id = %effective_stream.id, url, "remuxdb: submitting mediainfo");
+                        debug!(id = %effective_stream.id, url = %crate::playback::probe::redact_url(&url), "remuxdb: submitting mediainfo");
                         let token = probe_cfg
                             .remuxdb_token
                             .clone();

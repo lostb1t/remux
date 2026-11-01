@@ -126,7 +126,8 @@ rust_iso3166 = "0.1.14"
 quick-xml = { version = "0.37", features = ["encoding"] }
 opendal = { version = "0.52", features = ["services-webdav", "services-fs"] }
 
-librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api", "tracing-subscriber-utils"] }
+librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls", "http-api", "tracing-subscriber-utils"] }
+librqbit-dualstack-sockets = "0.7"
 regex = "1"
 handlebars = "6"
 hunch = "2"

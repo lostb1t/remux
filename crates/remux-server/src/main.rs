@@ -67,20 +67,38 @@ async fn main() -> Result<()> {
     }
 
     // Needs config loaded first — the OTLP endpoint (if any) lives there.
+    let config = config.resolve();
+    let log_dir = remux_server::logging::prepare_log_dir(
+        config.log_file_enabled,
+        config
+            .log_dir
+            .as_deref(),
+    );
     setup_logging(
-        None,
+        log_dir.as_deref(),
+        config.log_file_max_files,
         config
             .otlp_endpoint
             .as_deref(),
     );
 
-    serve(config.resolve(), load_paths()).await
+    if let Some(log_dir) = log_dir {
+        remux_server::logging::cleanup_old_logs(
+            &log_dir,
+            config.log_file_retention_days,
+        );
+        remux_server::logging::start_periodic_cleanup(
+            log_dir,
+            config.log_file_retention_days,
+        );
+    }
+
+    serve(config, load_paths()).await
 }
 
 #[cfg(test)]
 mod tests {
     use remux_server::load_config;
-
     #[test]
     fn parses_port_from_string_environment_value() {
         let env = config::Environment::default().source(Some({
@@ -108,6 +126,29 @@ mod tests {
             config.host,
             std::net::IpAddr::from(std::net::Ipv6Addr::UNSPECIFIED)
         );
+    }
+
+    #[test]
+    fn parses_log_file_settings_from_environment_values() {
+        let env = config::Environment::default().source(Some({
+            let mut env = config::Map::new();
+            env.insert("LOG_FILE_ENABLED".into(), "false".into());
+            env.insert("LOG_DIR".into(), "/tmp/remux-logs".into());
+            env.insert("LOG_FILE_MAX_FILES".into(), "7".into());
+            env
+        }));
+
+        let config = load_config(env)
+            .unwrap()
+            .resolve();
+        assert!(!config.log_file_enabled);
+        assert_eq!(
+            config
+                .log_dir
+                .unwrap(),
+            std::path::PathBuf::from("/tmp/remux-logs")
+        );
+        assert_eq!(config.log_file_max_files, 7);
     }
 
     #[test]

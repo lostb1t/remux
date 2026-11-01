@@ -116,6 +116,7 @@ pub fn DashboardLayout() -> Element {
         Route::TasksRoute => "Tasks",
         Route::DevicesRoute => "Devices",
         Route::ActivityRoute => "Activity",
+        Route::LogsRoute => "Logs",
         Route::NotFound { .. } => "",
     };
 
@@ -150,6 +151,11 @@ pub fn DashboardLayout() -> Element {
                         label: "Tasks",
                         active: route == Route::TasksRoute,
                         on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Logs",
+                        active: route == Route::LogsRoute,
+                        on_click: move |_| { navigator().push(Route::LogsRoute); sidebar_open.set(false); },
                     }
 
                     div { class: "nav-divider" }

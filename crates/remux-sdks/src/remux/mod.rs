@@ -5662,6 +5662,89 @@ pub struct GetActivityLog {
     pub search_term: Option<String>,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum LogLevel {
+    #[default]
+    All,
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogsResult {
+    pub entries: Vec<LogEntry>,
+    pub has_more: bool,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GetLogs {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub level: LogLevel,
+    pub search: Option<String>,
+}
+
+impl Endpoint for GetLogs {
+    type Output = LogsResult;
+
+    fn path(&self) -> String {
+        "/remux/logs".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[cfg(test)]
+mod log_query_tests {
+    use super::{GetLogs, LogLevel};
+
+    #[test]
+    fn query_round_trips_typed_log_level_and_pagination() {
+        let query = GetLogs {
+            limit: Some(200),
+            offset: Some(200),
+            level: LogLevel::Warn,
+            search: None,
+        };
+        let encoded = serde_urlencoded::to_string(&query).unwrap();
+        assert_eq!(encoded, "limit=200&offset=200&level=warn");
+        let decoded: GetLogs = serde_urlencoded::from_str(&encoded).unwrap();
+        assert_eq!(decoded.limit, Some(200));
+        assert_eq!(decoded.offset, Some(200));
+        assert_eq!(decoded.level, LogLevel::Warn);
+        assert_eq!(decoded.search, None);
+    }
+}
+
 impl Endpoint for GetActivityLog {
     type Output = ActivityLogResult;
 
