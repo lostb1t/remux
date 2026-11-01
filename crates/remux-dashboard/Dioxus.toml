@@ -1,8 +1,14 @@
 [application]
 name = "dashboard"
 default_platform = "web"
+public_dir = "assets"
 
 [web.app]
 title = "Remux Admin"
 base_path = "/admin"
+
+[web.resource]
+style = ["/admin/tailwind.css", "/admin/theme.css"]
+
+[web.resource.dev]
 

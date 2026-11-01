@@ -11,8 +11,6 @@ pub fn logout() {
     *LOGGED_IN.write() = false;
 }
 
-pub const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
-pub const THEME_CSS: Asset = asset!("/assets/theme.css");
 pub const FAVICON: Asset = asset!("/assets/favicon.ico");
 
 pub const CREDENTIALS_KEY: &str = "jellyfin_credentials";
