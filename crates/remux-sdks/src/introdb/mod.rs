@@ -25,7 +25,10 @@ struct IntroDbResponse {
 
 fn to_segment(s: &Option<IntroDbSegment>) -> Option<Segment> {
     match s {
-        Some(IntroDbSegment { start_sec: Some(start), end_sec: Some(end) }) if end > start => Some(Segment {
+        Some(IntroDbSegment {
+            start_sec: Some(start),
+            end_sec: Some(end),
+        }) if end > start => Some(Segment {
             start_ticks: secs_to_ticks(*start),
             end_ticks: secs_to_ticks(*end),
         }),
