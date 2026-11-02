@@ -1117,11 +1117,14 @@ fn db_media_to_item_inner(
     }
     item.external_urls = external_urls;
 
-    // several dlients require at least one stream
+    // several dlients require at least one stream. `Stream` is here because
+    // Android TV refetches an item by MediaSource id when a version is picked
+    // and reads `MediaSources` off that response without a PlaybackInfo call.
     if !hide_sources
         && (media.kind == db::MediaKind::Movie
             || media.kind == db::MediaKind::Episode
-            || media.kind == db::MediaKind::Track)
+            || media.kind == db::MediaKind::Track
+            || media.kind == db::MediaKind::Stream)
     {
         item.can_download = Some(true);
         if media.kind != db::MediaKind::Track {
@@ -1346,5 +1349,50 @@ mod community_rating_tests {
     fn unvoted_episodes_have_no_rating() {
         let episode = media(db::MediaKind::Episode, 6.5, Some((0.0, 0)));
         assert_eq!(community_rating(&episode), None);
+    }
+}
+
+#[cfg(test)]
+mod stream_row_tests {
+    use super::*;
+
+    /// Android TV fetches `GET /Items/{mediaSourceId}` when a version is
+    /// picked and plays the source whose id equals the item's id. Without
+    /// `MediaSources` on that response the external player shows "No playable
+    /// items" and the built-in one has nothing to read.
+    #[test]
+    fn a_stream_row_carries_itself_as_its_only_media_source() {
+        let row = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
+            title: "1080p WEB-DL".into(),
+            ..Default::default()
+        };
+        let mut media = row.clone();
+        media.sources = Some(vec![row.clone()]);
+
+        let item = db_media_to_item(media, false);
+
+        let sources = item
+            .media_sources
+            .expect("a Stream row must carry MediaSources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, row.id);
+    }
+
+    #[test]
+    fn hidden_sources_stay_hidden_for_a_stream_row() {
+        let row = db::Media {
+            kind: db::MediaKind::Stream,
+            ..Default::default()
+        };
+        let mut media = row.clone();
+        media.sources = Some(vec![row]);
+
+        assert!(
+            db_media_to_item(media, true)
+                .media_sources
+                .is_none()
+        );
     }
 }

@@ -797,6 +797,11 @@ pub struct ServerConfiguration {
     /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
     #[default(Some(false))]
     pub enable_next_up_in_continue_watching: Option<bool>,
+    /// Ignore each user's saved `OrderedViews` and serve the admin's default
+    /// library order (dashboard drag-reorder) from `/userviews` and the user's
+    /// configuration. Saved user orders are kept and apply again once this is off.
+    #[default(Some(false))]
+    pub force_default_view_order: Option<bool>,
     /// How to order MediaSources for the requesting device when a DeviceProfile
     /// is available: `Disabled` (leave probe/addon order alone), `Best`
     /// (default — Direct Play and Direct Stream count equally, so quality
@@ -1274,6 +1279,9 @@ pub struct PublicSystemInfo {
     pub remux_version: String,
     pub operating_system: String,
     pub remux_started_at: Option<String>,
+    /// Mirrors `ForceDefaultViewOrder`: when true, users cannot reorder their
+    /// home screen libraries, so clients can disable their reorder controls.
+    pub remux_force_default_view_order: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1289,6 +1297,8 @@ pub struct SystemInfo {
     pub product_name: String,
     pub version: String,
     pub remux_version: String,
+    /// See `PublicSystemInfo::remux_force_default_view_order`.
+    pub remux_force_default_view_order: bool,
     #[default(false)]
     pub has_pending_restart: bool,
     #[default(false)]

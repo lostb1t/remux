@@ -1518,7 +1518,7 @@ where
             info!(
                 failed_id = %primary.id,
                 next_id = %stream.id,
-                next_url = %url,
+                next_url = %redact_url(&url),
                 "probe failed, trying next matching stream"
             );
         }
@@ -1559,7 +1559,7 @@ where
                     if probed_ticks < threshold_ticks {
                         warn!(
                             id = %stream.id,
-                            url = %url,
+                            url = %redact_url(&url),
                             probed_ticks,
                             threshold_ticks,
                             known_runtime_secs = ?stream.runtime,
@@ -1589,7 +1589,7 @@ where
                 }
                 if is_retry {
                     info!(
-                        fallback_url = %url,
+                        fallback_url = %redact_url(&url),
                         attempt = attempts,
                         "probe succeeded on fallback stream"
                     );
@@ -1597,13 +1597,13 @@ where
                 return Ok((probed, stream));
             }
             Ok(Ok(Err(e))) => {
-                warn!(url = %url, error = %e, "probe failed");
+                warn!(url = %redact_url(&url), error = %e, "probe failed");
             }
             Ok(Err(e)) => {
-                warn!(url = %url, error = %e, "probe task panicked");
+                warn!(url = %redact_url(&url), error = %e, "probe task panicked");
             }
             Err(_) => {
-                warn!(url = %url, timeout = timeout_secs, "probe timed out");
+                warn!(url = %redact_url(&url), timeout = timeout_secs, "probe timed out");
             }
         }
     }

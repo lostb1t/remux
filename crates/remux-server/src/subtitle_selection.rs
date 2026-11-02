@@ -101,6 +101,60 @@ pub(crate) fn is_release_match(
         })
 }
 
+/// A subtitle file sitting on the server's own disk, next to the library
+/// file (a local addon's sidecar). Someone put it there for this video, so it
+/// outranks anything a provider offers; no release-name guessing is needed.
+///
+/// The local addon returns every sidecar indexed for the episode or movie, so
+/// a sidecar only gets the boost when it belongs to the video being played:
+/// the video's name followed by language/flag suffixes only
+/// (`Movie.WEB-DL.mkv` owns `Movie.WEB-DL.en.forced.srt`, not
+/// `Movie.BluRay.en.srt`). With no source filename there is nothing to tell
+/// them apart, so every sidecar counts.
+fn is_local_sidecar(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
+    if !matches!(sub.url, Some(crate::stream::StreamDescriptor::Local(_))) {
+        return false;
+    }
+    let Some(video) = source_filename else {
+        return true;
+    };
+    let subtitle = filename_stem(subtitle_hint(sub));
+    let video = filename_stem(video);
+    if video.is_empty()
+        || subtitle.len() < video.len()
+        || !subtitle.is_char_boundary(video.len())
+    {
+        return false;
+    }
+    let (head, tail) = subtitle.split_at(video.len());
+    head.eq_ignore_ascii_case(video)
+        && tail
+            .strip_prefix('.')
+            .map_or(tail.is_empty(), |suffix| {
+                suffix
+                    .split('.')
+                    .all(is_sidecar_suffix_token)
+            })
+}
+
+/// A language code (`en`, `eng`, `pt-BR`) or a subtitle flag.
+fn is_sidecar_suffix_token(token: &str) -> bool {
+    matches!(
+        token
+            .to_ascii_lowercase()
+            .as_str(),
+        "forced" | "hi" | "sdh" | "cc" | "default"
+    ) || (!token.is_empty()
+        && token
+            .split(['-', '_'])
+            .all(|part| {
+                (2..=4).contains(&part.len())
+                    && part
+                        .chars()
+                        .all(|c| c.is_ascii_alphabetic())
+            }))
+}
+
 /// Ranks candidates release-aware and by language preference, without
 /// deduping to one-per-language. `select_external_subtitles` reduces this to
 /// its public one-per-language contract; kept separate so tests can inspect
@@ -128,16 +182,19 @@ fn ranked_external_subtitles<'a>(
                 sub,
                 lang,
                 rank.unwrap_or(usize::MAX),
+                is_local_sidecar(sub, source_filename),
                 is_release_match(sub, source_filename),
             ))
         })
         .collect();
 
     candidates.sort_by(
-        |(a, lang_a, rank_a, match_a), (b, lang_b, rank_b, match_b)| {
+        |(a, lang_a, rank_a, local_a, match_a),
+         (b, lang_b, rank_b, local_b, match_b)| {
             rank_a
                 .cmp(rank_b)
                 .then_with(|| lang_a.cmp(lang_b))
+                .then_with(|| local_b.cmp(local_a))
                 .then_with(|| match_b.cmp(match_a))
                 .then_with(|| {
                     a.is_forced
@@ -317,6 +374,83 @@ mod tests {
         assert!(!is_release_match(
             &punctuation,
             Some("Movie.2026.WEB-DL.mkv")
+        ));
+    }
+
+    #[test]
+    fn local_sidecar_outranks_provider_subtitles_even_with_a_release_match() {
+        let mut local = sub("local", "Movie.2026.1080p.WEB-DL.en.srt", "eng");
+        local.url = Some(crate::stream::StreamDescriptor::Local(
+            "/media/Movie.2026.1080p.WEB-DL.en.srt".into(),
+        ));
+        let mut exact = sub("exact", "Movie.2026.1080p.WEB-DL.srt", "eng");
+        exact.from_trusted = Some(true);
+        let mut other_lang = sub("other_lang", "Movie.2026.1080p.WEB-DL.srt", "fra");
+        other_lang.from_trusted = Some(true);
+        let subs = [exact, other_lang, local];
+        let ranked =
+            ranked_external_subtitles(&subs, &[], Some("Movie.2026.1080p.WEB-DL.mkv"));
+        let ids: Vec<_> = ranked
+            .iter()
+            .map(|s| {
+                s.id.as_str()
+            })
+            .collect();
+        // Within a language the sidecar goes first; languages stay ordered.
+        assert_eq!(ids, vec!["local", "exact", "other_lang"]);
+    }
+
+    #[test]
+    fn a_sidecar_of_another_release_does_not_outrank_an_exact_provider_match() {
+        let mut bluray = sub("bluray", "Movie.2026.1080p.BluRay.en.srt", "eng");
+        bluray.url = Some(crate::stream::StreamDescriptor::Local(
+            "/media/Movie.2026.1080p.BluRay.en.srt".into(),
+        ));
+        let mut exact = sub("exact", "Movie.2026.1080p.WEB-DL.srt", "eng");
+        exact.from_trusted = Some(true);
+        let subs = [bluray, exact];
+        let chosen = select_external_subtitles(
+            &subs,
+            &[],
+            Some("Movie.2026.1080p.WEB-DL.mkv"),
+            1,
+        );
+        assert_eq!(chosen[0].id, "exact");
+    }
+
+    #[test]
+    fn sidecar_ownership_allows_only_language_and_flag_suffixes() {
+        let local = |name: &str| {
+            let mut s = sub("local", name, "eng");
+            s.url = Some(crate::stream::StreamDescriptor::Local(
+                format!("/media/{name}").into(),
+            ));
+            s
+        };
+        let video = Some("Show.S01E01.WEB-DL.mkv");
+        for owned in [
+            "Show.S01E01.WEB-DL.srt",
+            "Show.S01E01.WEB-DL.en.srt",
+            "Show.S01E01.WEB-DL.eng.forced.srt",
+            "Show.S01E01.WEB-DL.pt-BR.sdh.srt",
+            "show.s01e01.web-dl.EN.srt",
+        ] {
+            assert!(is_local_sidecar(&local(owned), video), "{owned}");
+        }
+        for foreign in [
+            "Show.S01E01.BluRay.en.srt",
+            "Show.S01E01.WEB-DL.REPACK.en.srt",
+            "Show.S01E01.WEB-DL-extra.en.srt",
+            "Show.S01E02.WEB-DL.en.srt",
+        ] {
+            assert!(!is_local_sidecar(&local(foreign), video), "{foreign}");
+        }
+        // No source filename: nothing to compare, so every sidecar counts.
+        assert!(is_local_sidecar(&local("Anything.en.srt"), None));
+        // Providers never get the sidecar boost.
+        assert!(!is_local_sidecar(
+            &sub("p", "Show.S01E01.WEB-DL.en.srt", "eng"),
+            video
         ));
     }
 

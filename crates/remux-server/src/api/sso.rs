@@ -499,14 +499,7 @@ pub async fn sso_auth(
         )
         .await?;
 
-    Ok(build_auth_response(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        device,
-        user,
-    ))
+    build_auth_response(&state, device, user).await
 }
 
 #[cfg(test)]

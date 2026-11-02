@@ -2,12 +2,14 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
-    SessionPersistenceConfig, TorrentStatsState,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig,
+    ListenerOptions, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState,
     api::{Api, TorrentIdOrHash},
-    dht::PersistentDhtConfig,
+    dht::DhtPersistenceConfig,
     http_api::HttpApi,
 };
+use librqbit_dualstack_sockets::{BindOpts, TcpListener};
 use tracing::{debug, warn};
 
 #[derive(Clone, Debug)]
@@ -71,31 +73,21 @@ impl TorrentManager {
         disable_dht: bool,
         peer_port: Option<u16>,
     ) -> Result<Self> {
-        let session = Session::new_with_opts(
-            data_dir,
-            SessionOptions {
-                disable_dht,
-                disable_dht_persistence: disable_dht,
-                listen_port_range: peer_port.map(|p| p..p + 10),
-                persistence: Some(SessionPersistenceConfig::Json {
-                    folder: Some(cache_dir.join("rqbit")),
-                }),
-                dht_config: Some(PersistentDhtConfig {
-                    config_filename: Some(cache_dir.join("dht.json")),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .await?;
+        let session =
+            Self::start_session(data_dir, cache_dir, disable_dht, peer_port).await?;
 
         // None → let the OS pick a free ephemeral port.
         let bind_port = http_port.unwrap_or(0);
-        let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).await?;
+        let listener = TcpListener::bind_tcp(
+            ([127, 0, 0, 1], bind_port).into(),
+            BindOpts {
+                request_dualstack: false,
+                ..Default::default()
+            },
+        )?;
 
         let bound_port = listener
-            .local_addr()?
+            .bind_addr()
             .port();
 
         let api = Api::new(session.clone(), None, None);
@@ -108,6 +100,51 @@ impl TorrentManager {
             http_port: bound_port,
             leases: Default::default(),
         })
+    }
+
+    /// librqbit 9 listens on exactly one port, where 8 walked a range. Keep the
+    /// range so a taken port (another instance, parallel tests) moves on to
+    /// the next one instead of failing the whole session.
+    async fn start_session(
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+        disable_dht: bool,
+        peer_port: Option<u16>,
+    ) -> Result<Arc<Session>> {
+        const PEER_PORT_SPAN: u16 = 10;
+        let attempts = peer_port.map_or(1, |_| PEER_PORT_SPAN);
+        let mut last_error = None;
+        for offset in 0..attempts {
+            let options = SessionOptions {
+                dht: (!disable_dht).then(|| DhtSessionConfig {
+                    persistence: Some(DhtPersistenceConfig {
+                        config_filename: Some(cache_dir.join("dht.json")),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                listen: peer_port.map(|port| ListenerOptions {
+                    listen_addr: (
+                        std::net::Ipv6Addr::UNSPECIFIED,
+                        port.saturating_add(offset),
+                    )
+                        .into(),
+                    ..Default::default()
+                }),
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(cache_dir.join("rqbit")),
+                }),
+                ..Default::default()
+            };
+            match Session::new_with_opts(data_dir.clone(), options).await {
+                Ok(session) => return Ok(session),
+                Err(error) => {
+                    debug!(offset, "torrent session failed to start: {error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.expect("at least one attempt"))
     }
 
     pub async fn acquire(self: &Arc<Self>, hash: &str) -> Arc<TorrentLease> {

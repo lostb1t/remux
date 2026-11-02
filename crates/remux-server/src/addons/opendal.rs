@@ -353,6 +353,23 @@ pub struct OpendalFile {
     pub probe_data: Option<sqlx::types::Json<crate::api::MediaSourceInfo>>,
 }
 
+impl OpendalAddon {
+    /// How to serve the file at `path`. A local backend indexes absolute
+    /// paths while its operator is rooted at the library folder, so going
+    /// through the operator would resolve the path under the root a second
+    /// time; local files are served straight from disk instead.
+    fn descriptor_for(&self, path: &str) -> crate::stream::StreamDescriptor {
+        if self.backend == "local" {
+            crate::stream::StreamDescriptor::Local(std::path::PathBuf::from(path))
+        } else {
+            crate::stream::StreamDescriptor::Opendal {
+                addon_id: self.addon_id,
+                path: path.to_string(),
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl AddonKind for OpendalAddon {
     fn id(&self) -> &'static str {
@@ -518,18 +535,7 @@ impl CatalogAddon for OpendalAddon {
                         }
                     }
                     let track_key = format!("{}:track:{}", self.addon_id, f.path);
-                    let descriptor = if self.backend == "local" {
-                        crate::stream::StreamDescriptor::Local(
-                            std::path::PathBuf::from(&f.path),
-                        )
-                    } else {
-                        crate::stream::StreamDescriptor::Opendal {
-                            addon_id: self.addon_id,
-                            path: f
-                                .path
-                                .clone(),
-                        }
-                    };
+                    let descriptor = self.descriptor_for(&f.path);
                     out.push(db::Media {
                         id: common::get_stable_uuid(track_key.clone()),
                         title: f
@@ -721,10 +727,7 @@ impl SubtitleAddon for OpendalAddon {
                     id: f
                         .path
                         .clone(),
-                    url: Some(crate::stream::StreamDescriptor::Opendal {
-                        addon_id: self.addon_id,
-                        path: f.path,
-                    }),
+                    url: Some(self.descriptor_for(&f.path)),
                     lang,
                     is_forced,
                     is_hi,
@@ -865,21 +868,16 @@ impl StreamAddon for OpendalAddon {
                 }
             })
             .map(|f| {
-                let descriptor = if self.backend == "local" {
-                    crate::stream::StreamDescriptor::Local(std::path::PathBuf::from(
-                        &f.path,
-                    ))
-                } else {
-                    crate::stream::StreamDescriptor::Opendal {
-                        addon_id: self.addon_id,
-                        path: f
-                            .path
-                            .clone(),
-                    }
-                };
+                let descriptor = self.descriptor_for(&f.path);
                 crate::stream::StreamInfo {
                     descriptor,
                     name: Some(
+                        f.name
+                            .clone(),
+                    ),
+                    // Lets release-aware subtitle ranking compare sidecars
+                    // against this file.
+                    filename: Some(
                         f.name
                             .clone(),
                     ),
@@ -1112,18 +1110,7 @@ impl TreeAddon for OpendalAddon {
                         // Leave title empty so the TMDB meta addon can fill in the proper
                         // episode name via refresh_meta (which apply_title_format then wraps).
                         let title = String::new();
-                        let descriptor = if self.backend == "local" {
-                            crate::stream::StreamDescriptor::Local(
-                                std::path::PathBuf::from(&f.path),
-                            )
-                        } else {
-                            crate::stream::StreamDescriptor::Opendal {
-                                addon_id: self.addon_id,
-                                path: f
-                                    .path
-                                    .clone(),
-                            }
-                        };
+                        let descriptor = self.descriptor_for(&f.path);
                         Some(db::Media {
                             id: common::get_stable_uuid(format!(
                                 "episode:{}:{}:{}",
@@ -3057,6 +3044,16 @@ mod tests {
                     "{}: expected Local descriptor",
                     f.rel_path
                 );
+                // Subtitle ranking compares sidecars against this name.
+                assert_eq!(
+                    s.filename
+                        .as_deref(),
+                    std::path::Path::new(f.rel_path)
+                        .file_name()
+                        .and_then(|n| n.to_str()),
+                    "{}: stream should carry the file name",
+                    f.rel_path
+                );
             }
         }
     }
@@ -3994,7 +3991,9 @@ mod tests {
         .unwrap();
         assert_eq!(sub_count, 3, "expected 3 subtitle rows");
 
-        // subtitle_fetch returns SubtitleInfo with Opendal descriptors.
+        // subtitle_fetch returns SubtitleInfo with Local descriptors for a local
+        // backend: the operator is rooted at the library folder, so an Opendal
+        // descriptor would resolve the absolute path under it a second time.
         let movie_media = db::Media {
             id: crate::common::get_stable_uuid("movie:tt0133093".to_string()),
             kind: db::MediaKind::Movie,
@@ -4011,10 +4010,10 @@ mod tests {
         assert_eq!(infos.len(), 3, "subtitle_fetch should return 3 subtitles");
 
         for info in &infos {
-            assert!(
-                matches!(info.url, Some(StreamDescriptor::Opendal { .. })),
-                "expected Opendal descriptor"
-            );
+            let Some(StreamDescriptor::Local(path)) = &info.url else {
+                panic!("expected Local descriptor, got {:?}", info.url);
+            };
+            assert!(path.is_file(), "{path:?} should be a servable file");
         }
 
         let en = infos
