@@ -1299,7 +1299,23 @@ pub async fn update_user(
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context_bad_request("Invalid username")?;
     user.username = username.into_inner();
-    if let Some(config) = payload.configuration {
+    if let Some(mut config) = payload.configuration {
+        if force_default_view_order(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        {
+            config.ordered_views = user
+                .configuration
+                .as_ref()
+                .map(|c| {
+                    c.ordered_views
+                        .clone()
+                })
+                .unwrap_or_default();
+        }
         user.configuration = Some(sqlx::types::Json(config));
     }
     user.save(
@@ -1505,23 +1521,25 @@ async fn default_userviews(
     Ok((libraries, has_channels))
 }
 
+async fn force_default_view_order(db: &sqlx::SqlitePool) -> bool {
+    db::Settings::get_config_or_default(db)
+        .await
+        .force_default_view_order
+        .unwrap_or(false)
+}
+
 /// User DTOs whose `Configuration.OrderedViews` matches what `/userviews`
 /// returns: with `ForceDefaultViewOrder` on, the saved override is replaced
 /// (in the response only) by the admin's default order, so clients that sort
-/// locally by it agree with the server.
-///
-/// Users with no hidden views, folder restriction or filter rules all see the
-/// same views, so their order is computed once and shared.
+/// locally by it agree with the server. Ids use the same simple (no-dash)
+/// form as `/userviews` items. The order is computed per user, since smart
+/// collections and empty-collection pruning depend on the user.
 pub(crate) async fn user_dtos(
     db: &sqlx::SqlitePool,
     data_dir: &std::path::Path,
     users: Vec<db::User>,
 ) -> Result<Vec<api::UserDto>> {
-    let force = db::Settings::get_config_or_default(db)
-        .await
-        .force_default_view_order
-        .unwrap_or(false);
-    let mut shared_order: Option<Vec<String>> = None;
+    let force = force_default_view_order(db).await;
     let mut dtos = Vec::with_capacity(users.len());
     for user in users {
         let order = if force {
@@ -1535,43 +1553,23 @@ pub(crate) async fn user_dtos(
                         .collect()
                 })
                 .unwrap_or_default();
-            let policy = user
-                .policy
-                .as_deref();
-            let sees_everyone_s_views = excluded.is_empty()
-                && policy.is_none_or(|p| {
-                    (p.enable_all_folders
-                        || p.enabled_folders
-                            .is_empty())
-                        && p.filter_rules
-                            .is_none()
-                });
-            let cached = sees_everyone_s_views
-                .then(|| shared_order.clone())
-                .flatten();
-            let order = match cached {
-                Some(order) => order,
-                None => {
-                    let (libraries, _) = default_userviews(
-                        db,
-                        user.id,
-                        policy,
-                        (!excluded.is_empty()).then_some(excluded.as_slice()),
-                    )
-                    .await?;
-                    let order: Vec<String> = libraries
-                        .into_iter()
-                        .map(|m| {
-                            m.id.to_string()
-                        })
-                        .collect();
-                    if sees_everyone_s_views {
-                        shared_order = Some(order.clone());
-                    }
-                    order
-                }
-            };
-            Some(order)
+            let (libraries, _) = default_userviews(
+                db,
+                user.id,
+                user.policy
+                    .as_deref(),
+                (!excluded.is_empty()).then_some(excluded.as_slice()),
+            )
+            .await?;
+            Some(
+                libraries
+                    .into_iter()
+                    .map(|m| {
+                        m.id.simple()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>(),
+            )
         } else {
             None
         };
@@ -1620,6 +1618,19 @@ async fn normalize_ordered_views(
     target_id: Uuid,
     payload: &mut api::UserConfiguration,
 ) -> Result<()> {
+    // While the default order is forced, clients echo that forced order back
+    // when saving unrelated preferences. Keep the stored personal order so it
+    // is still there once forcing is turned off.
+    if force_default_view_order(db).await {
+        payload.ordered_views = db::User::get_by_id(db, &target_id)
+            .await?
+            .and_then(|u| u.configuration)
+            .map(|c| {
+                c.0.ordered_views
+            })
+            .unwrap_or_default();
+        return Ok(());
+    }
     if payload
         .ordered_views
         .is_empty()
@@ -1719,14 +1730,12 @@ pub async fn userviews(
 
     // Stable-sort by OrderedViews: configured IDs come first in their saved
     // order; any remaining views follow in their original DB order.
-    let force_default_order = db::Settings::get_config_or_default(
+    let force_default_order = force_default_view_order(
         &state
             .ctx
             .db,
     )
-    .await
-    .force_default_view_order
-    .unwrap_or(false);
+    .await;
     if let Some(cfg) = config.filter(|_| !force_default_order) {
         if !cfg
             .ordered_views
@@ -5137,6 +5146,13 @@ mod e2e_tests {
         .unwrap();
 
         assert_eq!(view_ids(&server, &auth).await, default_ids);
+        let default_strings: Vec<String> = default_ids
+            .iter()
+            .map(|id| {
+                id.simple()
+                    .to_string()
+            })
+            .collect();
         let me = server
             .get("/users/me")
             .add_header(
@@ -5145,16 +5161,17 @@ mod e2e_tests {
             )
             .await
             .json::<serde_json::Value>();
-        let reported: Vec<Uuid> = me["Configuration"]["OrderedViews"]
+        let reported: Vec<String> = me["Configuration"]["OrderedViews"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|v| {
                 v.as_str()
-                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(str::to_string)
             })
             .collect();
-        assert_eq!(reported, default_ids);
+        // Compare the serialized strings, not parsed UUIDs: clients match on text.
+        assert_eq!(reported, default_strings);
         let listed = server
             .get("/users")
             .add_header(
@@ -5163,17 +5180,49 @@ mod e2e_tests {
             )
             .await
             .json::<serde_json::Value>();
-        let listed_order: Vec<Uuid> = listed[0]["Configuration"]["OrderedViews"]
+        let listed_order: Vec<String> = listed[0]["Configuration"]["OrderedViews"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|v| {
                 v.as_str()
-                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .map(str::to_string)
             })
             .collect();
-        assert_eq!(listed_order, default_ids);
-        assert!(reported.contains(&first.id) && reported.contains(&second.id));
+        assert_eq!(listed_order, default_strings);
+        assert!(
+            reported.contains(
+                &first
+                    .id
+                    .simple()
+                    .to_string()
+            ) && reported.contains(
+                &second
+                    .id
+                    .simple()
+                    .to_string()
+            )
+        );
+
+        // Reading the forced config and saving it back after an unrelated edit
+        // must not overwrite the stored personal order.
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": false,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": reported
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
 
         cfg.force_default_view_order = Some(false);
         db::Settings::set_config(
