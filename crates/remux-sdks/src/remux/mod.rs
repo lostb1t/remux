@@ -1279,6 +1279,9 @@ pub struct PublicSystemInfo {
     pub remux_version: String,
     pub operating_system: String,
     pub remux_started_at: Option<String>,
+    /// Mirrors `ForceDefaultViewOrder`: when true, users cannot reorder their
+    /// home screen libraries, so clients can disable their reorder controls.
+    pub remux_force_default_view_order: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1294,6 +1297,8 @@ pub struct SystemInfo {
     pub product_name: String,
     pub version: String,
     pub remux_version: String,
+    /// See `PublicSystemInfo::remux_force_default_view_order`.
+    pub remux_force_default_view_order: bool,
     #[default(false)]
     pub has_pending_restart: bool,
     #[default(false)]
