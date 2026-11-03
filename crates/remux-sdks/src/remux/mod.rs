@@ -4052,6 +4052,13 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
+    /// Matches items that are coming but not out yet, with a meaning per kind:
+    /// a movie or series whose release date is still to come; an episode
+    /// that is the first not-yet-aired one of a series the requesting user has
+    /// started. Items without a release date never match.
+    Upcoming {
+        value: bool,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -4061,6 +4068,50 @@ pub enum FilterMatchMode {
     #[default]
     All,
     Any,
+}
+
+impl CollectionFilter {
+    /// Whether every item this filter returns is upcoming, which makes the
+    /// server-wide "hide unreleased" setting pointless for it. An AND needs one
+    /// operand that requires `Upcoming`; an OR needs all of its (non-empty)
+    /// operands to, as any other branch could return released items.
+    pub fn requires_upcoming(&self) -> bool {
+        let mut groups = self
+            .groups
+            .iter()
+            .filter(|g| {
+                !g.rules
+                    .is_empty()
+            })
+            .map(FilterGroup::requires_upcoming);
+        match self.match_mode {
+            FilterMatchMode::All => groups.any(|r| r),
+            FilterMatchMode::Any => {
+                let mut seen = false;
+                groups.all(|r| {
+                    seen = true;
+                    r
+                }) && seen
+            }
+        }
+    }
+}
+
+impl FilterGroup {
+    fn requires_upcoming(&self) -> bool {
+        let is_upcoming =
+            |r: &FilterRule| matches!(r, FilterRule::Upcoming { value: true });
+        match self.match_mode {
+            FilterMatchMode::All => self
+                .rules
+                .iter()
+                .any(is_upcoming),
+            FilterMatchMode::Any => self
+                .rules
+                .iter()
+                .all(is_upcoming),
+        }
+    }
 }
 
 /// A group of filter rules combined with their own AND/OR match mode.

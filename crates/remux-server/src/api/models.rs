@@ -199,7 +199,11 @@ pub fn db_media_kind_to_collection_type(
     match kind {
         db::CollectionMediaKind::Movie => Some(CollectionType::Movies),
         db::CollectionMediaKind::Series => Some(CollectionType::Tvshows),
-        db::CollectionMediaKind::Mixed => Some(CollectionType::Mixed),
+        // Jellyfin has no type for episodes; a tvshows library is expected to
+        // hold series, so clients get the neutral mixed type instead.
+        db::CollectionMediaKind::Episode | db::CollectionMediaKind::Mixed => {
+            Some(CollectionType::Mixed)
+        }
         db::CollectionMediaKind::Music => Some(CollectionType::Music),
         db::CollectionMediaKind::Collection => Some(CollectionType::Boxsets),
         db::CollectionMediaKind::Playlist => Some(CollectionType::Playlists),

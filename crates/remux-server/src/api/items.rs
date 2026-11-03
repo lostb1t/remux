@@ -723,30 +723,12 @@ pub async fn get_items(
             // Smart collections: items float freely (no parent_id constraint).
             q.parent_id = None;
 
+            // (A smart collection of kind `Collection` is handled above.)
             let media_kind_filter = if let Some(kind) = parent
                 .collection_media_kind
-                .clone()
+                .as_ref()
             {
-                match kind {
-                    db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
-                    db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
-                    db::CollectionMediaKind::Mixed => {
-                        vec![db::MediaKind::Movie, db::MediaKind::Series]
-                    }
-                    db::CollectionMediaKind::Music => vec![
-                        db::MediaKind::Track,
-                        db::MediaKind::Album,
-                        db::MediaKind::Artist,
-                    ],
-                    db::CollectionMediaKind::Collection => {
-                        // Handled above — this branch is now unreachable for
-                        // smart collections with collection_media_kind='collection'.
-                        vec![db::MediaKind::Collection]
-                    }
-                    db::CollectionMediaKind::Playlist => {
-                        vec![db::MediaKind::Playlist]
-                    }
-                }
+                kind.media_kinds()
             } else {
                 vec![db::MediaKind::Movie, db::MediaKind::Series]
             };
@@ -784,7 +766,16 @@ pub async fn get_items(
                         .cloned()
                         .collect();
                     if intersection.is_empty() {
-                        vec![]
+                        // A library of episodes is listed whatever item types
+                        // the client asks for: a client browsing it as a TV
+                        // library asks for series, which would leave it empty.
+                        if parent.collection_media_kind
+                            == Some(db::CollectionMediaKind::Episode)
+                        {
+                            collection_types
+                        } else {
+                            vec![]
+                        }
                     } else {
                         intersection
                     }
@@ -814,7 +805,20 @@ pub async fn get_items(
                     None
                 };
 
-            let result = db::Media::get_by_jellyfin_filter(
+            let lists_upcoming = smart_filter.is_some_and(|f| f.requires_upcoming());
+            // Soonest first, unless the collection or the client chose an order.
+            if lists_upcoming
+                && parent
+                    .collection_default_sort
+                    .as_ref()
+                    .is_none_or(|s| s.is_empty())
+                && client.is_default_sort(&q)
+            {
+                q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
+                q.sort_order = Some(vec![api::SortOrder::Ascending]);
+            }
+
+            let mut result = db::Media::get_by_jellyfin_filter(
                 &state
                     .ctx
                     .db,
@@ -827,6 +831,23 @@ pub async fn get_items(
                 Some(&parent),
             )
             .await?;
+
+            if lists_upcoming {
+                let now = chrono::Utc::now().naive_utc();
+                for media in &mut result.records {
+                    if let Some(date) = media
+                        .digital_released_at
+                        .or(media.released_at)
+                    {
+                        media.title = format!(
+                            "{} · {}",
+                            media.title,
+                            // Calendar days: a time-of-day must not turn tomorrow into today.
+                            countdown_label((date.date() - now.date()).num_days())
+                        );
+                    }
+                }
+            }
 
             return Ok(ItemsQueryResultBuilder::with_items(
                 session,
@@ -952,6 +973,17 @@ pub async fn get_items(
         q.fields
             .clone(),
     ))
+}
+
+/// How long until something comes out, for the name of an upcoming item.
+fn countdown_label(days: i64) -> String {
+    match days {
+        ..=0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        2..=13 => format!("in {days} days"),
+        14..=59 => format!("in {} weeks", days / 7),
+        _ => format!("in {} months", days / 30),
+    }
 }
 
 #[get("/items/latest")]
@@ -2824,6 +2856,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
         "movies" => Some(db::CollectionMediaKind::Movie),
         "tvshows" => Some(db::CollectionMediaKind::Series),
+        "episodes" => Some(db::CollectionMediaKind::Episode),
         "mixed" => Some(db::CollectionMediaKind::Mixed),
         "music" => Some(db::CollectionMediaKind::Music),
         "collections" => Some(db::CollectionMediaKind::Collection),
@@ -4029,6 +4062,19 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn countdown_label_reads_naturally() {
+        use super::countdown_label;
+        assert_eq!(countdown_label(-3), "today");
+        assert_eq!(countdown_label(0), "today");
+        assert_eq!(countdown_label(1), "tomorrow");
+        assert_eq!(countdown_label(4), "in 4 days");
+        assert_eq!(countdown_label(13), "in 13 days");
+        assert_eq!(countdown_label(14), "in 2 weeks");
+        assert_eq!(countdown_label(59), "in 8 weeks");
+        assert_eq!(countdown_label(60), "in 2 months");
+    }
+
     use super::{
         RemoteImagesQuery, exclude_episodes_from_search, external_id_infos_for_kind,
         is_remote_enabled,
@@ -5317,6 +5363,147 @@ mod tests {
                 .unwrap_or(""),
             "Episode"
         );
+    }
+
+    // An upcoming library lists the next unaired episode of series the user
+    // started, soonest first, named with a countdown, and shows up in
+    // /UserViews although the server hides unreleased items elsewhere.
+    #[tokio::test]
+    async fn upcoming_episode_library_lists_next_unaired_episodes() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+        let now = Utc::now().naive_utc();
+
+        let mut episodes = Vec::new();
+        for (name, days_to_next) in [("Slow Show", 20_i64), ("Quick Show", 3)] {
+            let mut series = db::Media {
+                title: name.to_string(),
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(
+                        db::NonEmptyString::try_new(format!("tt99{}", days_to_next))
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            series
+                .save(db)
+                .await
+                .unwrap();
+            for (n, offset) in
+                [(1_i64, -14_i64), (2, days_to_next), (3, days_to_next + 7)]
+            {
+                let mut ep = db::Media {
+                    title: format!("{name} E{n}"),
+                    kind: db::MediaKind::Episode,
+                    external_ids: db::ExternalIds {
+                        imdb: Some(
+                            db::NonEmptyString::try_new(format!(
+                                "tt99{days_to_next}{n}"
+                            ))
+                            .unwrap(),
+                        ),
+                        ..Default::default()
+                    },
+                    grandparent_id: Some(series.id),
+                    parent_idx: Some(1),
+                    idx: Some(n),
+                    released_at: Some(
+                        now + chrono::Duration::days(offset)
+                            + chrono::Duration::hours(1),
+                    ),
+                    ..Default::default()
+                };
+                ep.save(db)
+                    .await
+                    .unwrap();
+                episodes.push((n, ep.id));
+            }
+        }
+        // Watching the first episode of each series is what starts it.
+        for (n, id) in &episodes {
+            if *n == 1 {
+                sqlx::query(
+                    "INSERT INTO user_media_state \
+                     (user_id, media_id, favorite, play_count, played_at, playback_position) \
+                     VALUES (?1, ?2, 0, 1, ?3, 0)",
+                )
+                .bind(uuid::Uuid::parse_str(&user_id).unwrap())
+                .bind(id)
+                .bind(now)
+                .execute(db)
+                .await
+                .unwrap();
+            }
+        }
+
+        let mut c = db::Media {
+            title: "Upcoming".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Episode),
+            collection_smart_filter: Some(remux_sdks::remux::CollectionFilter {
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+                groups: vec![remux_sdks::remux::FilterGroup {
+                    match_mode: remux_sdks::remux::FilterMatchMode::All,
+                    rules: vec![remux_sdks::remux::FilterRule::Upcoming {
+                        value: true,
+                    }],
+                }],
+            }),
+            promoted: true,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!(
+                "/items?parentId={}&userId={user_id}",
+                c.id.simple()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Quick Show E2 · in 3 days", "Slow Show E2 · in 2 weeks"],
+            "soonest first, one per series, with a countdown"
+        );
+
+        let views: serde_json::Value = server
+            .get(&format!("/userviews?userId={user_id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let view_names: Vec<&str> = views["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+        assert!(view_names.contains(&"Upcoming"), "{view_names:?}");
     }
 
     // /UserViews must not return a promoted smart collection with no matching content.
