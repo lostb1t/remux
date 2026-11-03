@@ -5551,6 +5551,7 @@ impl Media {
             .policy_filter
             .as_ref();
 
+        let mut existence_only_ids: Vec<Uuid> = Vec::new();
         if effective_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()
@@ -5696,6 +5697,16 @@ impl Media {
                 })
                 .collect();
 
+            // `include_child_count` off means the counts only feed
+            // `exclude_childless` (e.g. /userviews), so existence is enough and
+            // the number is not reported.
+            let existence_only = !filter.include_child_count;
+            if existence_only {
+                existence_only_ids = smart_coll_data
+                    .iter()
+                    .map(|(id, ..)| *id)
+                    .collect();
+            }
             if !smart_coll_data.is_empty() {
                 let mut qb = sqlx::QueryBuilder::new("");
                 for (n, (id, kinds, sf)) in smart_coll_data
@@ -5707,7 +5718,13 @@ impl Media {
                     }
                     qb.push("SELECT ");
                     qb.push_bind(*id);
-                    qb.push(", COUNT(*) FROM media WHERE 1=1");
+                    // Only deciding whether to hide an empty collection: stop at
+                    // the first member instead of counting them all.
+                    qb.push(if existence_only {
+                        ", EXISTS (SELECT 1 FROM media WHERE 1=1"
+                    } else {
+                        ", COUNT(*) FROM media WHERE 1=1"
+                    });
                     if let Some(ks) = kinds {
                         if !ks.is_empty() {
                             qb.push(" AND kind IN (");
@@ -5756,6 +5773,9 @@ impl Media {
                         {
                             push_collection_visibility(&mut qb, pf);
                         }
+                    }
+                    if existence_only {
+                        qb.push(")");
                     }
                 }
                 match qb
@@ -6162,6 +6182,12 @@ impl Media {
         if filter.exclude_childless {
             Box::pin(Self::drop_empty_group_containers(db, &mut records, filter))
                 .await?;
+        }
+        // Those were existence checks (0/1), not counts: don't report them.
+        for media in &mut records {
+            if existence_only_ids.contains(&media.id) {
+                media.child_count = None;
+            }
         }
 
         let total_count = if filter.exclude_childless {
@@ -9137,9 +9163,13 @@ fn push_child_collection_rules(
         });
     if episode_level && has_upcoming {
         let fragment = build_fragment_with(filter, |rule| match rule {
-            R::Upcoming { value } => Some((
+            // Left bare when it has to hold: wrapping it in IFNULL hides it from
+            // the query planner, which then scans every episode (20 s vs 0.2 s
+            // on a large library). Only the negation needs the NULL guard.
+            R::Upcoming { value: true } => Some((upcoming_episode_sql(user_id), false)),
+            R::Upcoming { value: false } => Some((
                 format!("IFNULL({}, 0)", upcoming_episode_sql(user_id)),
-                !*value,
+                true,
             )),
             other => {
                 let (sql, negated) = filter_rule_to_sql(other, user_id, false)?;
@@ -9188,24 +9218,24 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     let Some(id) = user_id else {
         return "0".to_string();
     };
-    // Cheapest, most selective checks first: SQLite evaluates ANDs in order, and
-    // scanning every state row of the user per candidate episode took ~30s on a
-    // large library. `started` walks the series' own episodes instead.
+    // Start from the series the user has started (a few hundred at most) rather
+    // than from every future episode in the library: on a 3.5M-episode database
+    // that took the check from ~300 ms to under 10 ms.
     format!(
         "(media.kind = 'episode' \
           AND COALESCE(media.digital_released_at, media.released_at) > datetime('now') \
+          AND media.grandparent_id IN (SELECT seen.grandparent_id \
+            FROM user_media_state ums \
+            JOIN media seen ON seen.id = ums.media_id \
+            WHERE ums.user_id = X'{0}' \
+              AND (ums.play_count > 0 OR ums.playback_position > 0) \
+              AND seen.kind = 'episode') \
           AND NOT EXISTS (SELECT 1 FROM media earlier \
             WHERE earlier.kind = 'episode' \
               AND earlier.grandparent_id = media.grandparent_id \
               AND COALESCE(earlier.digital_released_at, earlier.released_at) > datetime('now') \
               AND (earlier.parent_idx < media.parent_idx \
-                OR (earlier.parent_idx = media.parent_idx AND earlier.idx < media.idx))) \
-          AND EXISTS (SELECT 1 FROM media seen \
-            WHERE seen.kind = 'episode' \
-              AND seen.grandparent_id = media.grandparent_id \
-              AND EXISTS (SELECT 1 FROM user_media_state ums \
-                WHERE ums.user_id = X'{0}' AND ums.media_id = seen.id \
-                  AND (ums.play_count > 0 OR ums.playback_position > 0))))",
+                OR (earlier.parent_idx = media.parent_idx AND earlier.idx < media.idx))))",
         id.simple()
     )
 }
@@ -14548,6 +14578,85 @@ mod genre_ids_filter_tests {
             Some(1),
             "the hidden member must not be counted"
         );
+    }
+
+    /// `/userviews` only needs to know whether a smart collection has members:
+    /// empty ones are dropped, the others are kept without a reported count.
+    #[tokio::test]
+    async fn childless_smart_collections_are_dropped_without_counting() {
+        use remux_sdks::remux::{CollectionFilter, FilterGroup, FilterRule, SetOp};
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        save_titled(db, "A movie", MediaKind::Movie).await;
+        let mut ids = Vec::new();
+        for (title, rules) in [
+            ("Filled", vec![]),
+            (
+                "Empty",
+                vec![FilterRule::Genre {
+                    op: SetOp::Is,
+                    values: vec!["No such genre".into()],
+                }],
+            ),
+        ] {
+            let mut c = Media {
+                title: title.to_string(),
+                kind: MediaKind::Collection,
+                collection_kind: Some(CollectionKind::Smart),
+                collection_media_kind: Some(CollectionMediaKind::Movie),
+                collection_smart_filter: Some(CollectionFilter {
+                    groups: vec![FilterGroup {
+                        rules,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                promoted: true,
+                ..Default::default()
+            };
+            c.save(db)
+                .await
+                .unwrap();
+            ids.push(c.id);
+        }
+        let query = |include_child_count| {
+            let ids = ids.clone();
+            async move {
+                Media::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        id: Some(ids),
+                        kind: Some(vec![MediaKind::Collection]),
+                        exclude_childless: true,
+                        include_child_count,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .records
+            }
+        };
+
+        let records = query(false).await;
+        assert_eq!(
+            records
+                .iter()
+                .map(|m| m
+                    .title
+                    .as_str())
+                .collect::<Vec<_>>(),
+            vec!["Filled"]
+        );
+        assert_eq!(records[0].child_count, None);
+
+        let counted = query(true).await;
+        assert_eq!(counted.len(), 1);
+        assert_eq!(counted[0].child_count, Some(1));
     }
 
     /// A person's filmography (and a studio's titles) must be driven from
