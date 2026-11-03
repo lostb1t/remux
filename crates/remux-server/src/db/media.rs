@@ -9155,10 +9155,16 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
           AND COALESCE(media.digital_released_at, media.released_at) > datetime('now') \
           AND EXISTS (SELECT 1 FROM user_media_state ums \
             CROSS JOIN media seen ON seen.id = ums.media_id \
-            WHERE ums.user_id = X'{}' \
+            WHERE ums.user_id = X'{0}' \
               AND (ums.play_count > 0 OR ums.playback_position > 0) \
               AND seen.kind = 'episode' \
               AND seen.grandparent_id = media.grandparent_id) \
+          AND NOT EXISTS (SELECT 1 FROM media aired \
+            WHERE aired.kind = 'episode' \
+              AND aired.grandparent_id = media.grandparent_id \
+              AND COALESCE(aired.digital_released_at, aired.released_at) <= datetime('now') \
+              AND NOT EXISTS (SELECT 1 FROM user_media_state w \
+                WHERE w.user_id = X'{0}' AND w.media_id = aired.id AND w.play_count > 0)) \
           AND NOT EXISTS (SELECT 1 FROM media earlier \
             WHERE earlier.kind = 'episode' \
               AND earlier.grandparent_id = media.grandparent_id \
@@ -12948,6 +12954,19 @@ mod tests {
             .unwrap()
             .2;
         insert_user_state(db, uid, first, 1, false).await;
+
+        // E2 has aired and is unwatched: the user is not caught up yet.
+        assert!(
+            upcoming_titles(db, vec![MediaKind::Episode], Some(uid), true)
+                .await
+                .is_empty()
+        );
+        let second = episodes
+            .iter()
+            .find(|(started, n, _)| *started && *n == 2)
+            .unwrap()
+            .2;
+        insert_user_state(db, uid, second, 1, false).await;
 
         assert_eq!(
             upcoming_titles(db, vec![MediaKind::Episode], Some(uid), true).await,
