@@ -114,7 +114,8 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
     let video_codec = parsed
         .video_codec()
         .and_then(map_hunch_video_codec);
-    let (width, height) = crate::db::min_screen_size(&parsed)
+    let (width, height) = crate::db::normalized_screen_size(&parsed, filename)
+        .as_deref()
         .and_then(screen_size_to_dimensions)
         .map(|(w, h)| (Some(w), Some(h)))
         .unwrap_or((None, None));

@@ -777,6 +777,10 @@ pub struct ServerConfiguration {
     /// Show streams that don't match any group individually (default true).
     #[default(Some(true))]
     pub stream_groups_show_ungrouped: Option<bool>,
+    /// Rank the stream groups themselves with the media source sort mode, by
+    /// the best stream in each. Off keeps the order set on the groups page.
+    #[default(Some(false))]
+    pub stream_groups_auto_sort: Option<bool>,
     /// Enable submitting probe data to remuxdb (default true).
     #[default(Some(true))]
     pub remuxdb_enabled: Option<bool>,

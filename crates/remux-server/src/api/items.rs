@@ -1774,8 +1774,9 @@ async fn rank_item_sources(
     original_language: Option<&str>,
     remembered_audio: Option<i64>,
     remembered_subtitle: Option<i64>,
+    include_groups: bool,
 ) {
-    crate::services::StreamService::rank_media_sources(
+    crate::services::StreamService::rank_media_sources_with_groups(
         db,
         sources,
         ranking,
@@ -1788,6 +1789,7 @@ async fn rank_item_sources(
             remembered_audio,
             remembered_subtitle,
         },
+        include_groups,
     )
     .await;
 }
@@ -1925,6 +1927,24 @@ async fn item_for_user(
                 .device
                 .parsed_device_profile(),
         );
+    let ranking_ctx = SourceRankingContext {
+        mode: server_config
+            .sort_media_sources
+            .unwrap_or_default(),
+        device_profile: persisted_device_profile.as_ref(),
+        is_4k_capable: session
+            .device
+            .is_4k_capable
+            == Some(true),
+        subtitle_mode,
+        explicit_subtitle_index: None,
+        max_bitrate: persisted_device_profile
+            .as_ref()
+            .and_then(|p| p.max_streaming_bitrate),
+    };
+    let sort_groups = server_config
+        .stream_groups_auto_sort
+        .unwrap_or(false);
 
     // Items detail itself never shows subtitles (embedded or addon external —
     // see the media_streams-stripping block below), but it still warms the
@@ -1990,6 +2010,25 @@ async fn item_for_user(
                     .db,
             )
             .await?;
+        // Best first before grouping, so a group's representative (its first
+        // match) is its best stream for this device.
+        let mut raw = raw;
+        rank_item_sources(
+            &state
+                .ctx
+                .db,
+            &mut raw,
+            ranking_ctx,
+            &user_cfg,
+            server_config
+                .preferred_metadata_language
+                .as_deref(),
+            original_language.as_deref(),
+            remembered_audio,
+            remembered_subtitle,
+            false,
+        )
+        .await;
         let grouped = db::StreamGroup::filter_sources(
             &state
                 .ctx
@@ -2046,21 +2085,7 @@ async fn item_for_user(
                         .ctx
                         .db,
                     sources,
-                    SourceRankingContext {
-                        mode: server_config
-                            .sort_media_sources
-                            .unwrap_or_default(),
-                        device_profile: persisted_device_profile.as_ref(),
-                        is_4k_capable: session
-                            .device
-                            .is_4k_capable
-                            == Some(true),
-                        subtitle_mode,
-                        explicit_subtitle_index: None,
-                        max_bitrate: persisted_device_profile
-                            .as_ref()
-                            .and_then(|p| p.max_streaming_bitrate),
-                    },
+                    ranking_ctx,
                     &user_cfg,
                     server_config
                         .preferred_metadata_language
@@ -2068,6 +2093,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    sort_groups,
                 )
                 .await;
             }
@@ -2089,6 +2115,25 @@ async fn item_for_user(
                     .db,
             )
             .await?;
+        // Best first before grouping, so a group's representative (its first
+        // match) is its best stream for this device.
+        let mut raw = raw;
+        rank_item_sources(
+            &state
+                .ctx
+                .db,
+            &mut raw,
+            ranking_ctx,
+            &user_cfg,
+            server_config
+                .preferred_metadata_language
+                .as_deref(),
+            original_language.as_deref(),
+            remembered_audio,
+            remembered_subtitle,
+            false,
+        )
+        .await;
         let grouped = db::StreamGroup::filter_sources(
             &state
                 .ctx
@@ -2128,21 +2173,7 @@ async fn item_for_user(
                         .ctx
                         .db,
                     sources,
-                    SourceRankingContext {
-                        mode: server_config
-                            .sort_media_sources
-                            .unwrap_or_default(),
-                        device_profile: persisted_device_profile.as_ref(),
-                        is_4k_capable: session
-                            .device
-                            .is_4k_capable
-                            == Some(true),
-                        subtitle_mode,
-                        explicit_subtitle_index: None,
-                        max_bitrate: persisted_device_profile
-                            .as_ref()
-                            .and_then(|p| p.max_streaming_bitrate),
-                    },
+                    ranking_ctx,
                     &user_cfg,
                     server_config
                         .preferred_metadata_language
@@ -2150,6 +2181,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    sort_groups,
                 )
                 .await;
             }
