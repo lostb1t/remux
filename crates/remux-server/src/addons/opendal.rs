@@ -1306,7 +1306,8 @@ fn music_layout(
 }
 
 /// A subtitle seen during a scan, waiting for the whole listing so it can be
-/// linked to the video beside it.
+/// linked to the video beside it. `dir` comes from the full stored path, so the
+/// same relative folder under two scan roots stays distinct.
 struct PendingSub {
     dir: String,
     path: String,
@@ -1487,7 +1488,7 @@ async fn scan_addon(
             // has been seen, whatever order the two were listed in.
             if SUBTITLE_EXTENSIONS.contains(&ext.as_str()) {
                 pending_subs.push(PendingSub {
-                    dir: parent_dir(&entry_rel),
+                    dir: parent_dir(&path),
                     path,
                     name,
                 });
@@ -1776,7 +1777,7 @@ async fn scan_addon(
 
             if let Some(imdb) = imdb_id.as_deref() {
                 videos.insert(
-                    (parent_dir(&entry_rel), stem.to_lowercase()),
+                    (parent_dir(&path), stem.to_lowercase()),
                     IndexedVideo {
                         imdb_id: imdb.to_string(),
                         title: title.clone(),
@@ -1932,8 +1933,8 @@ async fn scan_addon(
         let (base_stem, _, _, _) = split_subtitle_stem(&stem);
         // The video next to it already has the ids: no second lookup.
         let sibling = videos
-            .get(&(dir.clone(), base_stem.to_lowercase()))
-            .or_else(|| videos.get(&(dir.clone(), stem.to_lowercase())));
+            .get(&(dir.clone(), stem.to_lowercase()))
+            .or_else(|| videos.get(&(dir.clone(), base_stem.to_lowercase())));
         let jellyfin_ids = db::ExternalIds::from_path(&path);
         let parsed = hunch::hunch(&base_stem);
 
@@ -2069,7 +2070,7 @@ async fn scan_addon(
                      ON CONFLICT(id) DO UPDATE SET \
                        path = excluded.path, name = excluded.name, \
                        title = excluded.title, \
-                       imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
+                       imdb_id = excluded.imdb_id, \
                        season = excluded.season, episode = excluded.episode, \
                        year = excluded.year, scanned_at = excluded.scanned_at",
                 )
@@ -4142,6 +4143,8 @@ mod tests {
         for (folder, video, body) in [
             ("Obscure Film", "Obscure Film.mkv", "x"),
             ("Strm Film", "Strm Film.strm", strm_url),
+            ("Saga", "Saw.mkv", "x"),
+            ("Saga", "Saw.II.mkv", "y"),
         ] {
             let film = dir
                 .path()
@@ -4168,6 +4171,8 @@ mod tests {
                 "tt0000001",
             ),
             (strm_url.to_string(), "Strm Film.strm", "tt0000002"),
+            (format!("{root}/Saga/Saw.mkv"), "Saw.mkv", "tt0000003"),
+            (format!("{root}/Saga/Saw.II.mkv"), "Saw.II.mkv", "tt0000004"),
         ] {
             sqlx::query(
                 "INSERT INTO opendal_files (id, addon_id, media_kind, path, name, imdb_id, scanned_at) \
@@ -4182,6 +4187,22 @@ mod tests {
             .await
             .unwrap();
         }
+
+        // A subtitle indexed earlier under the wrong id is relinked.
+        let stale = format!("{root}/Obscure Film/Obscure Film.srt");
+        sqlx::query(
+            "INSERT INTO opendal_files (id, addon_id, media_kind, path, name, imdb_id, scanned_at) \
+             VALUES (?, ?, 'subtitle', ?, 'Obscure Film.srt', 'tt9999999', '2026-01-01 00:00:00')",
+        )
+        .bind(crate::common::get_stable_uuid(format!(
+            "{}:{}",
+            db_addon.id, stale
+        )))
+        .bind(db_addon.id)
+        .bind(&stale)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
 
         addon
             .refresh_index(ctx, &db_addon, noop_progress())
@@ -4200,9 +4221,11 @@ mod tests {
             rows,
             vec![
                 ("Obscure Film.srt".to_string(), "tt0000001".to_string()),
+                ("Saw.II.srt".to_string(), "tt0000004".to_string()),
+                ("Saw.srt".to_string(), "tt0000003".to_string()),
                 ("Strm Film.srt".to_string(), "tt0000002".to_string()),
             ],
-            "each subtitle takes the id of the video beside it"
+            "each subtitle takes the id of the video beside it, `Saw.II` not `Saw`'s"
         );
     }
 
