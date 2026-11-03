@@ -104,12 +104,82 @@ pub struct ResolvedCatalog {
     pub tags: Vec<String>,
 }
 
+/// Whether a catalog stream ran to a genuine end. A source flips it to
+/// incomplete when it stops early on an unexpected failure (not on a normal
+/// end-of-catalog), so the importer can tell a truncated set from a complete
+/// one before removing members it didn't see.
+#[derive(Clone, Debug, Default)]
+pub struct CatalogCompleteness(Arc<std::sync::atomic::AtomicBool>);
+
+impl CatalogCompleteness {
+    pub fn mark_incomplete(&self) {
+        self.0
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_complete(&self) -> bool {
+        !self
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A catalog's items plus whether they are the whole catalog. Streams as the
+/// plain item stream; read `completeness()` after it has been consumed.
+pub struct CatalogStream {
+    stream: Pin<Box<dyn Stream<Item = db::Media> + Send>>,
+    completeness: CatalogCompleteness,
+}
+
+impl CatalogStream {
+    pub fn new(
+        stream: Pin<Box<dyn Stream<Item = db::Media> + Send>>,
+        completeness: CatalogCompleteness,
+    ) -> Self {
+        Self {
+            stream,
+            completeness,
+        }
+    }
+
+    /// Wraps a stream that cannot fail partway, so it is always complete.
+    pub fn complete(stream: impl Stream<Item = db::Media> + Send + 'static) -> Self {
+        Self::new(Box::pin(stream), CatalogCompleteness::default())
+    }
+
+    pub fn completeness(&self) -> CatalogCompleteness {
+        self.completeness
+            .clone()
+    }
+
+    pub fn into_boxed(self) -> Pin<Box<dyn Stream<Item = db::Media> + Send>> {
+        self.stream
+    }
+}
+
+/// A stream with no way to fail partway counts as complete.
+impl From<Pin<Box<dyn Stream<Item = db::Media> + Send>>> for CatalogStream {
+    fn from(stream: Pin<Box<dyn Stream<Item = db::Media> + Send>>) -> Self {
+        Self::new(stream, CatalogCompleteness::default())
+    }
+}
+
+impl Stream for CatalogStream {
+    type Item = db::Media;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.stream
+            .as_mut()
+            .poll_next(cx)
+    }
+}
+
 #[async_trait]
 pub trait RemoteMediaStream: Send + Sync {
-    async fn stream(
-        &self,
-        ctx: &AppContext,
-    ) -> Result<Pin<Box<dyn Stream<Item = db::Media> + Send>>>;
+    async fn stream(&self, ctx: &AppContext) -> Result<CatalogStream>;
 }
 
 #[derive(Debug)]
@@ -757,6 +827,20 @@ pub trait CatalogAddon: Send + Sync {
         ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>>;
+
+    /// Same as `catalog_stream`, but reports whether the stream ended
+    /// normally. Sources that can stop partway on a failure override this;
+    /// the default treats every stream as complete.
+    async fn catalog_stream_tracked(
+        &self,
+        ctx: &AppContext,
+        local_id: &str,
+    ) -> Result<Option<CatalogStream>> {
+        Ok(self
+            .catalog_stream(ctx, local_id)
+            .await?
+            .map(CatalogStream::from))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3721,12 +3805,9 @@ struct AddonCatalogStream {
 
 #[async_trait]
 impl RemoteMediaStream for AddonCatalogStream {
-    async fn stream(
-        &self,
-        ctx: &AppContext,
-    ) -> Result<Pin<Box<dyn Stream<Item = db::Media> + Send>>> {
+    async fn stream(&self, ctx: &AppContext) -> Result<CatalogStream> {
         self.addon
-            .catalog_stream(ctx, &self.local_id)
+            .catalog_stream_tracked(ctx, &self.local_id)
             .await?
             .ok_or_else(|| {
                 anyhow!("catalog addon does not serve catalog '{}'", self.local_id)
