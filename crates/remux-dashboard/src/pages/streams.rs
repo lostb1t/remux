@@ -550,6 +550,9 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                 stream_groups_show_ungrouped: Some(v),
                                 ..cfg
                             };
+                            // Keep the snapshot current: the next toggle builds on it, and
+                            // the save replaces the whole configuration.
+                            base_cfg.set(Some(updated.clone()));
                             saving_setting.set(true);
                             let c = client.clone();
                             spawn(async move {
@@ -573,6 +576,9 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                                 stream_groups_auto_sort: Some(v),
                                 ..cfg
                             };
+                            // Keep the snapshot current: the next toggle builds on it, and
+                            // the save replaces the whole configuration.
+                            base_cfg.set(Some(updated.clone()));
                             saving_setting.set(true);
                             let c = client.clone();
                             spawn(async move {

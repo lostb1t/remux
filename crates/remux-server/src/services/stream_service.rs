@@ -537,7 +537,7 @@ impl StreamService {
         if candidates.is_empty() {
             return Err(anyhow::anyhow!("no streams available for group {}", gid));
         }
-        let cascade = db::StreamGroup::streams_for_groups_after(
+        let cascade = db::StreamGroup::streams_per_group_after(
             &self
                 .ctx
                 .db,
@@ -546,14 +546,18 @@ impl StreamService {
         )
         .await
         .unwrap_or_default();
-        // The group's own streams best first, then those of the groups after it.
+        // The group's own streams best first, then those of each later group,
+        // ranked within their own group so the fallback still goes group by
+        // group, in the admin's order.
         let mut candidates = self
             .ranked(candidates, ranking, prefs)
             .await;
-        candidates.extend(
-            self.ranked(cascade, ranking, prefs)
-                .await,
-        );
+        for later in cascade {
+            candidates.extend(
+                self.ranked(later, ranking, prefs)
+                    .await,
+            );
+        }
         self.stream = Some(candidates[0].clone());
         self.group = Some((gid, gtitle, candidates));
         Ok(())

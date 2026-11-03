@@ -638,6 +638,23 @@ impl StreamGroup {
         current_group_id: &Uuid,
         parent_id: &Uuid,
     ) -> Result<Vec<Media>> {
+        Ok(
+            Self::streams_per_group_after(db, current_group_id, parent_id)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        )
+    }
+
+    /// [`Self::streams_for_groups_after`] kept per group, in priority order,
+    /// so a caller can order the streams within each group without mixing
+    /// the groups.
+    pub async fn streams_per_group_after(
+        db: &SqlitePool,
+        current_group_id: &Uuid,
+        parent_id: &Uuid,
+    ) -> Result<Vec<Vec<Media>>> {
         let groups = Self::list(db).await?;
         let mut parent = Media::get_by_id(db, parent_id)
             .await?
@@ -659,7 +676,7 @@ impl StreamGroup {
                 }
                 continue;
             }
-            result.extend(Self::candidates_for_group(group, &raw));
+            result.push(Self::candidates_for_group(group, &raw));
         }
         Ok(result)
     }
