@@ -9513,10 +9513,13 @@ fn filter_rule_to_sql(
             // digital date, so counting those would list every recent release.
             // IFNULL: an item with no date is not upcoming, rather than unknown,
             // so `Upcoming = false` still lists it.
+            // CASE rather than OR: SQLite evaluates every OR branch, and the
+            // episode subqueries made counting movies take seconds.
             let sql = format!(
-                "IFNULL(((media.kind IN ('movie', 'series') \
-                    AND COALESCE(media.digital_released_at, media.released_at) > datetime('now')) \
-                  OR {episode}), 0)"
+                "CASE WHEN media.kind IN ('movie', 'series') THEN \
+                    IFNULL(COALESCE(media.digital_released_at, media.released_at) > datetime('now'), 0) \
+                  WHEN media.kind = 'episode' THEN IFNULL({episode}, 0) \
+                  ELSE 0 END"
             );
             Some((sql, !*value))
         }
