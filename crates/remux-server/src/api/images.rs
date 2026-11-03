@@ -117,53 +117,9 @@ async fn items_images_inner(
                 // real, separately-uploaded image (typically textless) or none
                 // at all — it must never silently alias the text-overlaid
                 // Primary artwork.
-                // A listing may hand an episode its season's or series' poster
-                // as Primary (the Upcoming library); resolve such a tag here.
-                let borrowed_poster = if media.kind == db::MediaKind::Episode
-                    && kind == ImageKind::Primary
-                    && let Some(tag) = q
-                        .tag
-                        .as_deref()
-                    && media
-                        .images
-                        .get(kind)
-                        .is_none_or(|i| {
-                            i.id.to_string() != tag
-                        }) {
-                    let mut found = None;
-                    for owner in [media.parent_id, media.grandparent_id]
-                        .into_iter()
-                        .flatten()
-                    {
-                        let imgs = db::MediaImage::get_for_media(
-                            &state
-                                .ctx
-                                .db,
-                            &owner,
-                        )
-                        .await
-                        .unwrap_or_default();
-                        found = imgs
-                            .primary
-                            .into_iter()
-                            .find(|i| {
-                                i.id.to_string() == tag
-                            });
-                        if found.is_some() {
-                            break;
-                        }
-                    }
-                    found
-                } else {
-                    None
-                };
-                let img_row = borrowed_poster
-                    .as_ref()
-                    .or_else(|| {
-                        media
-                            .images
-                            .get(kind)
-                    })
+                let img_row = media
+                    .images
+                    .get(kind)
                     .or_else(|| {
                         if kind == ImageKind::Thumb
                             && !is_collection

@@ -835,32 +835,6 @@ pub async fn get_items(
             if lists_upcoming {
                 let now = chrono::Utc::now().naive_utc();
                 for media in &mut result.records {
-                    // Episodes have no poster of their own: use the season's,
-                    // else the series'. The image endpoint resolves the tag.
-                    if media.kind == db::MediaKind::Episode {
-                        let poster = media
-                            .parent
-                            .as_deref()
-                            .and_then(|p| {
-                                p.images
-                                    .get(db::ImageKind::Primary)
-                            })
-                            .or_else(|| {
-                                media
-                                    .grandparent
-                                    .as_deref()
-                                    .and_then(|g| {
-                                        g.images
-                                            .get(db::ImageKind::Primary)
-                                    })
-                            })
-                            .cloned();
-                        if let Some(poster) = poster {
-                            media
-                                .images
-                                .primary = vec![poster];
-                        }
-                    }
                     if let Some(date) = media
                         .digital_released_at
                         .or(media.released_at)
