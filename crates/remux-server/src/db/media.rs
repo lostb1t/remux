@@ -9220,13 +9220,14 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     };
     // Start from the series the user has started (a few hundred at most) rather
     // than from every future episode in the library: on a 3.5M-episode database
-    // that took the check from ~300 ms to under 10 ms.
+    // that took the check from ~300 ms to under 10 ms. CROSS JOIN pins the
+    // user's state rows as the outer loop, whatever the planner statistics say.
     format!(
         "(media.kind = 'episode' \
           AND COALESCE(media.digital_released_at, media.released_at) > datetime('now') \
           AND media.grandparent_id IN (SELECT seen.grandparent_id \
             FROM user_media_state ums \
-            JOIN media seen ON seen.id = ums.media_id \
+            CROSS JOIN media seen ON seen.id = ums.media_id \
             WHERE ums.user_id = X'{0}' \
               AND (ums.play_count > 0 OR ums.playback_position > 0) \
               AND seen.kind = 'episode') \
