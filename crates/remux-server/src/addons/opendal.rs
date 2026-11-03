@@ -1305,6 +1305,30 @@ fn music_layout(
     }
 }
 
+/// A subtitle seen during a scan, waiting for the whole listing so it can be
+/// linked to the video beside it.
+struct PendingSub {
+    dir: String,
+    path: String,
+    name: String,
+}
+
+/// What the scan knows about an identified video, to hand on to its subtitles.
+struct IndexedVideo {
+    imdb_id: String,
+    title: Option<String>,
+    season: Option<i64>,
+    episode: Option<i64>,
+    year: Option<i64>,
+}
+
+/// The folder an entry sits in, as listed.
+fn parent_dir(entry_rel: &str) -> String {
+    entry_rel
+        .rsplit_once('/')
+        .map_or_else(String::new, |(dir, _)| dir.to_string())
+}
+
 async fn scan_addon(
     ctx: &AppContext,
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
@@ -1394,6 +1418,9 @@ async fn scan_addon(
     };
     let mut probe_jobs: Vec<ProbeJob> = Vec::new();
     let mut path_id_memo = PathIdMemo::default();
+    let mut videos: std::collections::HashMap<(String, String), IndexedVideo> =
+        Default::default();
+    let mut pending_subs: Vec<PendingSub> = Vec::new();
 
     // Debrid-style WebDAV shares only ever add folders, so a folder that has not
     // changed since it was indexed is not walked again. This is opt-in
@@ -1456,145 +1483,14 @@ async fn scan_addon(
                 .unwrap_or("")
                 .to_lowercase();
 
-            // Subtitle files: parse IMDB from filename (same convention as video files).
+            // Subtitle files are linked to their video once the whole listing
+            // has been seen, whatever order the two were listed in.
             if SUBTITLE_EXTENSIONS.contains(&ext.as_str()) {
-                let stem = stem_without_ext(&name);
-                let (base_stem, _, _, _) = split_subtitle_stem(&stem);
-                let jellyfin_ids = db::ExternalIds::from_path(&path);
-                let parsed = hunch::hunch(&base_stem);
-
-                let (imdb_id, season, episode, year, title_str) =
-                    match media_kind.as_str() {
-                        "episode" => {
-                            let season = parsed
-                                .season()
-                                .map(|s| s as i64);
-                            let episode = parsed
-                                .episode()
-                                .map(|e| e as i64);
-                            let year = parsed
-                                .year()
-                                .map(|y| y as i64);
-                            let clean_title = parsed
-                                .title()
-                                .unwrap_or(base_stem.as_str())
-                                .to_string();
-                            let existing_imdb =
-                                fetch_existing_imdb(ctx, addon.id, &path).await?;
-                            let imdb_id = if let Some(id) = existing_imdb {
-                                Some(id)
-                            } else if !jellyfin_ids.is_empty() {
-                                if let Some(client) = tmdb {
-                                    resolve_path_ids(
-                                        &mut path_id_memo,
-                                        &jellyfin_ids,
-                                        true,
-                                        client,
-                                    )
-                                    .await
-                                } else {
-                                    jellyfin_ids
-                                        .imdb
-                                        .clone()
-                                        .map(Into::into)
-                                }
-                            } else {
-                                if let Some(client) = tmdb {
-                                    MediaResolveService::resolve_imdb_from_search(
-                                        client,
-                                        &clean_title,
-                                        None,
-                                        true,
-                                    )
-                                    .await
-                                    .map(Into::into)
-                                } else {
-                                    None
-                                }
-                            };
-                            (imdb_id, season, episode, year, clean_title)
-                        }
-                        _ => {
-                            let year = parsed
-                                .year()
-                                .map(|y| y as i64);
-                            let clean_title = parsed
-                                .title()
-                                .unwrap_or(base_stem.as_str())
-                                .to_string();
-                            let existing_imdb =
-                                fetch_existing_imdb(ctx, addon.id, &path).await?;
-                            let imdb_id = if let Some(id) = existing_imdb {
-                                Some(id)
-                            } else if !jellyfin_ids.is_empty() {
-                                if let Some(client) = tmdb {
-                                    resolve_path_ids(
-                                        &mut path_id_memo,
-                                        &jellyfin_ids,
-                                        false,
-                                        client,
-                                    )
-                                    .await
-                                } else {
-                                    jellyfin_ids
-                                        .imdb
-                                        .clone()
-                                        .map(Into::into)
-                                }
-                            } else {
-                                if let Some(client) = tmdb {
-                                    MediaResolveService::resolve_imdb_from_search(
-                                        client,
-                                        &clean_title,
-                                        year,
-                                        false,
-                                    )
-                                    .await
-                                    .map(Into::into)
-                                } else {
-                                    None
-                                }
-                            };
-                            (imdb_id, None, None, year, clean_title)
-                        }
-                    };
-
-                if imdb_id.is_none() {
-                    debug!(path, "opendal: subtitle has no IMDB id, skipping");
-                    continue;
-                }
-
-                let sub_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
-                seen_ids.push(sub_id);
-                let now = Utc::now()
-                    .naive_utc()
-                    .to_string();
-                sqlx::query(
-                    "INSERT INTO opendal_files \
-                     (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
-                     VALUES (?, ?, 'subtitle', ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?) \
-                     ON CONFLICT(id) DO UPDATE SET \
-                       path = excluded.path, name = excluded.name, \
-                       title = excluded.title, \
-                       imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
-                       season = excluded.season, episode = excluded.episode, \
-                       year = excluded.year, scanned_at = excluded.scanned_at",
-                )
-                .bind(sub_id)
-                .bind(addon.id)
-                .bind(&path)
-                .bind(&name)
-                .bind(&title_str)
-                .bind(imdb_id.as_deref())
-                .bind(season)
-                .bind(episode)
-                .bind(year)
-                .bind(&now)
-                .execute(&ctx.db)
-                .await?;
-
-                debug!(path, "opendal: indexed subtitle");
-                upserted += 1;
+                pending_subs.push(PendingSub {
+                    dir: parent_dir(&entry_rel),
+                    path,
+                    name,
+                });
                 continue;
             }
 
@@ -1878,6 +1774,19 @@ async fn scan_addon(
                 }
             };
 
+            if let Some(imdb) = imdb_id.as_deref() {
+                videos.insert(
+                    (parent_dir(&entry_rel), stem.to_lowercase()),
+                    IndexedVideo {
+                        imdb_id: imdb.to_string(),
+                        title: title.clone(),
+                        season,
+                        episode,
+                        year,
+                    },
+                );
+            }
+
             // Jellyfin music layout, see `music_layout`. Without embedded tags the
             // folder names are the source of truth for artist/album.
             let (artist, album, disc_number) = if media_kind == "track" {
@@ -2013,6 +1922,172 @@ async fn scan_addon(
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+
+    // Link each subtitle to the video beside it (same folder, same name up to
+    // its language/flag suffixes), which has already been identified. Only a
+    // subtitle with no such video falls back to identifying itself.
+    for PendingSub { dir, path, name } in pending_subs {
+        let stem = stem_without_ext(&name);
+        let (base_stem, _, _, _) = split_subtitle_stem(&stem);
+        // The video next to it already has the ids: no second lookup.
+        let sibling = videos
+            .get(&(dir.clone(), base_stem.to_lowercase()))
+            .or_else(|| videos.get(&(dir.clone(), stem.to_lowercase())));
+        let jellyfin_ids = db::ExternalIds::from_path(&path);
+        let parsed = hunch::hunch(&base_stem);
+
+        let (imdb_id, season, episode, year, title_str) = if let Some(video) = sibling {
+            (
+                Some(
+                    video
+                        .imdb_id
+                        .clone(),
+                ),
+                video.season,
+                video.episode,
+                video.year,
+                video
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| base_stem.clone()),
+            )
+        } else {
+            match media_kind.as_str() {
+                "episode" => {
+                    let season = parsed
+                        .season()
+                        .map(|s| s as i64);
+                    let episode = parsed
+                        .episode()
+                        .map(|e| e as i64);
+                    let year = parsed
+                        .year()
+                        .map(|y| y as i64);
+                    let clean_title = parsed
+                        .title()
+                        .unwrap_or(base_stem.as_str())
+                        .to_string();
+                    let existing_imdb =
+                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                    let imdb_id = if let Some(id) = existing_imdb {
+                        Some(id)
+                    } else if !jellyfin_ids.is_empty() {
+                        if let Some(client) = tmdb {
+                            resolve_path_ids(
+                                &mut path_id_memo,
+                                &jellyfin_ids,
+                                true,
+                                client,
+                            )
+                            .await
+                        } else {
+                            jellyfin_ids
+                                .imdb
+                                .clone()
+                                .map(Into::into)
+                        }
+                    } else {
+                        if let Some(client) = tmdb {
+                            MediaResolveService::resolve_imdb_from_search(
+                                client,
+                                &clean_title,
+                                None,
+                                true,
+                            )
+                            .await
+                            .map(Into::into)
+                        } else {
+                            None
+                        }
+                    };
+                    (imdb_id, season, episode, year, clean_title)
+                }
+                _ => {
+                    let year = parsed
+                        .year()
+                        .map(|y| y as i64);
+                    let clean_title = parsed
+                        .title()
+                        .unwrap_or(base_stem.as_str())
+                        .to_string();
+                    let existing_imdb =
+                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                    let imdb_id = if let Some(id) = existing_imdb {
+                        Some(id)
+                    } else if !jellyfin_ids.is_empty() {
+                        if let Some(client) = tmdb {
+                            resolve_path_ids(
+                                &mut path_id_memo,
+                                &jellyfin_ids,
+                                false,
+                                client,
+                            )
+                            .await
+                        } else {
+                            jellyfin_ids
+                                .imdb
+                                .clone()
+                                .map(Into::into)
+                        }
+                    } else {
+                        if let Some(client) = tmdb {
+                            MediaResolveService::resolve_imdb_from_search(
+                                client,
+                                &clean_title,
+                                year,
+                                false,
+                            )
+                            .await
+                            .map(Into::into)
+                        } else {
+                            None
+                        }
+                    };
+                    (imdb_id, None, None, year, clean_title)
+                }
+            }
+        };
+
+        if imdb_id.is_none() {
+            info!(
+                path,
+                "opendal: subtitle has no IMDB id and no video beside it, skipping"
+            );
+            continue;
+        }
+
+        let sub_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
+        seen_ids.push(sub_id);
+        let now = Utc::now()
+            .naive_utc()
+            .to_string();
+        sqlx::query(
+                    "INSERT INTO opendal_files \
+                     (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
+                     VALUES (?, ?, 'subtitle', ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                       path = excluded.path, name = excluded.name, \
+                       title = excluded.title, \
+                       imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
+                       season = excluded.season, episode = excluded.episode, \
+                       year = excluded.year, scanned_at = excluded.scanned_at",
+                )
+                .bind(sub_id)
+                .bind(addon.id)
+                .bind(&path)
+                .bind(&name)
+                .bind(&title_str)
+                .bind(imdb_id.as_deref())
+                .bind(season)
+                .bind(episode)
+                .bind(year)
+                .bind(&now)
+                .execute(&ctx.db)
+                .await?;
+
+        debug!(path, "opendal: indexed subtitle");
+        upserted += 1;
     }
 
     let deleted = prune_stale_paths(ctx, addon.id, &seen_ids).await?;
@@ -4050,6 +4125,88 @@ mod tests {
         assert!(de.is_hi);
     }
 
+    // E2E: a subtitle takes the ids of the video beside it
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_subtitle_is_linked_to_its_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir
+            .path()
+            .to_str()
+            .unwrap()
+            .to_string();
+        // Neither name carries an id, and a .strm keeps its target URL as path:
+        // the only thing tying the subtitle to the film is the folder and name.
+        let strm_url = "https://example.invalid/stream/obscure.mkv";
+        for (folder, video, body) in [
+            ("Obscure Film", "Obscure Film.mkv", "x"),
+            ("Strm Film", "Strm Film.strm", strm_url),
+        ] {
+            let film = dir
+                .path()
+                .join(folder);
+            std::fs::create_dir_all(&film).unwrap();
+            std::fs::write(film.join(video), body).unwrap();
+            let stem = video
+                .rsplit_once('.')
+                .unwrap()
+                .0;
+            std::fs::write(film.join(format!("{stem}.srt")), b"subtitle").unwrap();
+        }
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+
+        // The films were identified by an earlier scan.
+        for (video_path, name, imdb) in [
+            (
+                format!("{root}/Obscure Film/Obscure Film.mkv"),
+                "Obscure Film.mkv",
+                "tt0000001",
+            ),
+            (strm_url.to_string(), "Strm Film.strm", "tt0000002"),
+        ] {
+            sqlx::query(
+                "INSERT INTO opendal_files (id, addon_id, media_kind, path, name, imdb_id, scanned_at) \
+                 VALUES (?, ?, 'movie', ?, ?, ?, '2026-01-01 00:00:00')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(db_addon.id)
+            .bind(&video_path)
+            .bind(name)
+            .bind(imdb)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        }
+
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, imdb_id FROM opendal_files \
+             WHERE addon_id = ? AND media_kind = 'subtitle' ORDER BY path",
+        )
+        .bind(db_addon.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("Obscure Film.srt".to_string(), "tt0000001".to_string()),
+                ("Strm Film.srt".to_string(), "tt0000002".to_string()),
+            ],
+            "each subtitle takes the id of the video beside it"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // E2E: subtitle without an IMDB id is not indexed
     // -----------------------------------------------------------------------

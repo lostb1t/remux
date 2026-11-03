@@ -15,7 +15,22 @@ fn filename_stem(name: &str) -> &str {
             matches!(
                 ext.to_ascii_lowercase()
                     .as_str(),
-                "srt" | "vtt" | "ass" | "ssa" | "sub" | "mkv" | "mp4" | "avi"
+                "srt"
+                    | "vtt"
+                    | "ass"
+                    | "ssa"
+                    | "sub"
+                    | "sup"
+                    | "mkv"
+                    | "mp4"
+                    | "m4v"
+                    | "avi"
+                    | "mov"
+                    | "ts"
+                    | "m2ts"
+                    | "wmv"
+                    | "webm"
+                    | "strm"
             )
         })
         .map_or(basename, |(stem, _)| stem)
@@ -175,14 +190,18 @@ fn ranked_external_subtitles<'a>(
             let rank = preferred
                 .iter()
                 .position(|preferred| preferred == &lang);
-            if !preferred.is_empty() && rank.is_none() {
+            let local = is_local_sidecar(sub, source_filename);
+            // The language preference only narrows what providers offer. A
+            // subtitle file the user put next to the video is always listed,
+            // as Jellyfin does: `Movie.srt` has no language to match.
+            if !preferred.is_empty() && rank.is_none() && !local {
                 return None;
             }
             Some((
                 sub,
                 lang,
                 rank.unwrap_or(usize::MAX),
-                is_local_sidecar(sub, source_filename),
+                local,
                 is_release_match(sub, source_filename),
             ))
         })
@@ -275,6 +294,43 @@ mod tests {
             from_trusted: None,
             ai_translated: None,
         }
+    }
+
+    #[test]
+    fn local_sidecar_without_language_survives_a_language_preference() {
+        let local = |id: &str, filename: &str, lang: Option<&str>| {
+            let mut s = sub(id, filename, "");
+            s.lang = lang.map(Into::into);
+            s.url = Some(crate::stream::StreamDescriptor::Local(
+                format!("/library/{filename}").into(),
+            ));
+            s
+        };
+        let subs = [
+            local("plain", "Movie.srt", None),
+            local("french", "Movie.fr.srt", Some("fr")),
+            local("other", "Another.srt", None),
+            sub("provider", "Movie.de.srt", "ger"),
+        ];
+        let ids = |selected: Vec<&SubtitleInfo>| {
+            selected
+                .iter()
+                .map(|s| {
+                    s.id.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        // Local files of this video stay; other videos' files and providers
+        // outside the preferred languages go.
+        assert_eq!(
+            ids(select_external_subtitles(
+                &subs,
+                &["en".into()],
+                Some("Movie.strm"),
+                1
+            )),
+            vec!["french", "plain"],
+        );
     }
 
     #[test]
