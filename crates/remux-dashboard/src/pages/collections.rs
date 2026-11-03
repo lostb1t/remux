@@ -1568,7 +1568,13 @@ pub fn CollectionForm(
                         }
                     }
                 } else {
-                    FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
+                    // The collection's own type already says what it holds, so
+                    // "media kind" is only offered on a user's filters.
+                    FilterRuleEditor {
+                        match_mode: sf_match,
+                        groups: sf_groups,
+                        hidden_fields: vec!["media_kind"],
+                    }
 
                     div { class: "field",
                         label { class: "field-label", "Default Sort Override" }

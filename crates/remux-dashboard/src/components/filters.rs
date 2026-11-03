@@ -922,9 +922,12 @@ pub fn FilterRuleRow(
             .collect()
     };
 
+    let current_field = field_val.clone();
     let show_field = move |key: &'static str| {
         (allowed_fields.is_empty() || allowed_fields.contains(&key))
-            && !hidden_fields.contains(&key)
+            // A hidden field stays selectable on a rule that already uses it,
+            // so an old rule doesn't silently show as another field.
+            && (!hidden_fields.contains(&key) || current_field == key)
     };
 
     let field_style = if hide_operator {
