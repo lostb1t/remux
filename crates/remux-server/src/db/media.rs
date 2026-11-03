@@ -4873,6 +4873,14 @@ impl Media {
                             filter
                                 .user_id
                                 .as_ref(),
+                            upcoming_is_episode_level(
+                                filter
+                                    .parent
+                                    .as_ref(),
+                                filter
+                                    .kind
+                                    .as_deref(),
+                            ),
                         );
                     } else {
                         apply_filter_rules(
@@ -5718,6 +5726,7 @@ impl Media {
                                 filter
                                     .user_id
                                     .as_ref(),
+                                upcoming_is_episode_level(None, kinds.as_deref()),
                             );
                         } else {
                             apply_filter_rules(
@@ -9029,6 +9038,18 @@ fn build_filter_rules_fragment(
     user_id: Option<&Uuid>,
     skip_watched_true: bool,
 ) -> Option<String> {
+    build_fragment_with(filter, |r| {
+        filter_rule_to_sql(r, user_id, skip_watched_true)
+    })
+}
+
+/// `build_filter_rules_fragment` with the per-rule translation supplied, so a
+/// caller can compile some rules against a different row than the rest while
+/// keeping the filter's AND/OR grouping and negations intact.
+fn build_fragment_with(
+    filter: &remux_sdks::remux::CollectionFilter,
+    rule_sql: impl Fn(&remux_sdks::remux::FilterRule) -> Option<(String, bool)>,
+) -> Option<String> {
     use remux_sdks::remux::FilterMatchMode;
 
     let group_sep = match filter.match_mode {
@@ -9043,7 +9064,7 @@ fn build_filter_rules_fragment(
             let rules: Vec<_> = g
                 .rules
                 .iter()
-                .filter_map(|r| filter_rule_to_sql(r, user_id, skip_watched_true))
+                .filter_map(&rule_sql)
                 .collect();
             if rules.is_empty() {
                 None
@@ -9093,58 +9114,75 @@ fn ks_are_children(kinds: Option<&[MediaKind]>) -> bool {
 
 /// Appends a collection's rules for a query that only targets child rows
 /// (episodes/seasons). The rules describe which series qualify, not the
-/// children themselves, so they are applied through the grandparent. The one
-/// exception is `Upcoming`, which is about the episode itself: it is taken out
-/// of what is asked of the series and applied to the episode, when required.
+/// children themselves, so they are applied through the grandparent.
+///
+/// With `episode_level` (an Episode collection) `Upcoming` is about the episode
+/// itself, so each rule is compiled on its own: `Upcoming` against the episode,
+/// everything else against the series, under the filter's original grouping.
+/// For any other collection `Upcoming` stays a property of the series.
 fn push_child_collection_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     filter: &remux_sdks::remux::CollectionFilter,
     user_id: Option<&Uuid>,
+    episode_level: bool,
 ) {
-    if let Some(fragment) =
-        build_filter_rules_fragment(&without_upcoming_rules(filter), user_id, false)
-    {
+    use remux_sdks::remux::FilterRule as R;
+    let has_upcoming = filter
+        .groups
+        .iter()
+        .any(|g| {
+            g.rules
+                .iter()
+                .any(|r| matches!(r, R::Upcoming { .. }))
+        });
+    if episode_level && has_upcoming {
+        let fragment = build_fragment_with(filter, |rule| match rule {
+            R::Upcoming { value } => Some((
+                format!("IFNULL({}, 0)", upcoming_episode_sql(user_id)),
+                !*value,
+            )),
+            other => {
+                let (sql, negated) = filter_rule_to_sql(other, user_id, false)?;
+                let inner = if negated { format!("NOT ({sql})") } else { sql };
+                Some((
+                    format!(
+                        "media.grandparent_id IN \
+                        (SELECT id FROM media WHERE kind = 'series' AND {inner})"
+                    ),
+                    false,
+                ))
+            }
+        });
+        if let Some(fragment) = fragment {
+            qb.push(format!(" AND {fragment}"));
+        }
+    } else if let Some(fragment) = build_filter_rules_fragment(filter, user_id, false) {
         qb.push(format!(
             " AND grandparent_id IN \
         (SELECT id FROM media WHERE kind = 'series' AND {fragment})"
         ));
     }
-    if filter.requires_upcoming() {
-        qb.push(" AND ");
-        qb.push(upcoming_episode_sql(user_id));
-    }
 }
 
-/// Filter rules with every `Upcoming` rule removed.
-fn without_upcoming_rules(
-    filter: &remux_sdks::remux::CollectionFilter,
-) -> remux_sdks::remux::CollectionFilter {
-    remux_sdks::remux::CollectionFilter {
-        match_mode: filter
-            .match_mode
-            .clone(),
-        groups: filter
-            .groups
-            .iter()
-            .map(|g| remux_sdks::remux::FilterGroup {
-                match_mode: g
-                    .match_mode
-                    .clone(),
-                rules: g
-                    .rules
-                    .iter()
-                    .filter(|r| {
-                        !matches!(r, remux_sdks::remux::FilterRule::Upcoming { .. })
-                    })
-                    .cloned()
-                    .collect(),
-            })
-            .collect(),
+/// Whether a query's `Upcoming` rules are about the episode row itself: the
+/// parent is an Episode collection, or (without a parent) only episodes are
+/// asked for.
+fn upcoming_is_episode_level(
+    parent: Option<&Media>,
+    kinds: Option<&[MediaKind]>,
+) -> bool {
+    match parent {
+        Some(p) => p.collection_media_kind == Some(CollectionMediaKind::Episode),
+        None => kinds.is_some_and(|k| {
+            !k.is_empty()
+                && k.iter()
+                    .all(|k| *k == MediaKind::Episode)
+        }),
     }
 }
 
 /// SQL for "this episode is the first not-yet-aired one of a series `user_id`
-/// has started". Without a user nothing has been started, so it matches
+/// has started and is caught up on (every aired episode watched)". Without a user nothing has been started, so it matches
 /// nothing.
 fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     let Some(id) = user_id else {
@@ -12995,6 +13033,110 @@ mod tests {
                 .await
                 .is_empty()
         );
+
+        // `Upcoming = false` is everything else, the rolled-over E4 included.
+        let not_upcoming =
+            upcoming_titles(db, vec![MediaKind::Episode], Some(uid), false).await;
+        assert_eq!(not_upcoming.len(), 7);
+        assert!(!not_upcoming.contains(&"Started E3".to_string()));
+
+        // An OR keeps its other branch instead of dropping the Upcoming rule.
+        use remux_sdks::remux::{
+            CollectionFilter, FilterGroup, FilterMatchMode, FilterRule, SetOp,
+        };
+        let either = CollectionFilter {
+            match_mode: FilterMatchMode::All,
+            groups: vec![FilterGroup {
+                match_mode: FilterMatchMode::Any,
+                rules: vec![
+                    FilterRule::Upcoming { value: true },
+                    FilterRule::Genre {
+                        op: SetOp::Is,
+                        values: vec!["Nothing".into()],
+                    },
+                ],
+            }],
+        };
+        let titles: Vec<String> = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Episode]),
+                filter_rules: Some(either),
+                user_id: Some(uid),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|m| m.title)
+        .collect();
+        assert_eq!(titles, vec!["Started E3"]);
+    }
+
+    /// For a Series collection `Upcoming` is about the series, so its
+    /// episodes are those of unreleased series, not upcoming episodes.
+    #[tokio::test]
+    async fn upcoming_in_a_series_collection_keeps_series_semantics() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut series = media_row(MediaKind::Series, "Coming show", "tt9993001");
+        series.released_at = Some(days_from_now(30));
+        series
+            .save(db)
+            .await
+            .unwrap();
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new("tt99930011".to_string()).unwrap()),
+            ..Default::default()
+        };
+        let mut ep = Media {
+            id: uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Episode,
+                external_ids: ext.clone(),
+                season: Some(1),
+                episode: Some(1),
+            }),
+            title: "Pilot".into(),
+            kind: MediaKind::Episode,
+            external_ids: ext,
+            grandparent_id: Some(series.id),
+            parent_idx: Some(1),
+            idx: Some(1),
+            released_at: Some(days_from_now(30)),
+            ..Default::default()
+        };
+        ep.save(db)
+            .await
+            .unwrap();
+
+        let collection = Media {
+            kind: MediaKind::Collection,
+            collection_media_kind: Some(CollectionMediaKind::Series),
+            ..Default::default()
+        };
+        let titles = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Episode]),
+                filter_rules: Some(upcoming_filter(true)),
+                parent: Some(collection),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|m| m.title)
+        .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["Pilot"]);
     }
 
     /// Only an `Upcoming` rule that has to hold lifts the unreleased filter;
@@ -13034,9 +13176,28 @@ mod tests {
 
         let and_with_other_rule = CollectionFilter {
             match_mode: FilterMatchMode::All,
-            groups: vec![group(FilterMatchMode::All, vec![genre, upcoming])],
+            groups: vec![group(FilterMatchMode::All, vec![genre, upcoming.clone()])],
         };
         assert!(and_with_other_rule.requires_upcoming());
+
+        // A lone Upcoming rule still requires it, whatever the match modes.
+        let lone_in_any = CollectionFilter {
+            match_mode: FilterMatchMode::Any,
+            groups: vec![group(FilterMatchMode::Any, vec![upcoming.clone()])],
+        };
+        assert!(lone_in_any.requires_upcoming());
+
+        // An OR needs every branch to require it; empty groups are ignored.
+        let all_branches = CollectionFilter {
+            match_mode: FilterMatchMode::Any,
+            groups: vec![
+                group(FilterMatchMode::All, vec![upcoming.clone()]),
+                group(FilterMatchMode::Any, vec![upcoming.clone()]),
+                group(FilterMatchMode::All, vec![]),
+            ],
+        };
+        assert!(all_branches.requires_upcoming());
+        assert!(!CollectionFilter::default().requires_upcoming());
     }
 
     /// An upcoming collection lists items the server-wide "hide unreleased"

@@ -842,7 +842,8 @@ pub async fn get_items(
                         media.title = format!(
                             "{} · {}",
                             media.title,
-                            countdown_label((date - now).num_days())
+                            // Calendar days: a time-of-day must not turn tomorrow into today.
+                            countdown_label((date.date() - now.date()).num_days())
                         );
                     }
                 }
