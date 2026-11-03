@@ -1410,7 +1410,18 @@ pub(crate) fn append_external_subtitles(
                 "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}",
                 source_id = source.id,
             ));
-            if wants_default && i == 0 {
+            // Local sidecars outside the preferred languages stay listed but
+            // are never promoted to the default.
+            let in_preferred_language = sub_langs
+                .iter()
+                .any(|lang| {
+                    crate::subtitle_selection::normalized_language(Some(lang))
+                        == crate::subtitle_selection::normalized_language(
+                            sub.lang
+                                .as_deref(),
+                        )
+                });
+            if wants_default && i == 0 && in_preferred_language {
                 stream.is_default = Some(true);
                 source.default_subtitle_stream_index = Some(next_idx);
             }
@@ -1743,6 +1754,68 @@ mod tests {
     #[test]
     fn external_subtitles_follow_sidecars() {
         assert_eq!(next_external_subtitle_index([0, 1], [2]), 3);
+    }
+
+    /// A local sidecar outside the preferred languages is listed, but it must
+    /// not become the default subtitle.
+    #[test]
+    fn local_sidecar_in_another_language_is_not_made_the_default() {
+        let local = |name: &str, lang: &str| crate::addons::SubtitleInfo {
+            id: name.into(),
+            url: Some(crate::stream::StreamDescriptor::Local(
+                format!("/library/{name}").into(),
+            )),
+            lang: Some(lang.into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some(name.into()),
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let source = || api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Video),
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                provider_info: Some(serde_json::json!({"filename": "Movie.mkv"})),
+            }),
+            ..Default::default()
+        };
+
+        let mut sources = vec![source()];
+        append_external_subtitles(
+            &mut sources,
+            &[local("Movie.fr.srt", "fre")],
+            &["en".into()],
+            None,
+            Uuid::new_v4(),
+            "key",
+            DEDUP_ON,
+        );
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2,
+            "still listed"
+        );
+        assert_eq!(sources[0].default_subtitle_stream_index, None);
+
+        let mut sources = vec![source()];
+        append_external_subtitles(
+            &mut sources,
+            &[local("Movie.fr.srt", "fre"), local("Movie.en.srt", "eng")],
+            &["en".into()],
+            None,
+            Uuid::new_v4(),
+            "key",
+            DEDUP_ON,
+        );
+        assert_eq!(sources[0].default_subtitle_stream_index, Some(1));
     }
 
     #[test]
