@@ -4053,8 +4053,7 @@ pub enum FilterRule {
         values: Vec<String>,
     },
     /// Matches items that are coming but not out yet, with a meaning per kind:
-    /// a movie or series with a known release date that hasn't been reached
-    /// (a movie only in cinemas, without a digital date, counts); an episode
+    /// a movie or series whose release date is still to come; an episode
     /// that is the first not-yet-aired one of a series the requesting user has
     /// started. Items without a release date never match.
     Upcoming {

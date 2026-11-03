@@ -9502,18 +9502,15 @@ fn filter_rule_to_sql(
         }
         R::Upcoming { value } => {
             let episode = upcoming_episode_sql(user_id);
-            // Complement of `push_release_date_filter` for items with a date:
-            // a movie with no digital date stays upcoming for a year after
-            // its theatrical release.
+            // Only dates still to come. A movie that is out in cinemas but has
+            // no digital date is not upcoming: most library movies have no
+            // digital date, so counting those would list every recent release.
+            // IFNULL: an item with no date is not upcoming, rather than unknown,
+            // so `Upcoming = false` still lists it.
             let sql = format!(
-                "((media.kind = 'movie' AND (\
-                    (media.digital_released_at IS NOT NULL AND media.digital_released_at > datetime('now')) \
-                    OR (media.digital_released_at IS NULL AND media.released_at IS NOT NULL \
-                        AND media.released_at > date('now', '-1 year')))) \
-                  OR (media.kind = 'series' AND (\
-                    (media.digital_released_at IS NOT NULL AND media.digital_released_at > datetime('now')) \
-                    OR (media.digital_released_at IS NULL AND media.released_at > datetime('now')))) \
-                  OR {episode})"
+                "IFNULL(((media.kind IN ('movie', 'series') \
+                    AND COALESCE(media.digital_released_at, media.released_at) > datetime('now')) \
+                  OR {episode}), 0)"
             );
             Some((sql, !*value))
         }
@@ -12808,10 +12805,9 @@ mod tests {
         chrono::Utc::now().naive_utc() + chrono::Duration::days(days)
     }
 
-    /// Movies and series are upcoming by their release date: a future digital
-    /// or premiere date, or a recent theatrical-only movie. Undated items are
-    /// neither upcoming nor released, so `Upcoming = false` doesn't claim them
-    /// as a plain "not upcoming" either way.
+    /// Movies and series are upcoming by a release date still to come. A movie
+    /// already in cinemas without a digital date is not upcoming, and undated
+    /// items never are.
     #[tokio::test]
     async fn upcoming_filter_matches_unreleased_movies_and_series() {
         let (_server, guard) = crate::integration_test::new_test_server()
@@ -12844,6 +12840,13 @@ mod tests {
                 None,
             ),
             (MediaKind::Movie, "Old film", "tt9991004", Some(-900), None),
+            (
+                MediaKind::Movie,
+                "Cinemas next month",
+                "tt9991008",
+                Some(30),
+                None,
+            ),
             (MediaKind::Movie, "No date", "tt9991005", None, None),
             (
                 MediaKind::Series,
@@ -12872,10 +12875,16 @@ mod tests {
         let kinds = vec![MediaKind::Movie, MediaKind::Series];
         assert_eq!(
             upcoming_titles(db, kinds.clone(), None, true).await,
-            vec!["Digital next month", "In cinemas only", "Premieres soon"],
+            vec!["Cinemas next month", "Digital next month", "Premieres soon"],
         );
         let not_upcoming = upcoming_titles(db, kinds, None, false).await;
-        for title in ["Digital last year", "Old film", "Long running", "No date"] {
+        for title in [
+            "Digital last year",
+            "Old film",
+            "In cinemas only",
+            "Long running",
+            "No date",
+        ] {
             assert!(not_upcoming.contains(&title.to_string()), "{title}");
         }
         assert!(!not_upcoming.contains(&"Digital next month".to_string()));
