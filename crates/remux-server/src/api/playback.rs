@@ -496,7 +496,7 @@ async fn items_playbackinfo_inner(
     let (probed, subtitle_media) = tokio::join!(
         async {
             service
-                .load(media)
+                .load(media, ranking, ranking_prefs)
                 .await?;
             service
                 .probe_candidates(ranking, ranking_prefs)

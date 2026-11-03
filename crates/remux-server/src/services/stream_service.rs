@@ -107,6 +107,8 @@ pub(crate) struct StreamService {
     show_ungrouped: bool,
     stream_filter: Option<StreamFilter>,
     user_id: Option<Uuid>,
+    /// Rank group representatives too (`stream_groups_auto_sort`); read in `load`.
+    sort_groups: bool,
     // Populated by resolve()
     group: Option<(Uuid, String, Vec<db::Media>)>,
     stream: Option<db::Media>,
@@ -165,7 +167,8 @@ impl StreamService {
     /// dropping embedded subtitles it cannot deliver and resolving its default
     /// streams — the same steps PlaybackInfo applies before its transcode
     /// decision. Leaves the order alone with sorting disabled, fewer than two
-    /// sources, or stream-group representatives (admin-authored order).
+    /// sources, or stream-group representatives (admin-authored order) unless
+    /// `include_groups`.
     ///
     /// Returns the subtitle-extraction flags it looked up (empty when it did
     /// not rank), so callers need not query them again.
@@ -175,15 +178,31 @@ impl StreamService {
         ranking: SourceRankingContext<'_>,
         prefs: DefaultStreamPrefs<'_>,
     ) -> std::collections::HashMap<Uuid, bool> {
+        Self::rank_media_sources_with_groups(db, sources, ranking, prefs, false).await
+    }
+
+    /// [`Self::rank_media_sources`], optionally ranking stream-group
+    /// representatives too (`include_groups`, the `stream_groups_auto_sort`
+    /// setting). Each representative is its group's best stream, so it is
+    /// judged like any other source. Without it a list holding a group keeps
+    /// the admin-set group order.
+    pub async fn rank_media_sources_with_groups(
+        db: &sqlx::SqlitePool,
+        sources: &mut [db::Media],
+        ranking: SourceRankingContext<'_>,
+        prefs: DefaultStreamPrefs<'_>,
+        include_groups: bool,
+    ) -> std::collections::HashMap<Uuid, bool> {
         if ranking.mode == remux_sdks::remux::SortMediaSourcesMode::Disabled
             || sources.len() < 2
-            || sources
-                .iter()
-                .any(|source| {
-                    source
-                        .group_id
-                        .is_some()
-                })
+            || (!include_groups
+                && sources
+                    .iter()
+                    .any(|source| {
+                        source
+                            .group_id
+                            .is_some()
+                    }))
         {
             return Default::default();
         }
@@ -226,6 +245,7 @@ impl StreamService {
             show_ungrouped: cfg.show_ungrouped,
             stream_filter: cfg.stream_filter,
             user_id: cfg.user_id,
+            sort_groups: false,
             group: None,
             stream: None,
             streams: vec![],
@@ -236,7 +256,20 @@ impl StreamService {
     ///
     /// Populates `self.group`, `self.stream`, and `self.streams`. Must be called
     /// before any of the selection or ID-mapping methods.
-    pub async fn load(&mut self, media: db::Media) -> anyhow::Result<()> {
+    pub async fn load(
+        &mut self,
+        media: db::Media,
+        ranking: Option<SourceRankingContext<'_>>,
+        prefs: DefaultStreamPrefs<'_>,
+    ) -> anyhow::Result<()> {
+        self.sort_groups = db::Settings::get_config_or_default(
+            &self
+                .ctx
+                .db,
+        )
+        .await
+        .stream_groups_auto_sort
+        .unwrap_or(false);
         if media.kind == db::MediaKind::StreamGroup {
             if let Ok(Some(mut parent)) = db::Media::get_by_id(
                 &self
@@ -252,7 +285,7 @@ impl StreamService {
                     .await
                     .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
             }
-            self.resolve_stream_group(media)
+            self.resolve_stream_group(media, ranking, prefs)
                 .await?;
             return Ok(());
         }
@@ -299,6 +332,11 @@ impl StreamService {
             db_streams
         };
 
+        // Best first before grouping, so a group's representative (its first
+        // match) is its best stream for this device.
+        let raw = self
+            .ranked(raw, ranking, prefs)
+            .await;
         let streams = db::StreamGroup::filter_sources(
             &self
                 .ctx
@@ -456,7 +494,34 @@ impl StreamService {
         }
     }
 
-    async fn resolve_stream_group(&mut self, media: db::Media) -> anyhow::Result<()> {
+    /// `streams` best first by the media source sort mode, or as given when
+    /// there is no ranking context (or sorting is disabled).
+    async fn ranked(
+        &self,
+        mut streams: Vec<db::Media>,
+        ranking: Option<SourceRankingContext<'_>>,
+        prefs: DefaultStreamPrefs<'_>,
+    ) -> Vec<db::Media> {
+        if let Some(ranking) = ranking {
+            Self::rank_media_sources(
+                &self
+                    .ctx
+                    .db,
+                &mut streams,
+                ranking,
+                prefs,
+            )
+            .await;
+        }
+        streams
+    }
+
+    async fn resolve_stream_group(
+        &mut self,
+        media: db::Media,
+        ranking: Option<SourceRankingContext<'_>>,
+        prefs: DefaultStreamPrefs<'_>,
+    ) -> anyhow::Result<()> {
         let gid = media.id;
         let gtitle = media
             .title
@@ -481,7 +546,14 @@ impl StreamService {
         )
         .await
         .unwrap_or_default();
-        candidates.extend(cascade);
+        // The group's own streams best first, then those of the groups after it.
+        let mut candidates = self
+            .ranked(candidates, ranking, prefs)
+            .await;
+        candidates.extend(
+            self.ranked(cascade, ranking, prefs)
+                .await,
+        );
         self.stream = Some(candidates[0].clone());
         self.group = Some((gid, gtitle, candidates));
         Ok(())
@@ -622,13 +694,14 @@ impl StreamService {
     ) -> (Vec<db::Media>, std::collections::HashMap<Uuid, bool>) {
         let extraction = match ranking {
             Some(ranking) => {
-                Self::rank_media_sources(
+                Self::rank_media_sources_with_groups(
                     &self
                         .ctx
                         .db,
                     &mut candidates,
                     ranking,
                     prefs,
+                    self.sort_groups,
                 )
                 .await
             }
@@ -1451,6 +1524,76 @@ mod tests {
             2,
             "extraction flags are returned for reuse"
         );
+    }
+
+    /// Stream-group representatives keep the admin-set order unless group
+    /// sorting is on, which ranks them like any other source.
+    #[tokio::test]
+    async fn group_representatives_are_ranked_only_when_group_sorting_is_on() {
+        use crate::integration_test::{authenticated_server, insert_test_source};
+
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let mut with_pgs = insert_test_source(ctx).await;
+        with_pgs
+            .probe_data
+            .as_mut()
+            .unwrap()
+            .media_streams
+            .push(api::MediaStream {
+                codec: Some("pgssub".to_string()),
+                type_: Some(MediaStreamType::Subtitle),
+                index: 2,
+                language: Some("eng".to_string()),
+                ..Default::default()
+            });
+        let plain = insert_test_source(ctx).await;
+        with_pgs.group_id = Some(Uuid::new_v4());
+        let mut plain = plain;
+        plain.group_id = Some(Uuid::new_v4());
+
+        let user_cfg = api::UserConfiguration {
+            subtitle_language_preference: Some("eng".to_string()),
+            subtitle_mode: remux_sdks::remux::SubtitleMode::Always,
+            ..Default::default()
+        };
+        let prefs = DefaultStreamPrefs {
+            user_cfg: &user_cfg,
+            server_metadata_language: None,
+            original_language: None,
+            requested_audio: None,
+            requested_subtitle: None,
+            remembered_audio: None,
+            remembered_subtitle: None,
+        };
+        let ranking = SourceRankingContext {
+            mode: remux_sdks::remux::SortMediaSourcesMode::Compatibility,
+            device_profile: None,
+            is_4k_capable: true,
+            subtitle_mode: remux_sdks::remux::EmbeddedSubtitleHandling::Burn,
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+        let ids = |sources: &[db::Media]| {
+            sources
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+
+        let mut off = vec![with_pgs.clone(), plain.clone()];
+        StreamService::rank_media_sources_with_groups(
+            &ctx.db, &mut off, ranking, prefs, false,
+        )
+        .await;
+        assert_eq!(ids(&off), vec![with_pgs.id, plain.id], "admin order kept");
+
+        let mut on = vec![with_pgs.clone(), plain.clone()];
+        StreamService::rank_media_sources_with_groups(
+            &ctx.db, &mut on, ranking, prefs, true,
+        )
+        .await;
+        assert_eq!(ids(&on), vec![plain.id, with_pgs.id], "ranked like sources");
     }
 
     /// Candidates come out in the order PlaybackInfo lists them, and the
