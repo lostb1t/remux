@@ -990,6 +990,7 @@ fn collection_item_filter(
             let kinds = match &collection.collection_media_kind {
                 Some(db::CollectionMediaKind::Movie) => vec![db::MediaKind::Movie],
                 Some(db::CollectionMediaKind::Series) => vec![db::MediaKind::Series],
+                Some(db::CollectionMediaKind::Episode) => vec![db::MediaKind::Episode],
                 Some(db::CollectionMediaKind::Mixed) => {
                     vec![db::MediaKind::Movie, db::MediaKind::Series]
                 }

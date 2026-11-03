@@ -4052,6 +4052,14 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
+    /// Matches items that are coming but not out yet, with a meaning per kind:
+    /// a movie or series with a known release date that hasn't been reached
+    /// (a movie only in cinemas, without a digital date, counts); an episode
+    /// that is the first not-yet-aired one of a series the requesting user has
+    /// started. Items without a release date never match.
+    Upcoming {
+        value: bool,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -4061,6 +4069,25 @@ pub enum FilterMatchMode {
     #[default]
     All,
     Any,
+}
+
+impl CollectionFilter {
+    /// Whether every item this filter returns is upcoming, which makes the
+    /// server-wide "hide unreleased" setting pointless for it. Only an
+    /// `Upcoming` rule that must hold counts: inside an OR it could be
+    /// satisfied by another rule, and the hiding has to stay for those.
+    pub fn requires_upcoming(&self) -> bool {
+        self.match_mode == FilterMatchMode::All
+            && self
+                .groups
+                .iter()
+                .any(|g| {
+                    g.match_mode == FilterMatchMode::All
+                        && g.rules
+                            .iter()
+                            .any(|r| matches!(r, FilterRule::Upcoming { value: true }))
+                })
+    }
 }
 
 /// A group of filter rules combined with their own AND/OR match mode.

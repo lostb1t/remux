@@ -433,6 +433,7 @@ pub fn CollectionForm(
             return match mk {
                 remux_sdks::remux::MediaKind::Movie => "movies".to_string(),
                 remux_sdks::remux::MediaKind::Series => "tvshows".to_string(),
+                remux_sdks::remux::MediaKind::Episode => "episodes".to_string(),
                 remux_sdks::remux::MediaKind::Mixed => "mixed".to_string(),
                 remux_sdks::remux::MediaKind::Track => "music".to_string(),
                 remux_sdks::remux::MediaKind::Collection => "collections".to_string(),
@@ -1131,6 +1132,7 @@ pub fn CollectionForm(
                     },
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
+                    option { value: "episodes",    "Episodes"    }
                     option { value: "mixed",       "Mixed (Movies & Shows)" }
                     option { value: "music",       "Music"       }
                     option { value: "collections", "Collections" }
