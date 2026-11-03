@@ -9150,27 +9150,30 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     let Some(id) = user_id else {
         return "0".to_string();
     };
+    // Cheapest, most selective checks first: SQLite evaluates ANDs in order, and
+    // scanning every state row of the user per candidate episode took ~30s on a
+    // large library. `started` walks the series' own episodes instead.
     format!(
         "(media.kind = 'episode' \
           AND COALESCE(media.digital_released_at, media.released_at) > datetime('now') \
-          AND EXISTS (SELECT 1 FROM user_media_state ums \
-            CROSS JOIN media seen ON seen.id = ums.media_id \
-            WHERE ums.user_id = X'{0}' \
-              AND (ums.play_count > 0 OR ums.playback_position > 0) \
-              AND seen.kind = 'episode' \
-              AND seen.grandparent_id = media.grandparent_id) \
-          AND NOT EXISTS (SELECT 1 FROM media aired \
-            WHERE aired.kind = 'episode' \
-              AND aired.grandparent_id = media.grandparent_id \
-              AND COALESCE(aired.digital_released_at, aired.released_at) <= datetime('now') \
-              AND NOT EXISTS (SELECT 1 FROM user_media_state w \
-                WHERE w.user_id = X'{0}' AND w.media_id = aired.id AND w.play_count > 0)) \
           AND NOT EXISTS (SELECT 1 FROM media earlier \
             WHERE earlier.kind = 'episode' \
               AND earlier.grandparent_id = media.grandparent_id \
               AND COALESCE(earlier.digital_released_at, earlier.released_at) > datetime('now') \
               AND (earlier.parent_idx < media.parent_idx \
-                OR (earlier.parent_idx = media.parent_idx AND earlier.idx < media.idx))))",
+                OR (earlier.parent_idx = media.parent_idx AND earlier.idx < media.idx))) \
+          AND EXISTS (SELECT 1 FROM media seen \
+            WHERE seen.kind = 'episode' \
+              AND seen.grandparent_id = media.grandparent_id \
+              AND EXISTS (SELECT 1 FROM user_media_state ums \
+                WHERE ums.user_id = X'{0}' AND ums.media_id = seen.id \
+                  AND (ums.play_count > 0 OR ums.playback_position > 0))) \
+          AND NOT EXISTS (SELECT 1 FROM media aired \
+            WHERE aired.kind = 'episode' \
+              AND aired.grandparent_id = media.grandparent_id \
+              AND COALESCE(aired.digital_released_at, aired.released_at) <= datetime('now') \
+              AND NOT EXISTS (SELECT 1 FROM user_media_state w \
+                WHERE w.user_id = X'{0}' AND w.media_id = aired.id AND w.play_count > 0)))",
         id.simple()
     )
 }
