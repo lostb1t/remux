@@ -308,9 +308,25 @@ impl Endpoint for MetaEndpoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaResponse {
     /// Absent (or null) when the addon does not know the id: Cinemeta answers
-    /// 200 `{}` for those.
-    #[serde(default)]
+    /// 200 `{}` for those, and others (AniSync) 200 `{"meta":{}}`.
+    #[serde(default, deserialize_with = "deserialize_meta")]
     pub meta: Option<Meta>,
+}
+
+/// A `meta` that is null or an empty object means "unknown id", not a
+/// malformed response.
+fn deserialize_meta<'de, D>(deserializer: D) -> Result<Option<Meta>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(None),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 /// `/subtitles/{type}/{id}/{extraArgs}.json`. The optional `filename` and
@@ -1124,6 +1140,22 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unknown_ids_are_an_empty_meta_not_an_error() {
+        for body in [r#"{}"#, r#"{"meta":null}"#, r#"{"meta":{}}"#] {
+            let response: MetaResponse = serde_json::from_str(body).unwrap();
+            assert!(
+                response
+                    .meta
+                    .is_none(),
+                "{body}"
+            );
+        }
+        assert!(
+            serde_json::from_str::<MetaResponse>(r#"{"meta":{"id":"x"}}"#).is_err()
+        );
+    }
+
     use super::{
         Endpoint, MediaType, Meta, MetaResponse, ReleaseInfo, Stream,
         SubtitlesEndpoint, parse_duration_lossy,
