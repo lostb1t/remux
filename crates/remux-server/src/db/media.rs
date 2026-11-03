@@ -9182,7 +9182,7 @@ fn upcoming_is_episode_level(
 }
 
 /// SQL for "this episode is the first not-yet-aired one of a series `user_id`
-/// has started and is caught up on (every aired episode watched)". Without a user nothing has been started, so it matches
+/// has started". Once an episode has aired it leaves the list (it is next up). Without a user nothing has been started, so it matches
 /// nothing.
 fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     let Some(id) = user_id else {
@@ -9205,13 +9205,7 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
               AND seen.grandparent_id = media.grandparent_id \
               AND EXISTS (SELECT 1 FROM user_media_state ums \
                 WHERE ums.user_id = X'{0}' AND ums.media_id = seen.id \
-                  AND (ums.play_count > 0 OR ums.playback_position > 0))) \
-          AND NOT EXISTS (SELECT 1 FROM media aired \
-            WHERE aired.kind = 'episode' \
-              AND aired.grandparent_id = media.grandparent_id \
-              AND COALESCE(aired.digital_released_at, aired.released_at) <= datetime('now') \
-              AND NOT EXISTS (SELECT 1 FROM user_media_state w \
-                WHERE w.user_id = X'{0}' AND w.media_id = aired.id AND w.play_count > 0)))",
+                  AND (ums.play_count > 0 OR ums.playback_position > 0))))",
         id.simple()
     )
 }
@@ -12998,19 +12992,6 @@ mod tests {
             .unwrap()
             .2;
         insert_user_state(db, uid, first, 1, false).await;
-
-        // E2 has aired and is unwatched: the user is not caught up yet.
-        assert!(
-            upcoming_titles(db, vec![MediaKind::Episode], Some(uid), true)
-                .await
-                .is_empty()
-        );
-        let second = episodes
-            .iter()
-            .find(|(started, n, _)| *started && *n == 2)
-            .unwrap()
-            .2;
-        insert_user_state(db, uid, second, 1, false).await;
 
         assert_eq!(
             upcoming_titles(db, vec![MediaKind::Episode], Some(uid), true).await,
