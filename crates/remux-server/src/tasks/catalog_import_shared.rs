@@ -20,17 +20,15 @@ use crate::{AppContext, addons::ResolvedCatalog, db};
 /// automatically for this target, see `setup_logging`) to see per-catalog
 /// timing broken down by phase.
 #[tracing::instrument(level = "debug", target = "remux_server::metadata_refresh", skip_all, fields(catalog = media_id))]
-pub async fn import_catalog_items<S>(
+pub async fn import_catalog_items(
     ctx: &AppContext,
     _catalog: &ResolvedCatalog,
     media_id: &str,
     max: usize,
-    stream: S,
+    stream: crate::addons::CatalogStream,
     progress: &ProgressReporter,
-) -> Result<(HashMap<String, usize>, HashMap<String, usize>)>
-where
-    S: futures::Stream<Item = db::Media> + Unpin,
-{
+) -> Result<(HashMap<String, usize>, HashMap<String, usize>)> {
+    let completeness = stream.completeness();
     // Stop pulling from the underlying paginated stream once we have enough items.
     // Without this, the stream fetches ALL pages until empty even when max=50.
     //
@@ -482,7 +480,17 @@ where
     }
 
     // Remove items that were in this catalog before but weren't returned this run.
-    if collection_id != Uuid::nil() && !imported_ids.is_empty() {
+    //
+    // Skipped when the source stopped on an unexpected failure: what was
+    // imported is then only part of the catalog, and removing everything not
+    // in it would drop members that merely sat on the pages that failed.
+    if !completeness.is_complete() {
+        warn!(
+            catalog = media_id,
+            imported = imported_ids.len(),
+            "catalog import was incomplete, keeping existing catalog members"
+        );
+    } else if collection_id != Uuid::nil() && !imported_ids.is_empty() {
         let existing_members: Vec<Uuid> = sqlx::query_scalar(
             "SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'",
         )
@@ -759,7 +767,7 @@ mod tests {
                 &catalog,
                 &catalog.catalog_id,
                 10,
-                futures::stream::iter([stub]),
+                crate::addons::CatalogStream::complete(futures::stream::iter([stub])),
                 &progress,
             )
             .await
@@ -803,7 +811,7 @@ mod tests {
             &catalog,
             &catalog.catalog_id,
             10,
-            futures::stream::iter([fresh]),
+            crate::addons::CatalogStream::complete(futures::stream::iter([fresh])),
             &progress,
         )
         .await
@@ -811,6 +819,116 @@ mod tests {
         assert_eq!(new_counts.get(&db::MediaKind::Series.to_string()), Some(&1));
         let members: Vec<Uuid> = sqlx::query_scalar("SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'").bind(collection_id).fetch_all(&ctx.db).await.unwrap();
         assert_eq!(members, vec![fresh_id]);
+    }
+
+    /// A catalog stream that stopped on an unexpected failure only holds part of
+    /// the catalog, so the members it didn't return must be kept. A complete
+    /// stream that legitimately shrank still removes them.
+    #[tokio::test]
+    async fn incomplete_catalog_import_keeps_unseen_members() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon_id = Uuid::new_v4();
+        let collection_id = Uuid::new_v5(&addon_id, b"test");
+        let catalog = ResolvedCatalog {
+            provider_catalog_id: "test".into(),
+            catalog_id: format!("addon:{addon_id}:test"),
+            collection_id,
+            name: "Test".into(),
+            media_kind: Some(db::MediaKind::Series),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "Test".into(),
+            ..Default::default()
+        }
+        .save(&ctx.db)
+        .await
+        .unwrap();
+        let series = |n: i64| db::Media {
+            id: Uuid::new_v4(),
+            kind: db::MediaKind::Series,
+            title: format!("Series {n}"),
+            external_ids: db::ExternalIds {
+                tmdb: Some(n),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let progress = ProgressReporter::new(Default::default());
+        let members = || async {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT right_media_id FROM media_relations WHERE left_media_id = ? AND role = 'catalog'",
+            )
+            .bind(collection_id)
+            .fetch_all(&ctx.db)
+            .await
+            .unwrap()
+            .len()
+        };
+        let import = |items: Vec<db::Media>, incomplete: bool| {
+            let completeness = crate::addons::CatalogCompleteness::default();
+            if incomplete {
+                completeness.mark_incomplete();
+            }
+            let stream = crate::addons::CatalogStream::new(
+                Box::pin(futures::stream::iter(items)),
+                completeness,
+            );
+            let (catalog, progress) = (&catalog, &progress);
+            async move {
+                import_catalog_items(
+                    ctx,
+                    catalog,
+                    &catalog.catalog_id,
+                    100,
+                    stream,
+                    progress,
+                )
+                .await
+                .unwrap();
+            }
+        };
+
+        import(
+            (1..=4)
+                .map(series)
+                .collect(),
+            false,
+        )
+        .await;
+        assert_eq!(members().await, 4);
+
+        // Only the first page came back before a failure.
+        import(
+            (1..=2)
+                .map(series)
+                .collect(),
+            true,
+        )
+        .await;
+        assert_eq!(
+            members().await,
+            4,
+            "an incomplete run must not remove members"
+        );
+
+        // A later complete run that really is smaller does remove them.
+        import(
+            (1..=2)
+                .map(series)
+                .collect(),
+            false,
+        )
+        .await;
+        assert_eq!(members().await, 2);
     }
 
     /// Local music emits an artist, its albums and their tracks in one chunk.
@@ -896,7 +1014,7 @@ mod tests {
             &catalog,
             &catalog.catalog_id,
             100,
-            futures::stream::iter(items),
+            crate::addons::CatalogStream::complete(futures::stream::iter(items)),
             &progress,
         )
         .await

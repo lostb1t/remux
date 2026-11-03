@@ -16,9 +16,9 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
-    MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, SubtitleInfo,
-    SubtitleQuery, TreeAddon, addon,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, CatalogStream,
+    MediaKind, MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon,
+    SubtitleInfo, SubtitleQuery, TreeAddon, addon,
 };
 use crate::{
     AppContext, common, db, sdks,
@@ -349,6 +349,17 @@ impl CatalogAddon for StremioAddon {
         ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
+        Ok(self
+            .catalog_stream_tracked(ctx, local_id)
+            .await?
+            .map(CatalogStream::into_boxed))
+    }
+
+    async fn catalog_stream_tracked(
+        &self,
+        ctx: &AppContext,
+        local_id: &str,
+    ) -> Result<Option<CatalogStream>> {
         let svc = self.service()?;
 
         let (kind, id) = local_id
@@ -382,7 +393,7 @@ impl CatalogAddon for StremioAddon {
             .min(MAX_CATALOG_PAGE_CONCURRENCY as i64)
             as usize;
 
-        let stream = svc
+        let (stream, completeness) = svc
             .get_catalog_stream(
                 kind.to_string(),
                 id.to_string(),
@@ -434,7 +445,7 @@ impl CatalogAddon for StremioAddon {
             .buffer_unordered(10)
             .flat_map(futures::stream::iter);
 
-        Ok(Some(Box::pin(stream)))
+        Ok(Some(CatalogStream::new(Box::pin(stream), completeness)))
     }
 }
 

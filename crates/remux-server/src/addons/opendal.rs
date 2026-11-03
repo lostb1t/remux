@@ -5721,7 +5721,7 @@ mod tests {
             &catalog,
             &catalog.catalog_id,
             100,
-            stream,
+            crate::addons::CatalogStream::from(stream),
             &noop_progress(),
         )
         .await
