@@ -2203,6 +2203,10 @@ pub struct TranscodingProfile {
         serialize_with = "ser_csv"
     )]
     pub audio_codec: Option<Vec<AudioCodec>>,
+    /// Channel cap for audio the server re-encodes for this profile. Clients
+    /// send it as a string (`"6"`).
+    #[serde(deserialize_with = "deserialize_option_number_from_string")]
+    pub max_audio_channels: Option<i64>,
     #[serde(rename = "Type")]
     pub type_: Option<DlnaProfileType>,
 }
@@ -5223,6 +5227,10 @@ pub struct HlsVideoQuery {
     pub subtitle_stream_index: Option<i32>,
     pub subtitle_method: Option<SubtitleDeliveryMethod>,
     pub max_streaming_bitrate: Option<i64>,
+    /// Channel cap for re-encoded audio the client asked for at PlaybackInfo
+    /// time, carried on the transcoding URL like Jellyfin does.
+    pub transcoding_max_audio_channels: Option<i64>,
+    pub max_audio_channels: Option<i64>,
     pub transcode_reasons: Option<String>,
     /// Cumulative runtime ticks up to the start of this segment.
     #[serde(alias = "runtimeTicks")]

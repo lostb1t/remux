@@ -66,6 +66,11 @@ pub struct TranscodeSession {
     pub video_codec: String,
     pub audio_codec: String,
     pub audio_stream_index: Option<i32>,
+    /// Channel count the audio is re-encoded to (None when the audio is copied).
+    pub audio_channels: Option<u32>,
+    /// Stream index of the audio track the session actually maps, which is the
+    /// source's default when the client named none.
+    pub source_audio_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
     pub segment_length: u32,
@@ -152,6 +157,8 @@ impl TranscodeSession {
             video_codec,
             audio_codec,
             audio_stream_index,
+            audio_channels: None,
+            source_audio_index: None,
             subtitle_stream_index,
             burn_subtitle,
             segment_length,
