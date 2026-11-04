@@ -369,6 +369,56 @@ fn buffered_secs_from_segments(
     })
 }
 
+/// Keyframe placement for re-encoded HLS video, so every segment is as long
+/// as the playlist declares. `-hls_time` can only cut on a keyframe, and an
+/// encoder left to itself uses its own GOP (x264: 250 frames, ~10.4 s at
+/// 24 fps). The playlist is synthetic and fixed-length, and a seek or restart
+/// maps segment N to `N * segment_length`, so longer segments desync the
+/// client's timeline from the content.
+///
+/// Mirrors Jellyfin's `GetHlsVideoKeyFrameArguments`: forced keyframes, plus a
+/// GOP of one segment where the encoder ignores forced keyframes (QSV, NVENC,
+/// AMF, RKMPP, SVT-AV1) or to keep scene-cut keyframes from shifting the next
+/// forced one out of its segment.
+fn hls_keyframe_args(
+    codec: &str,
+    segment_length: u32,
+    frame_rate: Option<f32>,
+) -> Vec<String> {
+    let force_keyframes = || {
+        vec![
+            "-force_key_frames:0".to_string(),
+            format!("expr:gte(t,n_forced*{segment_length})"),
+        ]
+    };
+    let gop = || {
+        let frames = frame_rate
+            .filter(|fps| *fps > 0.0)
+            .map(|fps| (segment_length as f32 * fps).ceil() as u32)
+            .filter(|frames| *frames > 0)?;
+        Some(vec![
+            "-g:v:0".to_string(),
+            frames.to_string(),
+            "-keyint_min:v:0".to_string(),
+            frames.to_string(),
+        ])
+    };
+    let gop_only = ["_qsv", "_nvenc", "_amf", "_rkmpp"]
+        .iter()
+        .any(|sfx| codec.ends_with(sfx))
+        || codec == "libsvtav1";
+    if gop_only {
+        return gop().unwrap_or_default();
+    }
+    let mut args = force_keyframes();
+    match codec {
+        "libx264" => args.extend(["-sc_threshold:v:0".to_string(), "0".to_string()]),
+        c if c.ends_with("_vaapi") || c == "libx265" => {}
+        _ => args.extend(gop().unwrap_or_default()),
+    }
+    args
+}
+
 /// Parameters for starting a new HLS transcode job.
 pub struct TranscodeParams {
     pub input_url: String,
@@ -402,6 +452,9 @@ pub struct TranscodeParams {
     /// Copied HEVC goes into MPEG-TS segments instead of fMP4; see
     /// `SegmentContainer::for_codecs`.
     pub hevc_in_ts: bool,
+    /// Frame rate of the source video, used to size the GOP of encoders that
+    /// ignore forced keyframes; see `hls_keyframe_args`.
+    pub source_frame_rate: Option<f32>,
     pub accelerator: Box<dyn Accelerator>,
     /// HDR type of the source video, used to decide whether tone-mapping or
     /// SDR colour-space override is needed.
@@ -455,6 +508,7 @@ impl Default for TranscodeParams {
             source_audio_codec: None,
             hevc_copy_tag: None,
             hevc_in_ts: false,
+            source_frame_rate: None,
             accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
@@ -1129,6 +1183,13 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         }
     } else if let Some(bitrate) = params.video_bitrate {
         args.extend(["-b:v".into(), bitrate.to_string()]);
+    }
+    if ffmpeg_video_codec != "copy" {
+        args.extend(hls_keyframe_args(
+            &ffmpeg_video_codec,
+            params.segment_length,
+            params.source_frame_rate,
+        ));
     }
 
     // Audio codec
@@ -2732,6 +2793,62 @@ mod tests {
         assert_eq!(arg_after(&args, "-allowed_extensions"), Some("ALL"));
         assert_eq!(arg_after(&args, "-allowed_segment_extensions"), Some("ALL"));
         assert_eq!(arg_after(&args, "-extension_picky"), Some("0"));
+    }
+
+    fn encode_args(video_codec: &str, frame_rate: Option<f32>) -> Vec<String> {
+        hls_keyframe_args(video_codec, 6, frame_rate)
+    }
+
+    #[test]
+    fn software_encodes_cut_a_keyframe_at_every_segment() {
+        let args = encode_args("libx264", Some(23.976));
+        assert_eq!(
+            arg_after(&args, "-force_key_frames:0"),
+            Some("expr:gte(t,n_forced*6)")
+        );
+        assert_eq!(arg_after(&args, "-sc_threshold:v:0"), Some("0"));
+        assert_eq!(arg_after(&args, "-g:v:0"), None);
+    }
+
+    #[test]
+    fn encoders_that_ignore_forced_keyframes_get_a_segment_long_gop() {
+        for codec in ["h264_qsv", "h264_nvenc", "h264_amf", "hevc_rkmpp"] {
+            let args = encode_args(codec, Some(23.976));
+            assert_eq!(arg_after(&args, "-g:v:0"), Some("144"), "{codec}");
+            assert_eq!(arg_after(&args, "-keyint_min:v:0"), Some("144"), "{codec}");
+            assert_eq!(arg_after(&args, "-force_key_frames:0"), None, "{codec}");
+        }
+        // Without a frame rate there is no GOP to compute.
+        assert!(encode_args("h264_qsv", None).is_empty());
+    }
+
+    #[test]
+    fn vaapi_forces_keyframes_without_a_gop_and_others_get_both() {
+        let vaapi = encode_args("h264_vaapi", Some(25.0));
+        assert!(arg_after(&vaapi, "-force_key_frames:0").is_some());
+        assert_eq!(arg_after(&vaapi, "-g:v:0"), None);
+        let other = encode_args("h264_videotoolbox", Some(25.0));
+        assert!(arg_after(&other, "-force_key_frames:0").is_some());
+        assert_eq!(arg_after(&other, "-g:v:0"), Some("150"));
+    }
+
+    #[test]
+    fn hls_encode_gets_keyframe_args_and_copy_does_not() {
+        let encode = build_hls_args(&TranscodeParams {
+            video_codec: "h264".into(),
+            source_frame_rate: Some(24.0),
+            ..default_hls(PathBuf::from("/tmp/test_keyframes"))
+        });
+        assert_eq!(
+            arg_after(&encode, "-force_key_frames:0"),
+            Some("expr:gte(t,n_forced*6)")
+        );
+        let copy = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_frame_rate: Some(24.0),
+            ..default_hls(PathBuf::from("/tmp/test_keyframes"))
+        });
+        assert_eq!(arg_after(&copy, "-force_key_frames:0"), None);
     }
 
     #[test]

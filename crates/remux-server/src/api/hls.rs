@@ -685,6 +685,7 @@ async fn create_hls_session(
                 .hevc_copy_tag
                 .clone(),
             hevc_in_ts,
+            source_frame_rate,
             accelerator: hw_accel::from_encoding_opts(&encoding_opts),
             source_video_range_type,
             enable_tonemapping: encoding_opts
@@ -1743,6 +1744,10 @@ async fn hls_segment_inner(
                             .read()
                             .await
                             .hevc_in_ts,
+                        source_frame_rate: session
+                            .read()
+                            .await
+                            .source_frame_rate,
                         accelerator: hw_accel::from_encoding_opts(&encoding_opts),
                         source_video_range_type: session
                             .read()
