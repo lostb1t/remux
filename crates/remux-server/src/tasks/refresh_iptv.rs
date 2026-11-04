@@ -57,6 +57,9 @@ impl Task for RefreshIptvTask {
         let mut domain_collection_ids: HashSet<Uuid> = HashSet::new();
         let import_start = Utc::now().naive_utc();
 
+        // Channels are pruned by `updated_at`, so a catalog whose import
+        // stopped early would lose the channels on the pages it never reached.
+        let mut all_catalogs_complete = true;
         let catalog_progress = progress.scaled(0.0, 50.0);
         for (addon_idx, (runtime, available)) in iptv_runtimes
             .iter()
@@ -122,10 +125,12 @@ impl Task for RefreshIptvTask {
                     Ok(s) => s,
                     Err(e) => {
                         error!(catalog = %full_id, error = %e, "failed to open catalog stream");
+                        all_catalogs_complete = false;
                         continue;
                     }
                 };
 
+                let completeness = stream.completeness();
                 let (counts, new_counts) = import_catalog_items(
                     &ctx,
                     cat_info,
@@ -135,6 +140,7 @@ impl Task for RefreshIptvTask {
                     &addon_progress,
                 )
                 .await?;
+                all_catalogs_complete &= completeness.is_complete();
 
                 info!(catalog = %full_id, total = ?counts, new = ?new_counts, "IPTV catalog import complete");
             }
@@ -146,7 +152,13 @@ impl Task for RefreshIptvTask {
             &domain_collection_ids,
         )
         .await;
-        prune_stale_iptv_channels(&ctx.db, import_start).await;
+        if all_catalogs_complete {
+            prune_stale_iptv_channels(&ctx.db, import_start).await;
+        } else {
+            warn!(
+                "an IPTV catalog import was incomplete, keeping channels that were not refreshed"
+            );
+        }
 
         let epg_progress = progress.scaled(50.0, 100.0);
         let client = reqwest::Client::new();
@@ -214,7 +226,7 @@ impl Task for RefreshIptvTask {
                 continue;
             }
 
-            debug!(addon = %addon_id, channels = channel_refs.len(), url = %epg_url, "fetching EPG");
+            debug!(addon = %addon_id, channels = channel_refs.len(), url = %crate::playback::probe::redact_url(&epg_url), "fetching EPG");
             match crate::iptv::stream_import_epg(&client, &epg_url, &channel_refs, &ctx)
                 .await
             {

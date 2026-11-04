@@ -777,6 +777,10 @@ pub struct ServerConfiguration {
     /// Show streams that don't match any group individually (default true).
     #[default(Some(true))]
     pub stream_groups_show_ungrouped: Option<bool>,
+    /// Rank the stream groups themselves with the media source sort mode, by
+    /// the best stream in each. Off keeps the order set on the groups page.
+    #[default(Some(false))]
+    pub stream_groups_auto_sort: Option<bool>,
     /// Enable submitting probe data to remuxdb (default true).
     #[default(Some(true))]
     pub remuxdb_enabled: Option<bool>,
@@ -797,6 +801,11 @@ pub struct ServerConfiguration {
     /// Disabled by default to retain Jellyfin's standard resume-only behaviour.
     #[default(Some(false))]
     pub enable_next_up_in_continue_watching: Option<bool>,
+    /// Ignore each user's saved `OrderedViews` and serve the admin's default
+    /// library order (dashboard drag-reorder) from `/userviews` and the user's
+    /// configuration. Saved user orders are kept and apply again once this is off.
+    #[default(Some(false))]
+    pub force_default_view_order: Option<bool>,
     /// How to order MediaSources for the requesting device when a DeviceProfile
     /// is available: `Disabled` (leave probe/addon order alone), `Best`
     /// (default — Direct Play and Direct Stream count equally, so quality
@@ -1274,6 +1283,9 @@ pub struct PublicSystemInfo {
     pub remux_version: String,
     pub operating_system: String,
     pub remux_started_at: Option<String>,
+    /// Mirrors `ForceDefaultViewOrder`: when true, users cannot reorder their
+    /// home screen libraries, so clients can disable their reorder controls.
+    pub remux_force_default_view_order: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1289,6 +1301,8 @@ pub struct SystemInfo {
     pub product_name: String,
     pub version: String,
     pub remux_version: String,
+    /// See `PublicSystemInfo::remux_force_default_view_order`.
+    pub remux_force_default_view_order: bool,
     #[default(false)]
     pub has_pending_restart: bool,
     #[default(false)]
@@ -2173,7 +2187,7 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
     #[serde(deserialize_with = "deser_opt_video_container")]
@@ -2197,7 +2211,7 @@ pub struct TranscodingProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
     pub name: Option<String>,
@@ -2212,7 +2226,7 @@ pub struct DeviceProfile {
     pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
     #[serde(
@@ -2234,7 +2248,7 @@ pub struct DirectPlayProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
     #[serde(rename = "Type")]
@@ -2243,7 +2257,7 @@ pub struct ContainerProfile {
     pub conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
     #[serde(rename = "Type")]
@@ -2255,7 +2269,7 @@ pub struct CodecProfile {
     pub apply_conditions: Vec<ProfileCondition>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
     pub format: Option<String>,
@@ -2359,7 +2373,7 @@ impl<'de> Deserialize<'de> for ProfileConditionProperty {
     }
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
     pub condition: Option<ProfileConditionType>,
@@ -4046,6 +4060,13 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
+    /// Matches items that are coming but not out yet, with a meaning per kind:
+    /// a movie or series whose release date is still to come; an episode
+    /// that is the first not-yet-aired one of a series the requesting user has
+    /// started. Items without a release date never match.
+    Upcoming {
+        value: bool,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -4055,6 +4076,50 @@ pub enum FilterMatchMode {
     #[default]
     All,
     Any,
+}
+
+impl CollectionFilter {
+    /// Whether every item this filter returns is upcoming, which makes the
+    /// server-wide "hide unreleased" setting pointless for it. An AND needs one
+    /// operand that requires `Upcoming`; an OR needs all of its (non-empty)
+    /// operands to, as any other branch could return released items.
+    pub fn requires_upcoming(&self) -> bool {
+        let mut groups = self
+            .groups
+            .iter()
+            .filter(|g| {
+                !g.rules
+                    .is_empty()
+            })
+            .map(FilterGroup::requires_upcoming);
+        match self.match_mode {
+            FilterMatchMode::All => groups.any(|r| r),
+            FilterMatchMode::Any => {
+                let mut seen = false;
+                groups.all(|r| {
+                    seen = true;
+                    r
+                }) && seen
+            }
+        }
+    }
+}
+
+impl FilterGroup {
+    fn requires_upcoming(&self) -> bool {
+        let is_upcoming =
+            |r: &FilterRule| matches!(r, FilterRule::Upcoming { value: true });
+        match self.match_mode {
+            FilterMatchMode::All => self
+                .rules
+                .iter()
+                .any(is_upcoming),
+            FilterMatchMode::Any => self
+                .rules
+                .iter()
+                .all(is_upcoming),
+        }
+    }
 }
 
 /// A group of filter rules combined with their own AND/OR match mode.
@@ -4500,6 +4565,12 @@ pub struct ClientCapabilitiesDto {
     pub supported_commands: Vec<String>,
     pub supports_media_control: bool,
     pub supports_persistent_identifier: bool,
+    #[serde(default)]
+    pub device_profile: Option<DeviceProfile>,
+    #[serde(default)]
+    pub app_store_url: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, default2::Default, Serialize, Deserialize)]
@@ -5658,6 +5729,89 @@ pub struct GetActivityLog {
     pub limit: Option<i64>,
     #[serde(rename = "searchTerm")]
     pub search_term: Option<String>,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum LogLevel {
+    #[default]
+    All,
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct LogsResult {
+    pub entries: Vec<LogEntry>,
+    pub has_more: bool,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GetLogs {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub level: LogLevel,
+    pub search: Option<String>,
+}
+
+impl Endpoint for GetLogs {
+    type Output = LogsResult;
+
+    fn path(&self) -> String {
+        "/remux/logs".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+#[cfg(test)]
+mod log_query_tests {
+    use super::{GetLogs, LogLevel};
+
+    #[test]
+    fn query_round_trips_typed_log_level_and_pagination() {
+        let query = GetLogs {
+            limit: Some(200),
+            offset: Some(200),
+            level: LogLevel::Warn,
+            search: None,
+        };
+        let encoded = serde_urlencoded::to_string(&query).unwrap();
+        assert_eq!(encoded, "limit=200&offset=200&level=warn");
+        let decoded: GetLogs = serde_urlencoded::from_str(&encoded).unwrap();
+        assert_eq!(decoded.limit, Some(200));
+        assert_eq!(decoded.offset, Some(200));
+        assert_eq!(decoded.level, LogLevel::Warn);
+        assert_eq!(decoded.search, None);
+    }
 }
 
 impl Endpoint for GetActivityLog {

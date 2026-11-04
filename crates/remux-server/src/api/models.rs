@@ -4,6 +4,23 @@ use crate::{common, db};
 use anyhow::Result;
 use chrono::Datelike;
 
+pub fn fields_include_relations(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| {
+        fields.contains(&ItemFields::People)
+            || fields.contains(&ItemFields::Genres)
+            || fields.contains(&ItemFields::Studios)
+            || fields.contains(&ItemFields::ProductionLocations)
+    })
+}
+
+pub fn fields_include_people(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| fields.contains(&ItemFields::People))
+}
+
+pub fn fields_include_tags(fields: Option<&[ItemFields]>) -> bool {
+    fields.is_some_and(|fields| fields.contains(&ItemFields::Tags))
+}
+
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     let next_idx = source
         .media_streams
@@ -182,7 +199,11 @@ pub fn db_media_kind_to_collection_type(
     match kind {
         db::CollectionMediaKind::Movie => Some(CollectionType::Movies),
         db::CollectionMediaKind::Series => Some(CollectionType::Tvshows),
-        db::CollectionMediaKind::Mixed => Some(CollectionType::Mixed),
+        // Jellyfin has no type for episodes; a tvshows library is expected to
+        // hold series, so clients get the neutral mixed type instead.
+        db::CollectionMediaKind::Episode | db::CollectionMediaKind::Mixed => {
+            Some(CollectionType::Mixed)
+        }
         db::CollectionMediaKind::Music => Some(CollectionType::Music),
         db::CollectionMediaKind::Collection => Some(CollectionType::Boxsets),
         db::CollectionMediaKind::Playlist => Some(CollectionType::Playlists),
@@ -339,6 +360,25 @@ fn community_rating(media: &db::Media) -> Option<f64> {
 }
 
 pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
+    db_media_to_item_inner(media, hide_sources, true)
+}
+
+pub fn db_media_to_item_for_list(
+    media: db::Media,
+    hide_sources: bool,
+    fields: Option<&[ItemFields]>,
+) -> BaseItemDto {
+    let include_sources = fields.is_some_and(|fields| {
+        fields.contains(&ItemFields::MediaSources) || fields.contains(&ItemFields::Path)
+    });
+    db_media_to_item_inner(media, hide_sources, include_sources)
+}
+
+fn db_media_to_item_inner(
+    media: db::Media,
+    hide_sources: bool,
+    include_sources: bool,
+) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
     let type_ = media
@@ -1081,48 +1121,53 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     }
     item.external_urls = external_urls;
 
-    // several dlients require at least one stream
+    // several dlients require at least one stream. `Stream` is here because
+    // Android TV refetches an item by MediaSource id when a version is picked
+    // and reads `MediaSources` off that response without a PlaybackInfo call.
     if !hide_sources
         && (media.kind == db::MediaKind::Movie
             || media.kind == db::MediaKind::Episode
-            || media.kind == db::MediaKind::Track)
+            || media.kind == db::MediaKind::Track
+            || media.kind == db::MediaKind::Stream)
     {
         item.can_download = Some(true);
-        item.media_sources = match media
-            .sources
-            .clone()
-        {
-            Some(sources) if sources.is_empty() => Some(stub_sources(&media)),
-            Some(sources) => {
-                let mut infos: Vec<MediaSourceInfo> = sources
-                    .into_iter()
-                    .map(MediaSourceInfo::from)
-                    .collect();
-                // Clients expect the first source's ID to equal the parent item's ID.
-                if !infos.is_empty() {
-                    infos[0].id = media.id;
-                    infos[0].e_tag = media.id;
-                }
-                Some(infos)
-            }
-            None => Some(stub_sources(&media)),
-        };
-        item.path = item
-            .media_sources
-            .as_ref()
-            .and_then(|s| s.first())
-            .and_then(|s| {
-                s.path
-                    .as_deref()
-            })
-            .map(|p| format!("{}.strm", p));
-        item.bitrate = item
-            .media_sources
-            .as_ref()
-            .and_then(|s| s.first())
-            .and_then(|s| s.bitrate);
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
+        }
+        if include_sources {
+            item.media_sources = match media
+                .sources
+                .clone()
+            {
+                Some(sources) if sources.is_empty() => Some(stub_sources(&media)),
+                Some(sources) => {
+                    let mut infos: Vec<MediaSourceInfo> = sources
+                        .into_iter()
+                        .map(MediaSourceInfo::from)
+                        .collect();
+                    // Clients expect the first source's ID to equal the parent item's ID.
+                    if !infos.is_empty() {
+                        infos[0].id = media.id;
+                        infos[0].e_tag = media.id;
+                    }
+                    Some(infos)
+                }
+                None => Some(stub_sources(&media)),
+            };
+            item.path = item
+                .media_sources
+                .as_ref()
+                .and_then(|s| s.first())
+                .and_then(|s| {
+                    s.path
+                        .as_deref()
+                })
+                .map(|p| format!("{}.strm", p));
+            item.bitrate = item
+                .media_sources
+                .as_ref()
+                .and_then(|s| s.first())
+                .and_then(|s| s.bitrate);
         }
     }
 
@@ -1153,33 +1198,35 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         item.can_download = Some(false);
         item.lock_data = Some(false);
         item.is_place_holder = Some(false);
-        // Channels use direct-play passthrough — no GStreamer probe needed.
-        item.media_sources = Some(vec![MediaSourceInfo {
-            id: media.id,
-            e_tag: media.id,
-            name: Some(
-                media
-                    .title
-                    .clone(),
-            ),
-            path: media
-                .stream_info
-                .as_ref()
-                .and_then(|si| {
-                    si.descriptor
-                        .as_http_url()
-                        .map(str::to_owned)
-                }),
-            protocol: MediaProtocol::Http,
-            is_remote: true,
-            is_infinite_stream: true,
-            supports_direct_play: true,
-            supports_direct_stream: true,
-            supports_transcoding: true,
-            type_: MediaSourceType::Placeholder,
-            video_type: VideoType::VideoFile,
-            ..Default::default()
-        }]);
+        if include_sources {
+            // Channels use direct-play passthrough — no GStreamer probe needed.
+            item.media_sources = Some(vec![MediaSourceInfo {
+                id: media.id,
+                e_tag: media.id,
+                name: Some(
+                    media
+                        .title
+                        .clone(),
+                ),
+                path: media
+                    .stream_info
+                    .as_ref()
+                    .and_then(|si| {
+                        si.descriptor
+                            .as_http_url()
+                            .map(str::to_owned)
+                    }),
+                protocol: MediaProtocol::Http,
+                is_remote: true,
+                is_infinite_stream: true,
+                supports_direct_play: true,
+                supports_direct_stream: true,
+                supports_transcoding: true,
+                type_: MediaSourceType::Placeholder,
+                video_type: VideoType::VideoFile,
+                ..Default::default()
+            }]);
+        }
     }
 
     if media.kind == db::MediaKind::Collection {
@@ -1306,5 +1353,50 @@ mod community_rating_tests {
     fn unvoted_episodes_have_no_rating() {
         let episode = media(db::MediaKind::Episode, 6.5, Some((0.0, 0)));
         assert_eq!(community_rating(&episode), None);
+    }
+}
+
+#[cfg(test)]
+mod stream_row_tests {
+    use super::*;
+
+    /// Android TV fetches `GET /Items/{mediaSourceId}` when a version is
+    /// picked and plays the source whose id equals the item's id. Without
+    /// `MediaSources` on that response the external player shows "No playable
+    /// items" and the built-in one has nothing to read.
+    #[test]
+    fn a_stream_row_carries_itself_as_its_only_media_source() {
+        let row = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Stream,
+            title: "1080p WEB-DL".into(),
+            ..Default::default()
+        };
+        let mut media = row.clone();
+        media.sources = Some(vec![row.clone()]);
+
+        let item = db_media_to_item(media, false);
+
+        let sources = item
+            .media_sources
+            .expect("a Stream row must carry MediaSources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, row.id);
+    }
+
+    #[test]
+    fn hidden_sources_stay_hidden_for_a_stream_row() {
+        let row = db::Media {
+            kind: db::MediaKind::Stream,
+            ..Default::default()
+        };
+        let mut media = row.clone();
+        media.sources = Some(vec![row]);
+
+        assert!(
+            db_media_to_item(media, true)
+                .media_sources
+                .is_none()
+        );
     }
 }

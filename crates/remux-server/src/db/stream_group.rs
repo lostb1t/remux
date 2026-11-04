@@ -638,6 +638,23 @@ impl StreamGroup {
         current_group_id: &Uuid,
         parent_id: &Uuid,
     ) -> Result<Vec<Media>> {
+        Ok(
+            Self::streams_per_group_after(db, current_group_id, parent_id)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        )
+    }
+
+    /// [`Self::streams_for_groups_after`] kept per group, in priority order,
+    /// so a caller can order the streams within each group without mixing
+    /// the groups.
+    pub async fn streams_per_group_after(
+        db: &SqlitePool,
+        current_group_id: &Uuid,
+        parent_id: &Uuid,
+    ) -> Result<Vec<Vec<Media>>> {
         let groups = Self::list(db).await?;
         let mut parent = Media::get_by_id(db, parent_id)
             .await?
@@ -659,7 +676,7 @@ impl StreamGroup {
                 }
                 continue;
             }
-            result.extend(Self::candidates_for_group(group, &raw));
+            result.push(Self::candidates_for_group(group, &raw));
         }
         Ok(result)
     }
@@ -698,17 +715,18 @@ pub(crate) fn detect_stream_quality(
         vec![raw]
     };
 
-    let best = candidates
+    let (best_raw, best) = candidates
         .iter()
-        .map(|s| hunch::hunch(s))
-        .max_by_key(|p| {
+        .map(|s| (*s, hunch::hunch(s)))
+        .max_by_key(|(_, p)| {
             (p.screen_size()
                 .is_some() as u8)
                 + (p.source()
                     .is_some() as u8)
         })?;
 
-    let resolution = min_screen_size(&best)
+    let resolution = normalized_screen_size(&best, best_raw)
+        .as_deref()
         .and_then(StreamResolution::from_hunch)
         .unwrap_or(StreamResolution::Other);
     let source = {
@@ -783,6 +801,62 @@ impl PreProbeQualityExt for Media {
             resolution_weight(&resolution),
             source_quality_weight(&quality),
         )
+    }
+}
+
+/// The release's resolution as a standard tag (`1080p`), tolerant of cropped
+/// encodes. A wide film is stored with its black bars cut off, so a 1080p
+/// release is routinely 1920x800 or 1918x798 and hunch reports a tag like
+/// `804p` (it only ever derives one from a `WxH` in the name). The width is
+/// what names the class, so that `WxH` is read instead. Standard tags are
+/// returned as hunch gave them.
+pub(crate) fn normalized_screen_size(
+    parsed: &hunch::HunchResult,
+    raw: &str,
+) -> Option<String> {
+    let tag = min_screen_size(parsed);
+    if let Some(tag) = tag.filter(|t| StreamResolution::from_hunch(t).is_some()) {
+        return Some(tag.to_owned());
+    }
+    if let Some(width) = dimensions_in(raw).map(|(width, _)| width)
+        && let Some(class) = resolution_class_for_width(width)
+    {
+        return Some(class.to_owned());
+    }
+    tag.map(str::to_owned)
+}
+
+/// A `1920x800`-style size in a release name, as (width, height).
+fn dimensions_in(raw: &str) -> Option<(u32, u32)> {
+    static SIZE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(\d{3,4})\s?[x\u{00d7}]\s?(\d{3,4})\b").unwrap()
+    });
+    SIZE.captures_iter(raw)
+        .filter_map(|c| {
+            let width = c[1]
+                .parse::<u32>()
+                .ok()?;
+            let height = c[2]
+                .parse::<u32>()
+                .ok()?;
+            ((320..=8192).contains(&width)
+                && (200..=4320).contains(&height)
+                && width > height)
+                .then_some((width, height))
+        })
+        .next()
+}
+
+/// Resolution class a frame width belongs to. Heights vary with the aspect
+/// ratio and cropping, widths do not.
+fn resolution_class_for_width(width: u32) -> Option<&'static str> {
+    match width {
+        3700.. => Some("2160p"),
+        1850.. => Some("1080p"),
+        1200.. => Some("720p"),
+        700.. => Some("480p"),
+        480.. => Some("360p"),
+        _ => None,
     }
 }
 
@@ -903,6 +977,53 @@ fn fallback_source(raw: &str) -> StreamQuality {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cropped_encodes_are_classed_by_their_width() {
+        let resolution = |name: &str| {
+            detect_stream_quality(&info(name))
+                .expect("parseable")
+                .0
+        };
+        // Real names from a library: anamorphic crops of 1080p.
+        assert_eq!(
+            resolution(
+                "[Kawaiika-Raws] The Animatrix 09 [BDRip 1920x804 HEVC FLAC].mkv"
+            ),
+            StreamResolution::R1080p
+        );
+        assert_eq!(
+            resolution(
+                "[AnimeRG] The Animatrix - 09 - Matriculated (BD 1918x798 x264 AAC 6 CH) [Dual Audio].mkv"
+            ),
+            StreamResolution::R1080p
+        );
+        assert_eq!(
+            resolution("[Netaro] The Animatrix 01 [BDRip 1920x798 HEVC FLAC].mkv"),
+            StreamResolution::R1080p
+        );
+        // Other classes by width, and a standard tag is left alone.
+        assert_eq!(
+            resolution("Film.2020.3840x1600.BluRay.x265.mkv"),
+            StreamResolution::R2160p
+        );
+        assert_eq!(
+            resolution("Film.2020.1280x536.WEB-DL.x264.mkv"),
+            StreamResolution::R720p
+        );
+        assert_eq!(
+            resolution("Film.2020.1080p.BluRay.x264.mkv"),
+            StreamResolution::R1080p
+        );
+    }
+
+    #[test]
+    fn dimensions_in_ignores_things_that_are_not_a_frame_size() {
+        assert_eq!(dimensions_in("Show 2x10 720p"), None);
+        assert_eq!(dimensions_in("x264 1080p"), None);
+        assert_eq!(dimensions_in("Film [1920x1080]"), Some((1920, 1080)));
+        assert_eq!(dimensions_in("Film 1920 x 800"), Some((1920, 800)));
+    }
+
     use super::*;
     use crate::stream::StreamDescriptor;
 

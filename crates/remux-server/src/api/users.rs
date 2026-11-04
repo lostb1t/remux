@@ -223,11 +223,11 @@ fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result
     Ok(())
 }
 
-fn build_auth_response(
-    data_dir: &std::path::Path,
+async fn build_auth_response(
+    state: &AppState,
     device: auth::Device,
     user: db::User,
-) -> Json<api::AuthenticationResult> {
+) -> Result<Json<api::AuthenticationResult>> {
     let session_info = api::SessionInfoDto {
         id: Some(
             device
@@ -272,11 +272,21 @@ fn build_auth_response(
     };
 
     let now = chrono::Utc::now();
-    let mut user_dto = api::db_user_to_dto(data_dir, user);
+    let mut user_dto = user_dto(
+        &state
+            .ctx
+            .db,
+        &state
+            .ctx
+            .config
+            .data_dir,
+        user,
+    )
+    .await?;
     user_dto.last_login_date = Some(now);
     user_dto.last_activity_date = Some(now);
 
-    Json(api::AuthenticationResult {
+    Ok(Json(api::AuthenticationResult {
         access_token: Some(
             device
                 .access_token
@@ -285,7 +295,7 @@ fn build_auth_response(
         server_id: server_id(),
         session_info: Some(session_info),
         user: Some(user_dto),
-    })
+    }))
 }
 
 #[post("/users/authenticatebyname")]
@@ -316,14 +326,7 @@ pub async fn users_authenticatebyname(
         )
         .await?;
 
-    Ok(build_auth_response(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        device,
-        user,
-    ))
+    build_auth_response(&state, device, user).await
 }
 
 #[post("/users/authenticatewithquickconnect")]
@@ -398,14 +401,7 @@ pub async fn authenticate_with_quickconnect(
         .store
         .delete(format!("qc:code:{}", entry.code));
 
-    Ok(build_auth_response(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        device,
-        user,
-    ))
+    build_auth_response(&state, device, user).await
 }
 
 #[get("/users")]
@@ -413,7 +409,7 @@ pub async fn users(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let items = db::User::get_by_filter(
+    let users = db::User::get_by_filter(
         &state
             .ctx
             .db,
@@ -422,23 +418,21 @@ pub async fn users(
         },
     )
     .await?
-    .records
-    .into_iter()
-    .map(|x| {
-        let mut item = api::db_user_to_dto(
+    .records;
+
+    Ok(Json(
+        user_dtos(
+            &state
+                .ctx
+                .db,
             &state
                 .ctx
                 .config
                 .data_dir,
-            x,
-        );
-        //item.type_ = api::MediaType::CollectionFolder;
-        //item.collection_type = Some(api::CollectionType::Movies);
-        item
-    })
-    .collect::<Vec<api::UserDto>>();
-
-    Ok(Json(items))
+            users,
+        )
+        .await?,
+    ))
 }
 
 #[get("/users/me")]
@@ -446,13 +440,19 @@ pub async fn users_me(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::db_user_to_dto(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        session.user,
-    ))
+    Ok(Json(
+        user_dto(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config
+                .data_dir,
+            session.user,
+        )
+        .await?,
+    )
     .into_response())
 }
 
@@ -1102,13 +1102,19 @@ pub async fn create_user(
         .emit(Event::UserUpdated(UserUpdatedInfo { user_id: user.id }));
     Ok((
         StatusCode::OK,
-        Json(api::db_user_to_dto(
-            &state
-                .ctx
-                .config
-                .data_dir,
-            user,
-        )),
+        Json(
+            user_dto(
+                &state
+                    .ctx
+                    .db,
+                &state
+                    .ctx
+                    .config
+                    .data_dir,
+                user,
+            )
+            .await?,
+        ),
     )
         .into_response())
 }
@@ -1293,7 +1299,23 @@ pub async fn update_user(
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context_bad_request("Invalid username")?;
     user.username = username.into_inner();
-    if let Some(config) = payload.configuration {
+    if let Some(mut config) = payload.configuration {
+        if force_default_view_order(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        {
+            config.ordered_views = user
+                .configuration
+                .as_ref()
+                .map(|c| {
+                    c.ordered_views
+                        .clone()
+                })
+                .unwrap_or_default();
+        }
         user.configuration = Some(sqlx::types::Json(config));
     }
     user.save(
@@ -1327,13 +1349,19 @@ pub async fn users_get_by_id(
             .user
             .id
     {
-        return Ok(Json(api::db_user_to_dto(
-            &state
-                .ctx
-                .config
-                .data_dir,
-            session.user,
-        ))
+        return Ok(Json(
+            user_dto(
+                &state
+                    .ctx
+                    .db,
+                &state
+                    .ctx
+                    .config
+                    .data_dir,
+                session.user,
+            )
+            .await?,
+        )
         .into_response());
     }
     if !session
@@ -1352,13 +1380,19 @@ pub async fn users_get_by_id(
     .ok_or_else(|| {
         anyhow::anyhow!("User not found").context_not_found("user not found")
     })?;
-    Ok(Json(api::db_user_to_dto(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        user,
-    ))
+    Ok(Json(
+        user_dto(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config
+                .data_dir,
+            user,
+        )
+        .await?,
+    )
     .into_response())
 }
 
@@ -1487,6 +1521,81 @@ async fn default_userviews(
     Ok((libraries, has_channels))
 }
 
+async fn force_default_view_order(db: &sqlx::SqlitePool) -> bool {
+    db::Settings::get_config_or_default(db)
+        .await
+        .force_default_view_order
+        .unwrap_or(false)
+}
+
+/// User DTOs whose `Configuration.OrderedViews` matches what `/userviews`
+/// returns: with `ForceDefaultViewOrder` on, the saved override is replaced
+/// (in the response only) by the admin's default order, so clients that sort
+/// locally by it agree with the server. Ids use the same simple (no-dash)
+/// form as `/userviews` items. The order is computed per user, since smart
+/// collections and empty-collection pruning depend on the user.
+pub(crate) async fn user_dtos(
+    db: &sqlx::SqlitePool,
+    data_dir: &std::path::Path,
+    users: Vec<db::User>,
+) -> Result<Vec<api::UserDto>> {
+    let force = force_default_view_order(db).await;
+    let mut dtos = Vec::with_capacity(users.len());
+    for user in users {
+        let order = if force {
+            let excluded: Vec<Uuid> = user
+                .configuration
+                .as_ref()
+                .map(|c| {
+                    c.my_media_excludes
+                        .iter()
+                        .filter_map(|s| Uuid::parse_str(s).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (libraries, _) = default_userviews(
+                db,
+                user.id,
+                user.policy
+                    .as_deref(),
+                (!excluded.is_empty()).then_some(excluded.as_slice()),
+            )
+            .await?;
+            Some(
+                libraries
+                    .into_iter()
+                    .map(|m| {
+                        m.id.simple()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        let mut dto = api::db_user_to_dto(data_dir, user);
+        if let (Some(order), Some(cfg)) = (
+            order,
+            dto.configuration
+                .as_mut(),
+        ) {
+            cfg.ordered_views = order;
+        }
+        dtos.push(dto);
+    }
+    Ok(dtos)
+}
+
+pub(crate) async fn user_dto(
+    db: &sqlx::SqlitePool,
+    data_dir: &std::path::Path,
+    user: db::User,
+) -> Result<api::UserDto> {
+    Ok(user_dtos(db, data_dir, vec![user])
+        .await?
+        .remove(0))
+}
+
 /// If `payload.ordered_views` (once parsed) is exactly the default order
 /// `target_id` would currently get with no override — see
 /// `default_userviews` — clear it to empty instead of persisting it
@@ -1509,6 +1618,19 @@ async fn normalize_ordered_views(
     target_id: Uuid,
     payload: &mut api::UserConfiguration,
 ) -> Result<()> {
+    // While the default order is forced, clients echo that forced order back
+    // when saving unrelated preferences. Keep the stored personal order so it
+    // is still there once forcing is turned off.
+    if force_default_view_order(db).await {
+        payload.ordered_views = db::User::get_by_id(db, &target_id)
+            .await?
+            .and_then(|u| u.configuration)
+            .map(|c| {
+                c.0.ordered_views
+            })
+            .unwrap_or_default();
+        return Ok(());
+    }
     if payload
         .ordered_views
         .is_empty()
@@ -1608,7 +1730,13 @@ pub async fn userviews(
 
     // Stable-sort by OrderedViews: configured IDs come first in their saved
     // order; any remaining views follow in their original DB order.
-    if let Some(cfg) = config {
+    let force_default_order = force_default_view_order(
+        &state
+            .ctx
+            .db,
+    )
+    .await;
+    if let Some(cfg) = config.filter(|_| !force_default_order) {
         if !cfg
             .ordered_views
             .is_empty()
@@ -1821,12 +1949,11 @@ async fn resume_items(
             .take(limit as usize)
             .collect();
     }
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items,
-        total_record_count: total,
-        start_index: start,
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": super::items::serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": total,
+        "StartIndex": start,
+    })))
 }
 
 #[get("/users/{user_id}/items/resume")]
@@ -4946,6 +5073,166 @@ mod e2e_tests {
             pos_second < pos_first,
             "OrderedViews ordering not respected"
         );
+    }
+
+    /// With `ForceDefaultViewOrder` on, a user's saved `OrderedViews` is ignored by
+    /// `/userviews` and replaced in the user DTO by the same default order; the
+    /// stored override is untouched and applies again once the setting is off.
+    #[tokio::test]
+    async fn force_default_view_order_ignores_saved_user_order() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let first = insert_promoted_collection(&ctx.0, "First").await;
+        let second = insert_promoted_collection(&ctx.0, "Second").await;
+        let user_id = get_user_id(&server, &auth).await;
+
+        async fn view_ids(server: &axum_test::TestServer, auth: &str) -> Vec<Uuid> {
+            server
+                .get("/userviews")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(auth).unwrap(),
+                )
+                .await
+                .json::<serde_json::Value>()["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| {
+                    v["Id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                })
+                .collect()
+        }
+
+        let default_ids = view_ids(&server, &auth).await;
+        // Save the reverse of the default so the override is observable.
+        let mut reversed = default_ids.clone();
+        reversed.reverse();
+        assert_ne!(reversed, default_ids);
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": reversed
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(view_ids(&server, &auth).await, reversed);
+
+        let mut cfg = db::Settings::get_config_or_default(
+            &ctx.0
+                .db,
+        )
+        .await;
+        cfg.force_default_view_order = Some(true);
+        db::Settings::set_config(
+            &ctx.0
+                .db,
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(view_ids(&server, &auth).await, default_ids);
+        let default_strings: Vec<String> = default_ids
+            .iter()
+            .map(|id| {
+                id.simple()
+                    .to_string()
+            })
+            .collect();
+        let me = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json::<serde_json::Value>();
+        let reported: Vec<String> = me["Configuration"]["OrderedViews"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        // Compare the serialized strings, not parsed UUIDs: clients match on text.
+        assert_eq!(reported, default_strings);
+        let listed = server
+            .get("/users")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json::<serde_json::Value>();
+        let listed_order: Vec<String> = listed[0]["Configuration"]["OrderedViews"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert_eq!(listed_order, default_strings);
+        assert!(
+            reported.contains(
+                &first
+                    .id
+                    .simple()
+                    .to_string()
+            ) && reported.contains(
+                &second
+                    .id
+                    .simple()
+                    .to_string()
+            )
+        );
+
+        // Reading the forced config and saving it back after an unrelated edit
+        // must not overwrite the stored personal order.
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "PlayDefaultAudioTrack": false,
+                "SubtitleMode": "Default",
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true,
+                "OrderedViews": reported
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+
+        cfg.force_default_view_order = Some(false);
+        db::Settings::set_config(
+            &ctx.0
+                .db,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view_ids(&server, &auth).await, reversed);
     }
 
     /// Saving `OrderedViews` that exactly restates the current default order

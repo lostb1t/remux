@@ -277,7 +277,6 @@ pub async fn create_addon(
             )
         })
         .context_bad_request("Unknown addon kind")?;
-
     let addon_id = Uuid::new_v4();
     let normalized_config = preset
         .normalize_cfg(

@@ -1,3 +1,29 @@
+# [0.39.0](https://github.com/lostb1t/remux/compare/v0.38.2...v0.39.0) (2026-11-01)
+
+
+### Bug Fixes
+
+* keep secrets out of server logs ([18a0314](https://github.com/lostb1t/remux/commit/18a031442f2401eff6436735ba2280d2cae5869c))
+* keep trying peer ports after rqbit 9 update ([d0b984b](https://github.com/lostb1t/remux/commit/d0b984b18a69c0912d905b7eec66b5c5f66fd130))
+* let iOS seek and play music from Remux ([#655](https://github.com/lostb1t/remux/issues/655)) ([0e05e57](https://github.com/lostb1t/remux/commit/0e05e57ba61de8cc38ffb5c458010d01b974379c))
+* play live TV in the browser instead of handing it the raw TS stream ([#650](https://github.com/lostb1t/remux/issues/650)) ([689aa19](https://github.com/lostb1t/remux/commit/689aa199dcf0b0be7d3e298b0cb8321dafc36025))
+* send browser user agent for IPTV requests ([1306db4](https://github.com/lostb1t/remux/commit/1306db4619e7f39661cefcb28842f8cd4b73e29d))
+
+
+### Features
+
+* add an Eclipse music addon and fix playing its files ([#656](https://github.com/lostb1t/remux/issues/656)) ([73bfd7d](https://github.com/lostb1t/remux/commit/73bfd7dd8dad6b71218f23eebae1c72a88ae7c37))
+* add dashboard server logs viewer ([#652](https://github.com/lostb1t/remux/issues/652)) ([c69b68c](https://github.com/lostb1t/remux/commit/c69b68c298e544589bff0c03dd069b3df6e64bf3))
+* add Remux Web as a second web client with a default-client setting ([7425cf8](https://github.com/lostb1t/remux/commit/7425cf8dbfd8fe92e283a09cdd5cea7a5e42aa74))
+* add watchlist and ignore marks with /Items filters ([e046433](https://github.com/lostb1t/remux/commit/e04643305389dbda7d32c646d305f367cf8ecf4b))
+* save device profiles from session capabilities ([5920911](https://github.com/lostb1t/remux/commit/592091161a650dc8e48cefda0b7d78aba69dcbde))
+
+
+### Performance Improvements
+
+* respect item fields in list responses ([#651](https://github.com/lostb1t/remux/issues/651)) ([51c9a82](https://github.com/lostb1t/remux/commit/51c9a8244191be71edc53419157efc9436019fb2))
+* start the played rollup from the user's play state ([#642](https://github.com/lostb1t/remux/issues/642)) ([3d5bcc1](https://github.com/lostb1t/remux/commit/3d5bcc1c4b117842751dcebf6c823f1052c698e3)), closes [#26](https://github.com/lostb1t/remux/issues/26)
+
 ## [0.38.2](https://github.com/lostb1t/remux/compare/v0.38.1...v0.38.2) (2026-10-24)
 
 

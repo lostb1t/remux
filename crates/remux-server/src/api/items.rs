@@ -32,6 +32,27 @@ use super::{mock_items, stub_json};
 pub struct ItemsQueryResult {
     pub items: Vec<api::BaseItemDto>,
     pub total_count: i64,
+    fields: Option<Vec<api::ItemFields>>,
+}
+
+impl ItemsQueryResult {
+    pub fn serialized_items(&self) -> Vec<serde_json::Value> {
+        serialize_item_list(
+            &self.items,
+            self.fields
+                .as_deref(),
+        )
+    }
+}
+
+pub fn serialize_item_list(
+    items: &[api::BaseItemDto],
+    fields: Option<&[api::ItemFields]>,
+) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|item| item_to_list_value(item, fields))
+        .collect()
 }
 
 fn apply_permissions(item: &mut api::BaseItemDto, user: &db::User) {
@@ -64,6 +85,7 @@ pub struct ItemsQueryResultBuilder {
     hide_sources: bool,
     /// Per-client override for CollectionType::Mixed. None = leave as Mixed.
     mixed_collection_type: Option<api::CollectionType>,
+    fields: Option<Vec<api::ItemFields>>,
 }
 
 impl ItemsQueryResultBuilder {
@@ -79,6 +101,7 @@ impl ItemsQueryResultBuilder {
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
+            fields: None,
         }
     }
 
@@ -94,6 +117,7 @@ impl ItemsQueryResultBuilder {
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
+            fields: None,
         }
     }
 
@@ -123,12 +147,21 @@ impl ItemsQueryResultBuilder {
         self
     }
 
+    pub fn with_fields(mut self, fields: Option<Vec<api::ItemFields>>) -> Self {
+        self.fields = fields;
+        self
+    }
+
     pub fn build(self) -> ItemsQueryResult {
+        let fields = self
+            .fields
+            .as_deref();
         let mut items: Vec<api::BaseItemDto> = match self.items {
             ItemsSource::Raw(media) => media
                 .into_iter()
                 .map(|m| {
-                    let mut dto = api::db_media_to_item(m, self.hide_sources);
+                    let mut dto =
+                        api::db_media_to_item_for_list(m, self.hide_sources, fields);
                     if self.apply_permissions {
                         apply_permissions(
                             &mut dto,
@@ -168,8 +201,44 @@ impl ItemsQueryResultBuilder {
         ItemsQueryResult {
             items,
             total_count: self.total_count,
+            fields: self.fields,
         }
     }
+}
+
+/// Lists include Jellyfin's basic fields by default, plus only the requested
+/// `ItemFields`. Detail endpoints continue to serialize the full DTO.
+fn item_to_list_value(
+    item: &api::BaseItemDto,
+    fields: Option<&[api::ItemFields]>,
+) -> serde_json::Value {
+    use api::ItemFields as F;
+    let includes = |field| fields.is_some_and(|fields| fields.contains(&field));
+    let mut value = serde_json::to_value(item).unwrap_or_default();
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+
+    for (field, names) in [
+        (F::ExternalUrls, &["ExternalUrls"][..]),
+        (F::Genres, &["Genres", "GenreItems"][..]),
+        (F::MediaSources, &["MediaSources"][..]),
+        (F::Overview, &["Overview"][..]),
+        (F::Path, &["Path"][..]),
+        (F::People, &["People"][..]),
+        (F::ProductionLocations, &["ProductionLocations"][..]),
+        (F::ProviderIds, &["ProviderIds"][..]),
+        (F::Studios, &["Studios"][..]),
+        (F::Taglines, &["Taglines"][..]),
+        (F::Tags, &["Tags"][..]),
+    ] {
+        if !includes(field) {
+            for name in names {
+                object.remove(*name);
+            }
+        }
+    }
+    value
 }
 
 /// `GET /api/danmu/{item_id}/raw` — danmu not supported; return 404 so clients don't get SPA HTML.
@@ -467,6 +536,10 @@ pub async fn get_items(
                 session,
                 paged_items,
                 total_count,
+            )
+            .with_fields(
+                q.fields
+                    .clone(),
             ));
         }
     }
@@ -536,7 +609,11 @@ pub async fn get_items(
                     }
                 }
             }
-            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
+            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total)
+                .with_fields(
+                    q.fields
+                        .clone(),
+                ));
         }
 
         // collection browse
@@ -569,6 +646,10 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
@@ -602,6 +683,10 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
@@ -628,36 +713,22 @@ pub async fn get_items(
                     session,
                     result.records,
                     result.total_count as i64,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
                 ));
             }
 
             // Smart collections: items float freely (no parent_id constraint).
             q.parent_id = None;
 
+            // (A smart collection of kind `Collection` is handled above.)
             let media_kind_filter = if let Some(kind) = parent
                 .collection_media_kind
-                .clone()
+                .as_ref()
             {
-                match kind {
-                    db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
-                    db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
-                    db::CollectionMediaKind::Mixed => {
-                        vec![db::MediaKind::Movie, db::MediaKind::Series]
-                    }
-                    db::CollectionMediaKind::Music => vec![
-                        db::MediaKind::Track,
-                        db::MediaKind::Album,
-                        db::MediaKind::Artist,
-                    ],
-                    db::CollectionMediaKind::Collection => {
-                        // Handled above — this branch is now unreachable for
-                        // smart collections with collection_media_kind='collection'.
-                        vec![db::MediaKind::Collection]
-                    }
-                    db::CollectionMediaKind::Playlist => {
-                        vec![db::MediaKind::Playlist]
-                    }
-                }
+                kind.media_kinds()
             } else {
                 vec![db::MediaKind::Movie, db::MediaKind::Series]
             };
@@ -695,7 +766,16 @@ pub async fn get_items(
                         .cloned()
                         .collect();
                     if intersection.is_empty() {
-                        vec![]
+                        // A library of episodes is listed whatever item types
+                        // the client asks for: a client browsing it as a TV
+                        // library asks for series, which would leave it empty.
+                        if parent.collection_media_kind
+                            == Some(db::CollectionMediaKind::Episode)
+                        {
+                            collection_types
+                        } else {
+                            vec![]
+                        }
                     } else {
                         intersection
                     }
@@ -725,7 +805,20 @@ pub async fn get_items(
                     None
                 };
 
-            let result = db::Media::get_by_jellyfin_filter(
+            let lists_upcoming = smart_filter.is_some_and(|f| f.requires_upcoming());
+            // Soonest first, unless the collection or the client chose an order.
+            if lists_upcoming
+                && parent
+                    .collection_default_sort
+                    .as_ref()
+                    .is_none_or(|s| s.is_empty())
+                && client.is_default_sort(&q)
+            {
+                q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
+                q.sort_order = Some(vec![api::SortOrder::Ascending]);
+            }
+
+            let mut result = db::Media::get_by_jellyfin_filter(
                 &state
                     .ctx
                     .db,
@@ -739,10 +832,31 @@ pub async fn get_items(
             )
             .await?;
 
+            if lists_upcoming {
+                let now = chrono::Utc::now().naive_utc();
+                for media in &mut result.records {
+                    if let Some(date) = media
+                        .digital_released_at
+                        .or(media.released_at)
+                    {
+                        media.title = format!(
+                            "{} · {}",
+                            media.title,
+                            // Calendar days: a time-of-day must not turn tomorrow into today.
+                            countdown_label((date.date() - now.date()).num_days())
+                        );
+                    }
+                }
+            }
+
             return Ok(ItemsQueryResultBuilder::with_items(
                 session,
                 result.records,
                 result.total_count as i64,
+            )
+            .with_fields(
+                q.fields
+                    .clone(),
             ));
         }
 
@@ -841,7 +955,11 @@ pub async fn get_items(
             )
             .await?;
             if let Some(media) = media {
-                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1));
+                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1)
+                    .with_fields(
+                        q.fields
+                            .clone(),
+                    ));
             }
         }
     }
@@ -850,7 +968,22 @@ pub async fn get_items(
         session,
         result.records,
         result.total_count as i64,
+    )
+    .with_fields(
+        q.fields
+            .clone(),
     ))
+}
+
+/// How long until something comes out, for the name of an upcoming item.
+fn countdown_label(days: i64) -> String {
+    match days {
+        ..=0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        2..=13 => format!("in {days} days"),
+        14..=59 => format!("in {} weeks", days / 7),
+        _ => format!("in {} months", days / 30),
+    }
 }
 
 #[get("/items/latest")]
@@ -916,7 +1049,7 @@ pub async fn items_flat(
         .with_permissions()
         .with_client_patches()
         .build();
-    Ok(Json::<Vec<api::BaseItemDto>>(items.items))
+    Ok(Json(items.serialized_items()))
 }
 
 #[get("/items")]
@@ -963,14 +1096,11 @@ pub async fn items(
         .with_client_patches()
         .build();
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or_else(|| 0),
-        ..Default::default()
-    })
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    }))
     .into_response())
 }
 
@@ -1644,8 +1774,9 @@ async fn rank_item_sources(
     original_language: Option<&str>,
     remembered_audio: Option<i64>,
     remembered_subtitle: Option<i64>,
+    include_groups: bool,
 ) {
-    crate::services::StreamService::rank_media_sources(
+    crate::services::StreamService::rank_media_sources_with_groups(
         db,
         sources,
         ranking,
@@ -1658,6 +1789,7 @@ async fn rank_item_sources(
             remembered_audio,
             remembered_subtitle,
         },
+        include_groups,
     )
     .await;
 }
@@ -1795,6 +1927,24 @@ async fn item_for_user(
                 .device
                 .parsed_device_profile(),
         );
+    let ranking_ctx = SourceRankingContext {
+        mode: server_config
+            .sort_media_sources
+            .unwrap_or_default(),
+        device_profile: persisted_device_profile.as_ref(),
+        is_4k_capable: session
+            .device
+            .is_4k_capable
+            == Some(true),
+        subtitle_mode,
+        explicit_subtitle_index: None,
+        max_bitrate: persisted_device_profile
+            .as_ref()
+            .and_then(|p| p.max_streaming_bitrate),
+    };
+    let sort_groups = server_config
+        .stream_groups_auto_sort
+        .unwrap_or(false);
 
     // Items detail itself never shows subtitles (embedded or addon external —
     // see the media_streams-stripping block below), but it still warms the
@@ -1860,6 +2010,25 @@ async fn item_for_user(
                     .db,
             )
             .await?;
+        // Best first before grouping, so a group's representative (its first
+        // match) is its best stream for this device.
+        let mut raw = raw;
+        rank_item_sources(
+            &state
+                .ctx
+                .db,
+            &mut raw,
+            ranking_ctx,
+            &user_cfg,
+            server_config
+                .preferred_metadata_language
+                .as_deref(),
+            original_language.as_deref(),
+            remembered_audio,
+            remembered_subtitle,
+            false,
+        )
+        .await;
         let grouped = db::StreamGroup::filter_sources(
             &state
                 .ctx
@@ -1916,21 +2085,7 @@ async fn item_for_user(
                         .ctx
                         .db,
                     sources,
-                    SourceRankingContext {
-                        mode: server_config
-                            .sort_media_sources
-                            .unwrap_or_default(),
-                        device_profile: persisted_device_profile.as_ref(),
-                        is_4k_capable: session
-                            .device
-                            .is_4k_capable
-                            == Some(true),
-                        subtitle_mode,
-                        explicit_subtitle_index: None,
-                        max_bitrate: persisted_device_profile
-                            .as_ref()
-                            .and_then(|p| p.max_streaming_bitrate),
-                    },
+                    ranking_ctx,
                     &user_cfg,
                     server_config
                         .preferred_metadata_language
@@ -1938,6 +2093,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    sort_groups,
                 )
                 .await;
             }
@@ -1959,6 +2115,25 @@ async fn item_for_user(
                     .db,
             )
             .await?;
+        // Best first before grouping, so a group's representative (its first
+        // match) is its best stream for this device.
+        let mut raw = raw;
+        rank_item_sources(
+            &state
+                .ctx
+                .db,
+            &mut raw,
+            ranking_ctx,
+            &user_cfg,
+            server_config
+                .preferred_metadata_language
+                .as_deref(),
+            original_language.as_deref(),
+            remembered_audio,
+            remembered_subtitle,
+            false,
+        )
+        .await;
         let grouped = db::StreamGroup::filter_sources(
             &state
                 .ctx
@@ -1998,21 +2173,7 @@ async fn item_for_user(
                         .ctx
                         .db,
                     sources,
-                    SourceRankingContext {
-                        mode: server_config
-                            .sort_media_sources
-                            .unwrap_or_default(),
-                        device_profile: persisted_device_profile.as_ref(),
-                        is_4k_capable: session
-                            .device
-                            .is_4k_capable
-                            == Some(true),
-                        subtitle_mode,
-                        explicit_subtitle_index: None,
-                        max_bitrate: persisted_device_profile
-                            .as_ref()
-                            .and_then(|p| p.max_streaming_bitrate),
-                    },
+                    ranking_ctx,
                     &user_cfg,
                     server_config
                         .preferred_metadata_language
@@ -2020,6 +2181,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    sort_groups,
                 )
                 .await;
             }
@@ -2421,14 +2583,11 @@ pub async fn persons(
         .with_permissions()
         .with_client_patches()
         .build();
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: items.items,
-        total_record_count: items.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": items.serialized_items(),
+        "TotalRecordCount": items.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 #[get("/items/filters")]
@@ -2729,6 +2888,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
         "movies" => Some(db::CollectionMediaKind::Movie),
         "tvshows" => Some(db::CollectionMediaKind::Series),
+        "episodes" => Some(db::CollectionMediaKind::Episode),
         "mixed" => Some(db::CollectionMediaKind::Mixed),
         "music" => Some(db::CollectionMediaKind::Music),
         "collections" => Some(db::CollectionMediaKind::Collection),
@@ -2830,6 +2990,18 @@ pub async fn genres(
             offset: q.start_index,
             total_count: true,
             include_child_count: want_item_counts,
+            include_relations: api::fields_include_relations(
+                q.fields
+                    .as_deref(),
+            ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
+            include_tags: Some(api::fields_include_tags(
+                q.fields
+                    .as_deref(),
+            )),
             genre_related_kinds,
             parent_id: q.parent_id,
             parent,
@@ -2858,18 +3030,23 @@ pub async fn genres(
     )
     .await?;
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, false))
-            .collect(),
-        total_record_count: result.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    let items = result
+        .records
+        .into_iter()
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 /// Favorite filter for the name-list endpoints (`/Studios`, `/Genres`), which
@@ -2926,6 +3103,18 @@ pub async fn music_genres(
             offset: q.start_index,
             total_count: true,
             include_child_count: want_item_counts,
+            include_relations: api::fields_include_relations(
+                q.fields
+                    .as_deref(),
+            ),
+            include_people: Some(api::fields_include_people(
+                q.fields
+                    .as_deref(),
+            )),
+            include_tags: Some(api::fields_include_tags(
+                q.fields
+                    .as_deref(),
+            )),
             genre_related_kinds,
             policy_filter: policy
                 .and_then(|p| {
@@ -2950,18 +3139,23 @@ pub async fn music_genres(
     )
     .await?;
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, false))
-            .collect(),
-        total_record_count: result.total_count as i64,
-        start_index: q
-            .start_index
-            .unwrap_or(0),
-        ..Default::default()
-    }))
+    let items = result
+        .records
+        .into_iter()
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": result.total_count,
+        "StartIndex": q.start_index.unwrap_or_default(),
+    })))
 }
 
 /// `/MusicGenres/{name}` — returns a single music genre item by display name.
@@ -3174,9 +3368,11 @@ pub async fn items_similar(
     .await?;
 
     if scored_ids.is_empty() {
-        return Ok(Json(api::BaseItemDtoQueryResult {
-            ..Default::default()
-        }));
+        return Ok(Json(serde_json::json!({
+            "Items": [],
+            "TotalRecordCount": total,
+            "StartIndex": offset,
+        })));
     }
 
     // Fetch full items in score order.
@@ -3194,6 +3390,18 @@ pub async fn items_similar(
                     .id,
             )),
         include_user_state: true,
+        include_relations: api::fields_include_relations(
+            q.fields
+                .as_deref(),
+        ),
+        include_people: Some(api::fields_include_people(
+            q.fields
+                .as_deref(),
+        )),
+        include_tags: Some(api::fields_include_tags(
+            q.fields
+                .as_deref(),
+        )),
         ..Default::default()
     };
     let result = db::Media::get_by_filter(
@@ -3210,7 +3418,14 @@ pub async fn items_similar(
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
-        .map(|m| api::db_media_to_item(m, false))
+        .map(|m| {
+            api::db_media_to_item_for_list(
+                m,
+                false,
+                q.fields
+                    .as_deref(),
+            )
+        })
         .collect();
     items.sort_by_key(|item| {
         let id = item.id;
@@ -3222,12 +3437,11 @@ pub async fn items_similar(
         )
     });
 
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items,
-        total_record_count: total,
-        start_index: offset,
-        ..Default::default()
-    }))
+    Ok(Json(serde_json::json!({
+        "Items": serialize_item_list(&items, q.fields.as_deref()),
+        "TotalRecordCount": total,
+        "StartIndex": offset,
+    })))
 }
 
 #[get("/items/{id}/thememedia")]
@@ -3880,6 +4094,19 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn countdown_label_reads_naturally() {
+        use super::countdown_label;
+        assert_eq!(countdown_label(-3), "today");
+        assert_eq!(countdown_label(0), "today");
+        assert_eq!(countdown_label(1), "tomorrow");
+        assert_eq!(countdown_label(4), "in 4 days");
+        assert_eq!(countdown_label(13), "in 13 days");
+        assert_eq!(countdown_label(14), "in 2 weeks");
+        assert_eq!(countdown_label(59), "in 8 weeks");
+        assert_eq!(countdown_label(60), "in 2 months");
+    }
+
     use super::{
         RemoteImagesQuery, exclude_episodes_from_search, external_id_infos_for_kind,
         is_remote_enabled,
@@ -5170,6 +5397,147 @@ mod tests {
         );
     }
 
+    // An upcoming library lists the next unaired episode of series the user
+    // started, soonest first, named with a countdown, and shows up in
+    // /UserViews although the server hides unreleased items elsewhere.
+    #[tokio::test]
+    async fn upcoming_episode_library_lists_next_unaired_episodes() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+        let now = Utc::now().naive_utc();
+
+        let mut episodes = Vec::new();
+        for (name, days_to_next) in [("Slow Show", 20_i64), ("Quick Show", 3)] {
+            let mut series = db::Media {
+                title: name.to_string(),
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(
+                        db::NonEmptyString::try_new(format!("tt99{}", days_to_next))
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            series
+                .save(db)
+                .await
+                .unwrap();
+            for (n, offset) in
+                [(1_i64, -14_i64), (2, days_to_next), (3, days_to_next + 7)]
+            {
+                let mut ep = db::Media {
+                    title: format!("{name} E{n}"),
+                    kind: db::MediaKind::Episode,
+                    external_ids: db::ExternalIds {
+                        imdb: Some(
+                            db::NonEmptyString::try_new(format!(
+                                "tt99{days_to_next}{n}"
+                            ))
+                            .unwrap(),
+                        ),
+                        ..Default::default()
+                    },
+                    grandparent_id: Some(series.id),
+                    parent_idx: Some(1),
+                    idx: Some(n),
+                    released_at: Some(
+                        now + chrono::Duration::days(offset)
+                            + chrono::Duration::hours(1),
+                    ),
+                    ..Default::default()
+                };
+                ep.save(db)
+                    .await
+                    .unwrap();
+                episodes.push((n, ep.id));
+            }
+        }
+        // Watching the first episode of each series is what starts it.
+        for (n, id) in &episodes {
+            if *n == 1 {
+                sqlx::query(
+                    "INSERT INTO user_media_state \
+                     (user_id, media_id, favorite, play_count, played_at, playback_position) \
+                     VALUES (?1, ?2, 0, 1, ?3, 0)",
+                )
+                .bind(uuid::Uuid::parse_str(&user_id).unwrap())
+                .bind(id)
+                .bind(now)
+                .execute(db)
+                .await
+                .unwrap();
+            }
+        }
+
+        let mut c = db::Media {
+            title: "Upcoming".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(db::CollectionMediaKind::Episode),
+            collection_smart_filter: Some(remux_sdks::remux::CollectionFilter {
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+                groups: vec![remux_sdks::remux::FilterGroup {
+                    match_mode: remux_sdks::remux::FilterMatchMode::All,
+                    rules: vec![remux_sdks::remux::FilterRule::Upcoming {
+                        value: true,
+                    }],
+                }],
+            }),
+            promoted: true,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = server
+            .get(&format!(
+                "/items?parentId={}&userId={user_id}",
+                c.id.simple()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let names: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Quick Show E2 · in 3 days", "Slow Show E2 · in 2 weeks"],
+            "soonest first, one per series, with a countdown"
+        );
+
+        let views: serde_json::Value = server
+            .get(&format!("/userviews?userId={user_id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let view_names: Vec<&str> = views["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["Name"].as_str())
+            .collect();
+        assert!(view_names.contains(&"Upcoming"), "{view_names:?}");
+    }
+
     // /UserViews must not return a promoted smart collection with no matching content.
     #[tokio::test]
     async fn userviews_hides_empty_smart_collection() {
@@ -5337,6 +5705,274 @@ mod tests {
             recursive.contains(&"Some movie".to_string()),
             "got: {recursive:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn item_lists_only_serialize_requested_extended_fields() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let (id, external_ids) =
+            make_content_ids(db::MediaKind::Movie, "tt-fields-test");
+        let mut movie = db::Media {
+            id,
+            title: "Fields test movie".to_string(),
+            kind: db::MediaKind::Movie,
+            description: Some("A test overview".to_string()),
+            released_at: Some(Utc::now().naive_utc()),
+            external_ids,
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut person = db::Media {
+            title: "Fields test person".to_string(),
+            kind: db::MediaKind::Person,
+            ..Default::default()
+        };
+        let mut studio = db::Media {
+            title: "Fields test studio".to_string(),
+            kind: db::MediaKind::Studio,
+            ..Default::default()
+        };
+        let mut genre = db::Media {
+            title: "Fields test genre".to_string(),
+            kind: db::MediaKind::Genre,
+            ..Default::default()
+        };
+        for related in [&mut person, &mut studio, &mut genre] {
+            related
+                .save(db)
+                .await
+                .unwrap();
+        }
+        let mut person_ids = vec![person.id];
+        for n in 0..29 {
+            let mut payload_person = db::Media {
+                title: format!("Payload performer {n:02} with a longer fixture name"),
+                kind: db::MediaKind::Person,
+                ..Default::default()
+            };
+            payload_person
+                .save(db)
+                .await
+                .unwrap();
+            person_ids.push(payload_person.id);
+        }
+        let mut movie_relations = [
+            (studio.id, Some(db::RelationRole::Catalog)),
+            (genre.id, Some(db::RelationRole::Catalog)),
+        ]
+        .into_iter()
+        .map(|(right_media_id, role)| db::MediaRelation {
+            left_media_id: movie.id,
+            right_media_id,
+            role,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+        movie_relations.extend(
+            person_ids
+                .iter()
+                .map(|right_media_id| db::MediaRelation {
+                    left_media_id: movie.id,
+                    right_media_id: *right_media_id,
+                    role: Some(db::RelationRole::Actor),
+                    ..Default::default()
+                }),
+        );
+        db::MediaRelation::upsert(db, &movie_relations)
+            .await
+            .unwrap();
+
+        let mut channel = db::Media {
+            title: "Fields test channel".to_string(),
+            kind: db::MediaKind::TvChannel,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://example.com/live.m3u8",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        channel
+            .save(db)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(movie.id)
+            .bind("Fields test tag")
+            .execute(db)
+            .await
+            .unwrap();
+
+        let request = |path: &'static str| {
+            server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+        let bare_response: serde_json::Value = request("/items?recursive=true")
+            .await
+            .json();
+        let bare_items = bare_response["Items"]
+            .as_array()
+            .unwrap();
+        let bare = bare_items
+            .iter()
+            .find(|item| item["Name"] == "Fields test movie")
+            .expect("movie should be present in recursive item list");
+        for key in [
+            "People",
+            "MediaSources",
+            "Studios",
+            "GenreItems",
+            "Tags",
+            "ExternalUrls",
+            "Path",
+            "Overview",
+            "ProviderIds",
+        ] {
+            assert!(
+                bare.get(key)
+                    .is_none(),
+                "unexpected {key}: {bare}"
+            );
+        }
+        assert!(
+            bare.get("PremiereDate")
+                .is_some(),
+            "PremiereDate should be present in bare lists: {bare}"
+        );
+
+        let bare_channel = bare_items
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(bare_channel["LocationType"], "Remote");
+        assert_eq!(bare_channel["CanDelete"], false);
+        assert_eq!(bare_channel["CanDownload"], false);
+        assert_eq!(bare_channel["LockData"], false);
+        assert_eq!(bare_channel["IsPlaceHolder"], false);
+        assert!(
+            bare_channel
+                .get("MediaSources")
+                .is_none()
+        );
+
+        let detailed_response: serde_json::Value = request(
+            "/items?recursive=true&fields=People,MediaSources,Studios,Genres,Tags,ExternalUrls,Path,Overview,ProviderIds",
+        )
+        .await
+        .json();
+        let detailed = detailed_response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == "Fields test movie")
+            .expect("movie should be present in recursive item list");
+        for key in [
+            "People",
+            "MediaSources",
+            "Studios",
+            "GenreItems",
+            "Tags",
+            "ExternalUrls",
+            "Path",
+            "Overview",
+            "ProviderIds",
+        ] {
+            assert!(
+                detailed
+                    .get(key)
+                    .is_some(),
+                "missing {key}: {detailed}"
+            );
+        }
+        assert!(
+            detailed["People"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|person| person["Name"] == "Fields test person")
+        );
+        assert_eq!(detailed["Studios"][0]["Name"], "Fields test studio");
+        assert_eq!(detailed["GenreItems"][0]["Name"], "Fields test genre");
+        assert_eq!(detailed["Tags"][0], "Fields test tag");
+        assert_eq!(detailed["Overview"], "A test overview");
+
+        let detailed_channel = detailed_response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["Name"] == "Fields test channel")
+            .expect("channel should be present in recursive item list");
+        assert_eq!(
+            detailed_channel["MediaSources"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(detailed_channel["MediaSources"][0]["IsRemote"], true);
+
+        for n in 0..44 {
+            let (id, external_ids) = make_content_ids(
+                db::MediaKind::Movie,
+                &format!("tt-fields-payload-{n}"),
+            );
+            db::Media {
+                id,
+                title: format!("Payload movie {n}"),
+                kind: db::MediaKind::Movie,
+                external_ids,
+                ..Default::default()
+            }
+            .save(db)
+            .await
+            .unwrap();
+            db::MediaRelation::upsert(
+                db,
+                &person_ids
+                    .iter()
+                    .map(|right_media_id| db::MediaRelation {
+                        left_media_id: id,
+                        right_media_id: *right_media_id,
+                        role: Some(db::RelationRole::Actor),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+        }
+        let measured: serde_json::Value =
+            request("/items?recursive=true&limit=45&fields=ProviderIds,Genres")
+                .await
+                .json();
+        assert_eq!(
+            measured["Items"]
+                .as_array()
+                .map(Vec::len),
+            Some(45)
+        );
+        let payload_bytes = serde_json::to_vec(&measured)
+            .unwrap()
+            .len();
+        assert!(
+            payload_bytes < 100_000,
+            "45-item list payload exceeded 100 KB: {} bytes",
+            payload_bytes
+        );
+        println!("45-item list payload: {payload_bytes} bytes");
     }
 
     // Regression #414: a promoted collection-of-collections must disappear

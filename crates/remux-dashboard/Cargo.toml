@@ -13,7 +13,8 @@ remux-sdks = { path = "../remux-sdks" }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
 #http = "1"
-web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Element", "Navigator", "Clipboard"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Element", "HtmlElement", "Navigator", "Clipboard"] }
+wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde_json = "1"
 base64 = "0.22"

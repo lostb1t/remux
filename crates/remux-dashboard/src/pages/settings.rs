@@ -30,6 +30,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
     let mut enable_next_up_in_continue_watching = use_signal(|| false);
+    let mut force_default_view_order = use_signal(|| false);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -88,6 +89,10 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         cfg.enable_next_up_in_continue_watching
                             .unwrap_or(false),
                     );
+                    force_default_view_order.set(
+                        cfg.force_default_view_order
+                            .unwrap_or(false),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -131,6 +136,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let qc_enabled = *quick_connect_enabled.peek();
         let next_up_unified = *enable_next_up_in_continue_watching.peek();
+        let force_view_order = *force_default_view_order.peek();
 
         let mut cfg = base_cfg
             .peek()
@@ -142,6 +148,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.default_web_client = Some(web_client);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.enable_next_up_in_continue_watching = Some(next_up_unified);
+        cfg.force_default_view_order = Some(force_view_order);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
         cfg.addon_fetch_timeout_secs = Some(addon_timeout);
@@ -367,6 +374,15 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 description: "Add the next released episode of a started series when that series has no episode currently in progress. Disabled by default.",
                                 checked: *enable_next_up_in_continue_watching.read(),
                                 on_change: move |v| enable_next_up_in_continue_watching.set(v),
+                            }
+                        }
+
+                        div { class: "field",
+                            ToggleRow {
+                                label: "Force default library order",
+                                description: "Ignore users' own home screen ordering and show everyone the library order set in the dashboard. Users' saved orders are kept and apply again when this is off.",
+                                checked: *force_default_view_order.read(),
+                                on_change: move |v| force_default_view_order.set(v),
                             }
                         }
 
