@@ -350,14 +350,19 @@ async fn create_hls_session(
                 s.codec
                     .clone()
             });
-        let segment_container =
-            SegmentContainer::for_codecs(&video_codec, source_video_codec.as_deref());
-
         // The HLS request carries no device profile, but the one the client
         // reported at PlaybackInfo time is stored on its device.
         let client_profile = auth
             .device
             .parsed_device_profile();
+        let hevc_in_ts = client_profile
+            .as_ref()
+            .is_some_and(client_wants_hevc_in_ts);
+        let segment_container = SegmentContainer::for_codecs(
+            &video_codec,
+            source_video_codec.as_deref(),
+            hevc_in_ts,
+        );
         let hls_profile = client_profile
             .as_ref()
             .and_then(|p| hls_transcoding_profile(p, segment_container));
@@ -610,6 +615,7 @@ async fn create_hls_session(
                 .await;
             session.audio_channels = audio_channels;
             session.source_audio_index = source_audio.map(|s| s.index as i32);
+            session.hevc_in_ts = hevc_in_ts;
         }
         state
             .ctx
@@ -678,6 +684,7 @@ async fn create_hls_session(
                 .await
                 .hevc_copy_tag
                 .clone(),
+            hevc_in_ts,
             accelerator: hw_accel::from_encoding_opts(&encoding_opts),
             source_video_range_type,
             enable_tonemapping: encoding_opts
@@ -919,6 +926,36 @@ fn resolve_hls_audio_codec(
     } else {
         requested.to_string()
     }
+}
+
+/// Whether the client takes HEVC in MPEG-TS HLS segments: it lists `hevc` in a
+/// TS HLS video profile and in no fMP4 one. jellyfin-web declares that for
+/// webOS and Tizen unless the user ticks "Prefer fMP4-HLS" (their native
+/// players stall on fMP4 HEVC). Every other client, and one with no stored
+/// profile, keeps fMP4, which iOS and the HLS spec require for HEVC.
+fn client_wants_hevc_in_ts(profile: &remux_sdks::remux::DeviceProfile) -> bool {
+    use remux_sdks::remux::{DlnaProfileType, TranscodingProtocol, VideoContainer};
+    let lists_hevc = |is_container: fn(&VideoContainer) -> bool| {
+        profile
+            .transcoding_profiles
+            .iter()
+            .filter(|p| {
+                matches!(p.type_, Some(DlnaProfileType::Video))
+                    && matches!(p.protocol, Some(TranscodingProtocol::Hls))
+                    && p.container
+                        .as_ref()
+                        .is_some_and(is_container)
+            })
+            .any(|p| {
+                p.video_codec
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|c| c.is_hevc())
+            })
+    };
+    lists_hevc(|c| matches!(c, VideoContainer::Ts))
+        && !lists_hevc(|c| matches!(c, VideoContainer::Mp4 | VideoContainer::M4v))
 }
 
 /// The transcoding profile the client declared for HLS in the segment
@@ -1702,6 +1739,10 @@ async fn hls_segment_inner(
                             .await
                             .hevc_copy_tag
                             .clone(),
+                        hevc_in_ts: session
+                            .read()
+                            .await
+                            .hevc_in_ts,
                         accelerator: hw_accel::from_encoding_opts(&encoding_opts),
                         source_video_range_type: session
                             .read()
@@ -2134,6 +2175,50 @@ mod tests {
             ),
             "aac"
         );
+    }
+
+    #[test]
+    fn webos_style_profiles_get_hevc_in_ts_and_fmp4_profiles_do_not() {
+        let profile =
+            |containers: &[(&str, &str)]| -> remux_sdks::remux::DeviceProfile {
+                serde_json::from_value(serde_json::json!({
+                "TranscodingProfiles": containers.iter().map(|(c, v)| serde_json::json!({
+                    "Type": "Video", "Protocol": "hls", "Container": c, "VideoCodec": v,
+                })).collect::<Vec<_>>()
+            }))
+            .unwrap()
+            };
+        // webOS/Tizen default: TS lists hevc, no fMP4 profile.
+        assert!(super::client_wants_hevc_in_ts(&profile(&[(
+            "ts",
+            "h264,hevc"
+        )])));
+        // The user ticked "Prefer fMP4-HLS": both are declared.
+        assert!(!super::client_wants_hevc_in_ts(&profile(&[
+            ("mp4", "av1,hevc,h264"),
+            ("ts", "h264,hevc"),
+        ])));
+        // Safari/Chrome: fMP4 with hevc, TS without it.
+        assert!(!super::client_wants_hevc_in_ts(&profile(&[
+            ("mp4", "av1,hevc,h264"),
+            ("ts", "h264"),
+        ])));
+        // TS without hevc, or no HLS profile at all, keeps the fMP4 default.
+        assert!(!super::client_wants_hevc_in_ts(&profile(&[("ts", "h264")])));
+        assert!(!super::client_wants_hevc_in_ts(&Default::default()));
+    }
+
+    #[test]
+    fn a_non_hls_profile_does_not_move_hevc_to_ts() {
+        let profile: remux_sdks::remux::DeviceProfile =
+            serde_json::from_value(serde_json::json!({
+                "TranscodingProfiles": [{
+                    "Type": "Video", "Protocol": "http", "Container": "ts",
+                    "VideoCodec": "hevc",
+                }]
+            }))
+            .unwrap();
+        assert!(!super::client_wants_hevc_in_ts(&profile));
     }
 
     #[test]
