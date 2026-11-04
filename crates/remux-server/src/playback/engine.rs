@@ -399,6 +399,9 @@ pub struct TranscodeParams {
     /// HEVC sample-entry tag (`hvc1`/`hev1`) resolved from the client's
     /// DeviceProfile; see `DeviceProfileExt::hevc_copy_tag`.
     pub hevc_copy_tag: Option<String>,
+    /// Copied HEVC goes into MPEG-TS segments instead of fMP4; see
+    /// `SegmentContainer::for_codecs`.
+    pub hevc_in_ts: bool,
     pub accelerator: Box<dyn Accelerator>,
     /// HDR type of the source video, used to decide whether tone-mapping or
     /// SDR colour-space override is needed.
@@ -451,6 +454,7 @@ impl Default for TranscodeParams {
             source_video_codec: None,
             source_audio_codec: None,
             hevc_copy_tag: None,
+            hevc_in_ts: false,
             accelerator: Box::new(NoAccel),
             source_video_range_type: None,
             enable_tonemapping: false,
@@ -774,6 +778,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         params
             .source_video_codec
             .as_deref(),
+        params.hevc_in_ts,
     );
     let is_hevc_copy = segment_container == SegmentContainer::Fmp4;
 
@@ -2730,6 +2735,29 @@ mod tests {
     }
 
     #[test]
+    fn hls_hevc_copy_for_a_ts_client_uses_mpegts_segments() {
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            hevc_in_ts: true,
+            ..default_hls(PathBuf::from("/tmp/test_hevc_ts"))
+        });
+
+        assert_eq!(arg_after(&args, "-hls_segment_type"), None);
+        assert_eq!(arg_after(&args, "-hls_fmp4_init_filename"), None);
+        assert_eq!(arg_after(&args, "-tag:v"), None);
+        assert!(
+            args.iter()
+                .any(|a| a.ends_with("%d.ts") || a.contains(".ts")),
+            "{args:?}"
+        );
+
+        let mut session = hevc_session("copy", None);
+        session.hevc_in_ts = true;
+        assert!(!session.use_fmp4());
+    }
+
+    #[test]
     fn hls_hevc_copy_uses_fmp4() {
         let dir = PathBuf::from("/tmp/test_hevc");
         let args = build_hls_args(&TranscodeParams {
@@ -2920,6 +2948,7 @@ mod tests {
             audio_stream_index: None,
             audio_channels: None,
             source_audio_index: None,
+            hevc_in_ts: false,
             subtitle_stream_index: None,
             burn_subtitle: false,
             segment_length: 6,
@@ -3147,6 +3176,7 @@ mod tests {
             audio_stream_index: None,
             audio_channels: None,
             source_audio_index: None,
+            hevc_in_ts: false,
             subtitle_stream_index: None,
             burn_subtitle: false,
             segment_length: 6,

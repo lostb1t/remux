@@ -24,8 +24,14 @@ pub enum SegmentContainer {
 
 impl SegmentContainer {
     /// iOS Safari (and the HLS spec) require fMP4 for HEVC, so copied HEVC
-    /// video gets fMP4 segments; everything else uses MPEG-TS.
-    pub fn for_codecs(video_codec: &str, source_video_codec: Option<&str>) -> Self {
+    /// video gets fMP4 segments; everything else uses MPEG-TS. `hevc_in_ts` is
+    /// for clients that declare HEVC in TS only (webOS and Tizen play fMP4
+    /// HEVC badly), see `client_wants_hevc_in_ts`.
+    pub fn for_codecs(
+        video_codec: &str,
+        source_video_codec: Option<&str>,
+        hevc_in_ts: bool,
+    ) -> Self {
         let hevc_copy = video_codec == "copy"
             && source_video_codec
                 .and_then(|s| {
@@ -33,7 +39,11 @@ impl SegmentContainer {
                         .ok()
                 })
                 .is_some_and(|codec| codec.is_hevc());
-        if hevc_copy { Self::Fmp4 } else { Self::Ts }
+        if hevc_copy && !hevc_in_ts {
+            Self::Fmp4
+        } else {
+            Self::Ts
+        }
     }
 
     /// Whether source audio can be stream-copied into these segments.
@@ -71,6 +81,8 @@ pub struct TranscodeSession {
     /// Stream index of the audio track the session actually maps, which is the
     /// source's default when the client named none.
     pub source_audio_index: Option<i32>,
+    /// The client takes HEVC copies in MPEG-TS segments rather than fMP4.
+    pub hevc_in_ts: bool,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
     pub segment_length: u32,
@@ -159,6 +171,7 @@ impl TranscodeSession {
             audio_stream_index,
             audio_channels: None,
             source_audio_index: None,
+            hevc_in_ts: false,
             subtitle_stream_index,
             burn_subtitle,
             segment_length,
@@ -199,6 +212,7 @@ impl TranscodeSession {
             &self.video_codec,
             self.source_video_codec
                 .as_deref(),
+            self.hevc_in_ts,
         )
     }
 
