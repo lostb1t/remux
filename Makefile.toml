@@ -5,7 +5,7 @@ default_to_workspace = false
 CONFIG = "./config"
 DB="db.sqlite"
 SLOW_QUERY_THRESHOLD_MS=700
-JELLYFIN_WEB_TAG="v12.1"
+JELLYFIN_WEB_TAG="v12.4"
 
 [tasks.db-prepare]
 command = "cargo"

@@ -1830,6 +1830,10 @@ async fn item_for_user(
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
     let mut requested_group: Option<Uuid> = None;
+    // jellyfin-web 12.x refetches the item by the picked version's id, which is a
+    // plain stream when no group covers it. Answer with the parent item so the
+    // page stays put, with that stream first.
+    let mut requested_stream: Option<Uuid> = None;
     let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
         Some(m) if m.kind == db::MediaKind::StreamGroup => {
             requested_group = Some(m.id);
@@ -1847,6 +1851,15 @@ async fn item_for_user(
                 m.id,
             )
             .context_not_found("stream group not yet associated with an item")?
+        }
+        Some(m)
+            if m.kind == db::MediaKind::Stream
+                && m.parent_id
+                    .is_some() =>
+        {
+            requested_stream = Some(m.id);
+            m.parent_id
+                .unwrap_or(m.id)
         }
         Some(m) => m.id,
         None => return Ok(None),
@@ -2073,9 +2086,27 @@ async fn item_for_user(
                 }
             }
         }
+        if let Some(sid) = requested_stream {
+            match filtered
+                .iter()
+                .position(|s| {
+                    s.group_id
+                        .is_none()
+                        && s.id == sid
+                }) {
+                Some(pos) => {
+                    let source = filtered.remove(pos);
+                    filtered.insert(0, source);
+                }
+                None => {
+                    warn!(%sid, item = %media.id, "requested stream is not among the item's sources");
+                    requested_stream = None;
+                }
+            }
+        }
         media.sources = Some(filtered);
 
-        if requested_group.is_none() {
+        if requested_group.is_none() && requested_stream.is_none() {
             if let Some(sources) = media
                 .sources
                 .as_mut()
@@ -2375,6 +2406,26 @@ async fn item_for_user(
         {
             source.id = gid;
             source.e_tag = gid;
+        }
+    }
+
+    // Same for a plain stream request: keep its own id on the hoisted source.
+    if let Some(sid) = requested_stream {
+        if media
+            .sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .map(|s| s.id)
+            == Some(sid)
+        {
+            if let Some(source) = base_item
+                .media_sources
+                .as_mut()
+                .and_then(|s| s.first_mut())
+            {
+                source.id = sid;
+                source.e_tag = sid;
+            }
         }
     }
 
