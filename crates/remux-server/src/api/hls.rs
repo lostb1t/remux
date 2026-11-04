@@ -152,14 +152,16 @@ async fn create_hls_session(
         .sessions
         .get_transcode(&play_session_id)
     {
-        let session_audio = existing
-            .read()
-            .await
-            .audio_stream_index;
+        let (session_audio, mapped_audio) = {
+            let session = existing
+                .read()
+                .await;
+            (session.audio_stream_index, session.source_audio_index)
+        };
         let requested_audio = q
             .audio_stream_index
             .map(|v| v as i32);
-        if audio_track_changed(session_audio, requested_audio) {
+        if audio_track_changed(session_audio, mapped_audio, requested_audio) {
             debug!(
                 play_session_id = %play_session_id,
                 ?session_audio,
@@ -356,14 +358,46 @@ async fn create_hls_session(
             s.codec
                 .clone()
         });
-        // HLS always downmixes re-encoded audio to stereo, so only a source
-        // that is already stereo or less can be passed through unchanged.
+        let source_video_stream = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.video_stream());
+        let source_video_codec = source_video_stream
+            .as_ref()
+            .and_then(|s| {
+                s.codec
+                    .clone()
+            });
+        let segment_container =
+            SegmentContainer::for_codecs(&video_codec, source_video_codec.as_deref());
+
+        // The HLS request carries no device profile, but the one the client
+        // reported at PlaybackInfo time is stored on its device.
+        let client_profile = auth
+            .device
+            .parsed_device_profile();
+        let hls_profile = client_profile
+            .as_ref()
+            .and_then(|p| hls_transcoding_profile(p, segment_container));
+        // Channels the client takes for audio re-encoded to `codec`. Live
+        // channels always go out as stereo (see the LATM note below).
+        let channel_cap = |codec: &str| {
+            if is_live {
+                None
+            } else {
+                client_profile
+                    .as_ref()
+                    .and_then(|p| hls_client_max_channels(p, hls_profile, codec))
+            }
+        };
+        // Re-encoded audio keeps the source layout up to the client's cap, so
+        // only a source within that cap can be passed through unchanged.
         let audio_passthrough = audio_is_passthrough(
             &audio_codec_raw,
             source_audio_codec.as_deref(),
             source_audio.and_then(|s| s.channels),
             source_audio.and_then(|s| s.bit_rate),
-            Some(2),
+            Some(hls_channel_cap(channel_cap(&audio_codec_raw))),
             q.audio_bit_rate
                 .map(i64::from),
         );
@@ -380,19 +414,6 @@ async fn create_hls_session(
                 "HLS playback requires remuxing",
             ));
         }
-        let source_video_stream = resolved_media
-            .probe_data
-            .as_ref()
-            .and_then(|p| p.video_stream());
-        let source_video_codec = source_video_stream
-            .as_ref()
-            .and_then(|s| {
-                s.codec
-                    .clone()
-            });
-        let segment_container =
-            SegmentContainer::for_codecs(&video_codec, source_video_codec.as_deref());
-
         // --- Why we force audio transcoding for live channels ---
         //
         // IPTV/broadcast streams frequently carry AAC encoded in LATM format
@@ -424,14 +445,14 @@ async fn create_hls_session(
         // live channels, regardless of what the client negotiated. The
         // existing audio_channels logic (None for copy, Some(2) for transcode)
         // then kicks in automatically and produces the correct stereo downmix.
-        // The HLS request carries no device profile, but the one the client
-        // reported at PlaybackInfo time is stored on its device.
-        let client_profile = auth
-            .device
-            .parsed_device_profile();
-        let hls_profile = client_profile
+        // A codec profile can cap the channels of a codec the client plays, which
+        // rules out copying a source with more than that.
+        let copy_exceeds_channel_limit = client_profile
             .as_ref()
-            .and_then(|p| hls_transcoding_profile(p, segment_container));
+            .zip(source_audio_codec.as_deref())
+            .and_then(|(p, codec)| hls_codec_channel_limit(p, codec))
+            .zip(source_audio.and_then(|s| s.channels))
+            .is_some_and(|(limit, channels)| channels > limit);
         let resolved_audio_codec = resolve_hls_audio_codec(
             is_live,
             resolved_media
@@ -449,6 +470,7 @@ async fn create_hls_session(
                 p.audio_codec
                     .as_deref()
             }),
+            copy_exceeds_channel_limit,
         );
         if resolved_audio_codec != audio_codec && !permissions.audio_transcoding {
             return Ok(HlsSessionResult::Forbidden(
@@ -459,9 +481,7 @@ async fn create_hls_session(
         let audio_channels = hls_audio_channels(
             &audio_codec,
             source_audio.and_then(|s| s.channels),
-            client_profile
-                .as_ref()
-                .and_then(|p| hls_client_max_channels(p, hls_profile, &audio_codec)),
+            channel_cap(&audio_codec),
         );
 
         // Live streams have no fixed duration — skip all runtime lookups.
@@ -600,6 +620,10 @@ async fn create_hls_session(
             .write()
             .await
             .audio_channels = audio_channels;
+        session
+            .write()
+            .await
+            .source_audio_index = source_audio.map(|s| s.index as i32);
         state
             .ctx
             .sessions
@@ -894,13 +918,15 @@ fn resolve_hls_audio_codec(
     segment_container: SegmentContainer,
     requested: &str,
     client_audio_codecs: Option<&[AudioCodec]>,
+    copy_exceeds_channel_limit: bool,
 ) -> String {
     let input_is_hls = input_container.is_some_and(|c| c.is_hls_input());
     if requested == "copy"
         && (is_live
             || input_is_hls
             || !segment_container.can_copy_audio(source_audio_codec)
-            || !client_accepts_audio(source_audio_codec, client_audio_codecs))
+            || !client_accepts_audio(source_audio_codec, client_audio_codecs)
+            || copy_exceeds_channel_limit)
     {
         "aac".to_string()
     } else {
@@ -960,20 +986,15 @@ fn client_accepts_audio(
     accepted.contains(&codec)
 }
 
-/// The most channels the client takes for audio the server re-encodes to
-/// `audio_codec`: the transcoding profile's `MaxAudioChannels`, narrowed by any
-/// `AudioChannels` limit in a codec profile that applies to that output codec.
-/// `None` when the client declared no cap.
-fn hls_client_max_channels(
+/// The `AudioChannels` limit a codec profile puts on `audio_codec`, if any.
+fn hls_codec_channel_limit(
     profile: &remux_sdks::remux::DeviceProfile,
-    transcoding: Option<&remux_sdks::remux::TranscodingProfile>,
     audio_codec: &str,
 ) -> Option<i64> {
     use remux_sdks::remux::{
         CodecProfileType, ProfileConditionProperty, ProfileConditionType,
     };
-    let declared = transcoding.and_then(|p| p.max_audio_channels)?;
-    let from_codec_profiles = profile
+    profile
         .codec_profiles
         .iter()
         .filter(|cp| {
@@ -1014,14 +1035,36 @@ fn hls_client_max_channels(
                 })
         })
         .filter(|&v| v > 0)
-        .min();
-    Some(from_codec_profiles.map_or(declared, |l| l.min(declared)))
+        .min()
+}
+
+/// The most channels the client takes for audio the server re-encodes to
+/// `audio_codec`: the transcoding profile's `MaxAudioChannels`, narrowed by any
+/// `AudioChannels` limit in a codec profile that applies to that output codec.
+/// `None` when the client declared no cap.
+fn hls_client_max_channels(
+    profile: &remux_sdks::remux::DeviceProfile,
+    transcoding: Option<&remux_sdks::remux::TranscodingProfile>,
+    audio_codec: &str,
+) -> Option<i64> {
+    let declared = transcoding.and_then(|p| p.max_audio_channels)?;
+    Some(
+        hls_codec_channel_limit(profile, audio_codec)
+            .map_or(declared, |l| l.min(declared)),
+    )
+}
+
+/// The channel count re-encoded audio is capped at: the client's declared cap,
+/// never more than 6 (multichannel AAC beyond 5.1, e.g. 6.1 from DTS-HD, fails
+/// in browsers), and stereo when the client declared none.
+fn hls_channel_cap(client_max_channels: Option<i64>) -> i64 {
+    client_max_channels
+        .filter(|&c| c > 0)
+        .map_or(2, |c| c.min(6))
 }
 
 /// Channel count for audio the server re-encodes (`None` when it is copied).
-/// Keeps the source layout up to the client's declared cap, never more than 6
-/// (multichannel AAC beyond 5.1, e.g. 6.1 from DTS-HD, fails in browsers) and
-/// never upmixes. Without a declared cap it stays stereo; when the source
+/// Keeps the source layout up to the cap and never upmixes. When the source
 /// layout is unknown it is stereo, or the cap if that is lower.
 fn hls_audio_channels(
     audio_codec: &str,
@@ -1031,9 +1074,7 @@ fn hls_audio_channels(
     if audio_codec == "copy" {
         return None;
     }
-    let cap = client_max_channels
-        .filter(|&c| c > 0)
-        .map_or(2, |c| c.min(6));
+    let cap = hls_channel_cap(client_max_channels);
     let channels = source_channels
         .filter(|&c| c > 0)
         .map_or(2, |c| c.min(cap))
@@ -1043,8 +1084,14 @@ fn hls_audio_channels(
 
 /// A request for an existing play session names a different audio track than
 /// the one the session was started with (the client switched tracks).
-fn audio_track_changed(session_index: Option<i32>, requested: Option<i32>) -> bool {
-    requested.is_some_and(|r| r >= 0) && session_index != requested
+/// A session started without a named track maps the source's default one, so
+/// naming that track later is not a switch.
+fn audio_track_changed(
+    session_index: Option<i32>,
+    mapped_index: Option<i32>,
+    requested: Option<i32>,
+) -> bool {
+    requested.is_some_and(|r| r >= 0) && session_index.or(mapped_index) != requested
 }
 
 fn should_serve_ffmpeg_variant_playlist(
@@ -1755,7 +1802,8 @@ mod tests {
                 Some("aac"),
                 Ts,
                 "copy",
-                None
+                None,
+                false
             ),
             "aac"
         );
@@ -1767,7 +1815,8 @@ mod tests {
                 Some("aac"),
                 Ts,
                 "copy",
-                None
+                None,
+                false
             ),
             "aac"
         );
@@ -1782,12 +1831,21 @@ mod tests {
                 Some("aac"),
                 Ts,
                 "copy",
-                None
+                None,
+                false
             ),
             "copy"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(false, None, Some("ac3"), Ts, "copy", None),
+            super::resolve_hls_audio_codec(
+                false,
+                None,
+                Some("ac3"),
+                Ts,
+                "copy",
+                None,
+                false
+            ),
             "copy"
         );
         let hls = VideoContainer::Other("hls".to_string());
@@ -1798,7 +1856,8 @@ mod tests {
                 Some("aac"),
                 Ts,
                 "ac3",
-                None
+                None,
+                false
             ),
             "ac3"
         );
@@ -1814,7 +1873,8 @@ mod tests {
                     Some(codec),
                     Ts,
                     "copy",
-                    None
+                    None,
+                    false
                 ),
                 "aac"
             );
@@ -1830,7 +1890,8 @@ mod tests {
                 Some("flac"),
                 Fmp4,
                 "copy",
-                None
+                None,
+                false
             ),
             "copy"
         );
@@ -1842,7 +1903,8 @@ mod tests {
                     Some(codec),
                     Fmp4,
                     "copy",
-                    None
+                    None,
+                    false
                 ),
                 "aac"
             );
@@ -1852,15 +1914,39 @@ mod tests {
     #[test]
     fn live_channel_forces_aac_over_copy() {
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "copy", None),
+            super::resolve_hls_audio_codec(
+                true,
+                None,
+                Some("aac"),
+                Ts,
+                "copy",
+                None,
+                false
+            ),
             "aac"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "aac", None),
+            super::resolve_hls_audio_codec(
+                true,
+                None,
+                Some("aac"),
+                Ts,
+                "aac",
+                None,
+                false
+            ),
             "aac"
         );
         assert_eq!(
-            super::resolve_hls_audio_codec(true, None, Some("aac"), Ts, "ac3", None),
+            super::resolve_hls_audio_codec(
+                true,
+                None,
+                Some("aac"),
+                Ts,
+                "ac3",
+                None,
+                false
+            ),
             "ac3"
         );
     }
@@ -1948,7 +2034,8 @@ mod tests {
                 Some("dts"),
                 Ts,
                 "copy",
-                Some(&accepted)
+                Some(&accepted),
+                false
             ),
             "aac"
         );
@@ -1960,7 +2047,8 @@ mod tests {
                 Some("ac3"),
                 Ts,
                 "copy",
-                Some(&accepted)
+                Some(&accepted),
+                false
             ),
             "copy"
         );
@@ -1974,7 +2062,8 @@ mod tests {
                     Some("dts"),
                     Ts,
                     "copy",
-                    accepted
+                    accepted,
+                    false
                 ),
                 "copy"
             );
@@ -1986,7 +2075,8 @@ mod tests {
                 None,
                 Ts,
                 "copy",
-                Some(&accepted)
+                Some(&accepted),
+                false
             ),
             "copy"
         );
@@ -1998,7 +2088,8 @@ mod tests {
                 Some("wmapro"),
                 Ts,
                 "copy",
-                Some(&accepted)
+                Some(&accepted),
+                false
             ),
             "aac"
         );
@@ -2010,7 +2101,8 @@ mod tests {
                 Some("dts"),
                 Ts,
                 "aac",
-                Some(&accepted)
+                Some(&accepted),
+                false
             ),
             "aac"
         );
@@ -2111,6 +2203,85 @@ mod tests {
     }
 
     #[test]
+    fn copy_is_refused_when_the_source_exceeds_a_codec_channel_limit() {
+        let profile = profile_with_codec_limit();
+        assert_eq!(super::hls_codec_channel_limit(&profile, "aac"), Some(2));
+        assert_eq!(super::hls_codec_channel_limit(&profile, "ac3"), None);
+        // A 5.1 AAC source can't be copied for a client limited to stereo AAC.
+        assert_eq!(
+            super::resolve_hls_audio_codec(
+                false,
+                None,
+                Some("aac"),
+                Ts,
+                "copy",
+                None,
+                true
+            ),
+            "aac"
+        );
+    }
+
+    #[test]
+    fn a_cap_of_six_lets_5_1_pass_through_but_nothing_larger() {
+        use crate::playback::decision::audio_is_passthrough;
+        let cap = super::hls_channel_cap(Some(6));
+        assert!(audio_is_passthrough(
+            "aac",
+            Some("aac"),
+            Some(6),
+            None,
+            Some(cap),
+            None
+        ));
+        assert!(!audio_is_passthrough(
+            "aac",
+            Some("aac"),
+            Some(8),
+            None,
+            Some(cap),
+            None
+        ));
+        // No declared cap is stereo, as before.
+        let stereo = super::hls_channel_cap(None);
+        assert!(!audio_is_passthrough(
+            "aac",
+            Some("aac"),
+            Some(6),
+            None,
+            Some(stereo),
+            None
+        ));
+    }
+
+    #[tokio::test]
+    async fn unchanged_segments_answer_a_matching_etag_with_304() {
+        let path = std::env::temp_dir()
+            .join(format!("remux-hls-etag-{}.m4s", std::process::id()));
+        std::fs::write(&path, b"segment").unwrap();
+        let first = super::serve_file_with_length(&path, "video/mp4", None)
+            .await
+            .unwrap();
+        assert_eq!(first.status(), axum::http::StatusCode::OK);
+        assert_eq!(first.headers()["Cache-Control"], "no-cache");
+        let etag = first.headers()["ETag"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let again = super::serve_file_with_length(&path, "video/mp4", Some(&etag))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), axum::http::StatusCode::NOT_MODIFIED);
+        // A rewritten file (restarted transcode) no longer matches.
+        std::fs::write(&path, b"a different segment").unwrap();
+        let rewritten = super::serve_file_with_length(&path, "video/mp4", Some(&etag))
+            .await
+            .unwrap();
+        assert_eq!(rewritten.status(), axum::http::StatusCode::OK);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn etag_matching_handles_lists_weak_tags_and_wildcards() {
         assert!(super::etag_matches(Some("\"a\", \"b\""), "\"b\""));
         assert!(super::etag_matches(Some("W/\"a\""), "\"a\""));
@@ -2139,11 +2310,15 @@ mod tests {
 
     #[test]
     fn switching_audio_track_is_detected_only_for_a_named_different_track() {
-        assert!(super::audio_track_changed(Some(1), Some(3)));
-        assert!(super::audio_track_changed(None, Some(3)));
-        assert!(!super::audio_track_changed(Some(3), Some(3)));
+        assert!(super::audio_track_changed(Some(1), None, Some(3)));
+        assert!(super::audio_track_changed(None, None, Some(3)));
+        assert!(!super::audio_track_changed(Some(3), None, Some(3)));
         // The request doesn't name a track (or uses the -1 "unset" sentinel).
-        assert!(!super::audio_track_changed(Some(1), None));
-        assert!(!super::audio_track_changed(Some(1), Some(-1)));
+        assert!(!super::audio_track_changed(Some(1), None, None));
+        // Naming the default track of a session that started without one is
+        // not a switch; naming another still is.
+        assert!(!super::audio_track_changed(None, Some(1), Some(1)));
+        assert!(super::audio_track_changed(None, Some(1), Some(2)));
+        assert!(!super::audio_track_changed(Some(1), None, Some(-1)));
     }
 }
