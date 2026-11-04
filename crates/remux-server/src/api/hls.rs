@@ -431,7 +431,7 @@ async fn create_hls_session(
             .parsed_device_profile();
         let hls_profile = client_profile
             .as_ref()
-            .and_then(hls_transcoding_profile);
+            .and_then(|p| hls_transcoding_profile(p, segment_container));
         let resolved_audio_codec = resolve_hls_audio_codec(
             is_live,
             resolved_media
@@ -459,7 +459,9 @@ async fn create_hls_session(
         let audio_channels = hls_audio_channels(
             &audio_codec,
             source_audio.and_then(|s| s.channels),
-            hls_profile.and_then(|p| p.max_audio_channels),
+            client_profile
+                .as_ref()
+                .and_then(|p| hls_client_max_channels(p, hls_profile, &audio_codec)),
         );
 
         // Live streams have no fixed duration — skip all runtime lookups.
@@ -863,9 +865,17 @@ pub async fn hls_main_session_segment(
     State(state): State<AppState>,
     Path((_id, play_session_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
+    hls_segment_inner(
+        state,
+        segment_id,
+        Some(play_session_id),
+        q,
+        if_none_match(&headers),
+    )
+    .await
 }
 
 /// Returns the audio codec to use for browser-facing HLS transcoding.
@@ -898,21 +908,36 @@ fn resolve_hls_audio_codec(
     }
 }
 
-/// The transcoding profile the client declared for HLS, falling back to its
-/// first video transcoding profile.
+/// The transcoding profile the client declared for HLS in the segment
+/// container the session produces (`ts` or `mp4`), falling back to any HLS
+/// profile and then to its first video transcoding profile.
 fn hls_transcoding_profile(
     profile: &remux_sdks::remux::DeviceProfile,
+    segment_container: SegmentContainer,
 ) -> Option<&remux_sdks::remux::TranscodingProfile> {
-    profile
-        .transcoding_profiles
-        .iter()
-        .find(|p| {
-            matches!(p.type_, Some(remux_sdks::remux::DlnaProfileType::Video))
-                && matches!(
-                    p.protocol,
-                    Some(remux_sdks::remux::TranscodingProtocol::Hls)
-                )
+    use remux_sdks::remux::VideoContainer;
+    let hls = || {
+        profile
+            .transcoding_profiles
+            .iter()
+            .filter(|p| {
+                matches!(p.type_, Some(remux_sdks::remux::DlnaProfileType::Video))
+                    && matches!(
+                        p.protocol,
+                        Some(remux_sdks::remux::TranscodingProtocol::Hls)
+                    )
+            })
+    };
+    hls()
+        .find(|p| match (&p.container, segment_container) {
+            (Some(VideoContainer::Ts), SegmentContainer::Ts) => true,
+            (
+                Some(VideoContainer::Mp4 | VideoContainer::M4v),
+                SegmentContainer::Fmp4,
+            ) => true,
+            _ => false,
         })
+        .or_else(|| hls().next())
         .or_else(|| profile.video_transcoding_profile())
 }
 
@@ -935,11 +960,69 @@ fn client_accepts_audio(
     accepted.contains(&codec)
 }
 
+/// The most channels the client takes for audio the server re-encodes to
+/// `audio_codec`: the transcoding profile's `MaxAudioChannels`, narrowed by any
+/// `AudioChannels` limit in a codec profile that applies to that output codec.
+/// `None` when the client declared no cap.
+fn hls_client_max_channels(
+    profile: &remux_sdks::remux::DeviceProfile,
+    transcoding: Option<&remux_sdks::remux::TranscodingProfile>,
+    audio_codec: &str,
+) -> Option<i64> {
+    use remux_sdks::remux::{
+        CodecProfileType, ProfileConditionProperty, ProfileConditionType,
+    };
+    let declared = transcoding.and_then(|p| p.max_audio_channels)?;
+    let from_codec_profiles = profile
+        .codec_profiles
+        .iter()
+        .filter(|cp| {
+            matches!(
+                cp.type_,
+                Some(CodecProfileType::VideoAudio | CodecProfileType::Audio)
+            ) && cp
+                .codec
+                .as_ref()
+                .is_none_or(|codecs| {
+                    codecs.is_empty()
+                        || codecs
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(audio_codec))
+                })
+        })
+        .flat_map(|cp| {
+            cp.conditions
+                .iter()
+        })
+        .filter(|c| {
+            matches!(c.property, Some(ProfileConditionProperty::AudioChannels))
+                && matches!(
+                    c.condition,
+                    Some(
+                        ProfileConditionType::LessThanEqual
+                            | ProfileConditionType::Equals
+                    )
+                )
+        })
+        .filter_map(|c| {
+            c.value
+                .as_deref()
+                .and_then(|v| {
+                    v.trim()
+                        .parse::<i64>()
+                        .ok()
+                })
+        })
+        .filter(|&v| v > 0)
+        .min();
+    Some(from_codec_profiles.map_or(declared, |l| l.min(declared)))
+}
+
 /// Channel count for audio the server re-encodes (`None` when it is copied).
 /// Keeps the source layout up to the client's declared cap, never more than 6
 /// (multichannel AAC beyond 5.1, e.g. 6.1 from DTS-HD, fails in browsers) and
-/// never upmixes. Without a declared cap, or when the source layout is
-/// unknown, it stays stereo.
+/// never upmixes. Without a declared cap it stays stereo; when the source
+/// layout is unknown it is stereo, or the cap if that is lower.
 fn hls_audio_channels(
     audio_codec: &str,
     source_channels: Option<i64>,
@@ -953,7 +1036,8 @@ fn hls_audio_channels(
         .map_or(2, |c| c.min(6));
     let channels = source_channels
         .filter(|&c| c > 0)
-        .map_or(2, |c| c.min(cap));
+        .map_or(2, |c| c.min(cap))
+        .min(cap);
     Some(channels as u32)
 }
 
@@ -1098,9 +1182,10 @@ pub async fn hls_segment(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, None, q).await
+    hls_segment_inner(state, segment_id, None, q, if_none_match(&headers)).await
 }
 
 /// Segment route at the same level as main.m3u8 — browsers resolve bare
@@ -1110,9 +1195,10 @@ pub async fn hls_segment_flat(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, None, q).await
+    hls_segment_inner(state, segment_id, None, q, if_none_match(&headers)).await
 }
 
 /// Jellyfin-style HLS segment route with the playback session in the path.
@@ -1121,9 +1207,17 @@ pub async fn hls_session_segment(
     State(state): State<AppState>,
     Path((_id, play_session_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, Some(play_session_id), q).await
+    hls_segment_inner(
+        state,
+        segment_id,
+        Some(play_session_id),
+        q,
+        if_none_match(&headers),
+    )
+    .await
 }
 
 /// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
@@ -1132,9 +1226,10 @@ pub async fn hls1_segment(
     State(state): State<AppState>,
     Path((id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
     let segment_id = strip_segment_extension(&segment_file);
-    hls_segment_inner(state, segment_id, None, q).await
+    hls_segment_inner(state, segment_id, None, q, if_none_match(&headers)).await
 }
 
 fn strip_segment_extension(filename: &str) -> String {
@@ -1173,23 +1268,71 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
 /// HLS init/fragments are always fetched whole by players, so byte-range
 /// handling isn't needed — but the length header lets the browser size the
 /// response up front instead of reading a chunked stream.
+///
+/// A restarted transcode (seek, audio-track switch) rewrites files under the
+/// same URLs, so the response must not be cached blindly: it carries an `ETag`
+/// derived from the file and the client revalidates (`no-cache`) instead of
+/// reusing a fragment or init segment of the previous run.
 async fn serve_file_with_length(
     path: &std::path::Path,
     content_type: &str,
+    if_none_match: Option<&str>,
 ) -> Result<Response<Body>> {
     let file = tokio::fs::File::open(path).await?;
-    let file_size = file
+    let meta = file
         .metadata()
-        .await?
-        .len();
+        .await?;
+    let file_size = meta.len();
+    let etag = file_etag(&meta);
+    if etag_matches(if_none_match, &etag) {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header("ETag", etag)
+            .header("Cache-Control", "no-cache")
+            .body(Body::empty())
+            .unwrap());
+    }
     let body = Body::from_stream(ReaderStream::new(file));
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
         .header("Content-Length", file_size)
-        .header("Cache-Control", "public, max-age=86400")
+        .header("ETag", etag)
+        .header("Cache-Control", "no-cache")
         .body(body)
         .unwrap())
+}
+
+/// Validator that changes whenever ffmpeg rewrites the file.
+fn file_etag(meta: &std::fs::Metadata) -> String {
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|m| {
+            m.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+        })
+        .map_or(0, |d| d.as_nanos());
+    format!("\"{:x}-{:x}\"", modified, meta.len())
+}
+
+/// Whether an `If-None-Match` header names this ETag (or `*`).
+fn etag_matches(if_none_match: Option<&str>, etag: &str) -> bool {
+    if_none_match.is_some_and(|v| {
+        v.split(',')
+            .map(str::trim)
+            .any(|c| c == "*" || c.trim_start_matches("W/") == etag)
+    })
+}
+
+fn if_none_match(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        })
+        .map(str::to_owned)
 }
 
 /// Poll until `path` exists with a non-zero size and stays unchanged across
@@ -1236,6 +1379,7 @@ async fn hls_segment_inner(
     segment_id: String,
     path_session_id: Option<String>,
     q: api::HlsVideoQuery,
+    if_none_match: Option<String>,
 ) -> Result<impl IntoResponse> {
     let play_session_id = path_session_id
         .or_else(|| {
@@ -1287,7 +1431,12 @@ async fn hls_segment_inner(
             .ctx
             .sessions
             .ping(&play_session_id);
-        return serve_file_with_length(&init_path, "video/mp4").await;
+        return serve_file_with_length(
+            &init_path,
+            "video/mp4",
+            if_none_match.as_deref(),
+        )
+        .await;
     }
 
     // Derive the segment path — either from the live session or from the base
@@ -1588,7 +1737,7 @@ async fn hls_segment_inner(
         "video/mp2t"
     };
 
-    serve_file_with_length(&segment_path, content_type).await
+    serve_file_with_length(&segment_path, content_type, if_none_match.as_deref()).await
 }
 
 #[cfg(test)]
@@ -1886,9 +2035,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            super::hls_transcoding_profile(&device).and_then(|p| p
-                .audio_codec
-                .clone()),
+            super::hls_transcoding_profile(&device, super::SegmentContainer::Ts)
+                .and_then(|p| p
+                    .audio_codec
+                    .clone()),
             Some(vec![AudioCodec::Aac])
         );
     }
@@ -1906,12 +2056,67 @@ mod tests {
                 }]
             }))
             .unwrap();
-        let hls = super::hls_transcoding_profile(&profile).unwrap();
+        let hls = super::hls_transcoding_profile(&profile, super::SegmentContainer::Ts)
+            .unwrap();
         assert_eq!(hls.max_audio_channels, Some(6));
         assert_eq!(
             hls.audio_codec,
             Some(vec![AudioCodec::Aac, AudioCodec::Ac3])
         );
+    }
+
+    fn profile_with_codec_limit() -> remux_sdks::remux::DeviceProfile {
+        serde_json::from_value(serde_json::json!({
+            "TranscodingProfiles": [
+                {"Type": "Video", "Protocol": "hls", "Container": "mp4",
+                 "AudioCodec": "aac", "MaxAudioChannels": "6"},
+                {"Type": "Video", "Protocol": "hls", "Container": "ts",
+                 "AudioCodec": "aac,mp3", "MaxAudioChannels": "6"}
+            ],
+            "CodecProfiles": [{
+                "Type": "VideoAudio",
+                "Codec": "aac",
+                "Conditions": [{
+                    "Condition": "LessThanEqual",
+                    "Property": "AudioChannels",
+                    "Value": "2",
+                    "IsRequired": false
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn hls_profile_matches_the_segment_container() {
+        let profile = profile_with_codec_limit();
+        let ts = super::hls_transcoding_profile(&profile, super::SegmentContainer::Ts)
+            .unwrap();
+        assert_eq!(ts.audio_codec, Some(vec![AudioCodec::Aac, AudioCodec::Mp3]));
+        let mp4 =
+            super::hls_transcoding_profile(&profile, super::SegmentContainer::Fmp4)
+                .unwrap();
+        assert_eq!(mp4.audio_codec, Some(vec![AudioCodec::Aac]));
+    }
+
+    #[test]
+    fn output_codec_channel_limits_narrow_the_profile_cap() {
+        let profile = profile_with_codec_limit();
+        let tp = super::hls_transcoding_profile(&profile, super::SegmentContainer::Ts);
+        assert_eq!(super::hls_client_max_channels(&profile, tp, "aac"), Some(2));
+        // The limit is for AAC only.
+        assert_eq!(super::hls_client_max_channels(&profile, tp, "ac3"), Some(6));
+        let none = super::hls_client_max_channels(&profile, None, "aac");
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn etag_matching_handles_lists_weak_tags_and_wildcards() {
+        assert!(super::etag_matches(Some("\"a\", \"b\""), "\"b\""));
+        assert!(super::etag_matches(Some("W/\"a\""), "\"a\""));
+        assert!(super::etag_matches(Some("*"), "\"a\""));
+        assert!(!super::etag_matches(Some("\"a\""), "\"b\""));
+        assert!(!super::etag_matches(None, "\"a\""));
     }
 
     #[test]
@@ -1921,6 +2126,8 @@ mod tests {
         // No declared cap or unknown source: stereo, as before.
         assert_eq!(super::hls_audio_channels("aac", Some(6), None), Some(2));
         assert_eq!(super::hls_audio_channels("aac", None, Some(6)), Some(2));
+        // An unknown source layout still respects a mono-only client.
+        assert_eq!(super::hls_audio_channels("aac", None, Some(1)), Some(1));
         // 5.1 DTS for a client that takes 6 channels stays 5.1.
         assert_eq!(super::hls_audio_channels("aac", Some(6), Some(6)), Some(6));
         // Never upmixes, never exceeds the cap or 6.
