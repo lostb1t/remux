@@ -146,35 +146,17 @@ async fn create_hls_session(
     }
     // A client that switches audio track keeps the PlaySessionId. Reusing the
     // session would keep the old track (and the codec decided for it), so
-    // restart it for the requested one.
-    if let Some(existing) = state
-        .ctx
-        .sessions
-        .get_transcode(&play_session_id)
-    {
-        let (session_audio, mapped_audio) = {
-            let session = existing
-                .read()
-                .await;
-            (session.audio_stream_index, session.source_audio_index)
-        };
-        let requested_audio = q
-            .audio_stream_index
-            .map(|v| v as i32);
-        if audio_track_changed(session_audio, mapped_audio, requested_audio) {
-            debug!(
-                play_session_id = %play_session_id,
-                ?session_audio,
-                ?requested_audio,
-                "audio track changed — stopping old transcode session and restarting"
-            );
-            state
-                .ctx
-                .sessions
-                .stop_transcode(&play_session_id)
-                .await;
-        }
-    }
+    // restart it for the requested one. Runs under `_create_guard`, so two
+    // requests for the same session cannot both stop and recreate it.
+    restart_on_audio_switch(
+        &state
+            .ctx
+            .sessions,
+        &play_session_id,
+        q.audio_stream_index
+            .map(|v| v as i32),
+    )
+    .await;
     let session = if let Some(existing) = state
         .ctx
         .sessions
@@ -616,14 +598,13 @@ async fn create_hls_session(
             session_hw_accel,
         );
 
-        session
-            .write()
-            .await
-            .audio_channels = audio_channels;
-        session
-            .write()
-            .await
-            .source_audio_index = source_audio.map(|s| s.index as i32);
+        {
+            let mut session = session
+                .write()
+                .await;
+            session.audio_channels = audio_channels;
+            session.source_audio_index = source_audio.map(|s| s.index as i32);
+        }
         state
             .ctx
             .sessions
@@ -969,21 +950,23 @@ fn hls_transcoding_profile(
 
 /// Whether the client's transcoding profile lists the source audio codec, so it
 /// can be copied into the segments. No list (or an empty one) means the client
-/// declared no restriction, and a source without a known codec is left alone.
+/// declared no restriction, and a source without a codec is left alone. A codec
+/// that cannot be recognised is not accepted when the client listed codecs.
 fn client_accepts_audio(
     source_audio_codec: Option<&str>,
     client_audio_codecs: Option<&[AudioCodec]>,
 ) -> bool {
     let (Some(codec), Some(accepted)) = (
-        source_audio_codec.and_then(|c| {
-            c.parse::<AudioCodec>()
-                .ok()
-        }),
+        source_audio_codec,
         client_audio_codecs.filter(|list| !list.is_empty()),
     ) else {
         return true;
     };
-    accepted.contains(&codec)
+    // Against an explicit allowlist a codec we cannot name is not known to be
+    // playable, so it is re-encoded rather than copied.
+    codec
+        .parse::<AudioCodec>()
+        .is_ok_and(|codec| accepted.contains(&codec))
 }
 
 /// The `AudioChannels` limit a codec profile puts on `audio_codec`, if any.
@@ -1080,6 +1063,37 @@ fn hls_audio_channels(
         .map_or(2, |c| c.min(cap))
         .min(cap);
     Some(channels as u32)
+}
+
+/// Stops the session's transcode when `requested` names a different audio track
+/// than the one it maps. Returns whether it was stopped.
+async fn restart_on_audio_switch(
+    sessions: &crate::playback_session::PlaybackSessionManager,
+    play_session_id: &str,
+    requested: Option<i32>,
+) -> bool {
+    let Some(existing) = sessions.get_transcode(play_session_id) else {
+        return false;
+    };
+    let (session_audio, mapped_audio) = {
+        let session = existing
+            .read()
+            .await;
+        (session.audio_stream_index, session.source_audio_index)
+    };
+    if !audio_track_changed(session_audio, mapped_audio, requested) {
+        return false;
+    }
+    debug!(
+        play_session_id = %play_session_id,
+        ?session_audio,
+        ?requested,
+        "audio track changed — stopping old transcode session and restarting"
+    );
+    sessions
+        .stop_transcode(play_session_id)
+        .await;
+    true
 }
 
 /// A request for an existing play session names a different audio track than
@@ -2200,6 +2214,104 @@ mod tests {
         assert_eq!(super::hls_client_max_channels(&profile, tp, "ac3"), Some(6));
         let none = super::hls_client_max_channels(&profile, None, "aac");
         assert_eq!(none, None);
+    }
+
+    #[test]
+    fn an_unrecognised_source_codec_is_not_copied_to_a_client_with_an_allowlist() {
+        let accepted = [AudioCodec::Aac];
+        assert!(!super::client_accepts_audio(
+            Some("mystery"),
+            Some(&accepted)
+        ));
+        assert!(super::client_accepts_audio(Some("mystery"), None));
+        assert!(super::client_accepts_audio(None, Some(&accepted)));
+    }
+
+    fn transcode_for_test(
+        dir: &std::path::Path,
+        audio_index: Option<i32>,
+    ) -> std::sync::Arc<tokio::sync::RwLock<crate::playback::session::TranscodeSession>>
+    {
+        crate::playback::session::TranscodeSession::new(
+            "ps".into(),
+            uuid::Uuid::nil(),
+            uuid::Uuid::nil(),
+            "http://example.invalid/video".into(),
+            dir.to_path_buf(),
+            "copy".into(),
+            "aac".into(),
+            audio_index,
+            None,
+            false,
+            6,
+            Default::default(),
+            0,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn concurrent_audio_switches_restart_the_session_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = std::env::temp_dir()
+            .join(format!("remux-hls-switch-{}", std::process::id()));
+        let sessions = std::sync::Arc::new(
+            crate::playback_session::PlaybackSessionManager::new(&dir),
+        );
+        let locks = std::sync::Arc::new(crate::keyed_lock::KeyedLock::<String>::new());
+        sessions.attach_transcode("ps", transcode_for_test(&dir.join("old"), Some(1)));
+        let created = std::sync::Arc::new(AtomicUsize::new(0));
+
+        // Every request takes the create lock, restarts on a switch and builds
+        // a session only when none is left, as `create_hls_session` does.
+        let request = |new_dir: std::path::PathBuf| {
+            let (sessions, locks, created) =
+                (sessions.clone(), locks.clone(), created.clone());
+            tokio::spawn(async move {
+                let _guard = locks
+                    .lock("ps".to_string())
+                    .await;
+                super::restart_on_audio_switch(&sessions, "ps", Some(2)).await;
+                if sessions
+                    .get_transcode("ps")
+                    .is_none()
+                {
+                    created.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    sessions
+                        .attach_transcode("ps", transcode_for_test(&new_dir, Some(2)));
+                }
+            })
+        };
+        let all = (0..8).map(|i| request(dir.join(format!("new{i}"))));
+        for task in all.collect::<Vec<_>>() {
+            task.await
+                .unwrap();
+        }
+
+        assert_eq!(created.load(Ordering::SeqCst), 1);
+        let current = sessions
+            .get_transcode("ps")
+            .unwrap();
+        assert_eq!(
+            current
+                .read()
+                .await
+                .audio_stream_index,
+            Some(2)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
