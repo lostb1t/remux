@@ -363,14 +363,19 @@ async fn create_hls_session(
             .and_then(|p| hls_transcoding_profile(p, segment_container));
         // Channels the client takes for audio re-encoded to `codec`. Live
         // channels always go out as stereo (see the LATM note below).
+        let requested_cap = [q.transcoding_max_audio_channels, q.max_audio_channels]
+            .into_iter()
+            .flatten()
+            .filter(|&c| c > 0)
+            .min();
         let channel_cap = |codec: &str| {
             if is_live {
-                None
-            } else {
-                client_profile
-                    .as_ref()
-                    .and_then(|p| hls_client_max_channels(p, hls_profile, codec))
+                return None;
             }
+            let profile_cap = client_profile
+                .as_ref()
+                .and_then(|p| hls_client_max_channels(p, hls_profile, codec));
+            min_cap(profile_cap, requested_cap)
         };
         // Re-encoded audio keeps the source layout up to the client's cap, so
         // only a source within that cap can be passed through unchanged.
@@ -425,8 +430,9 @@ async fn create_hls_session(
         //
         // Workaround: always re-encode audio to standard ADTS AAC stereo for
         // live channels, regardless of what the client negotiated. The
-        // existing audio_channels logic (None for copy, Some(2) for transcode)
-        // then kicks in automatically and produces the correct stereo downmix.
+        // existing audio_channels logic (None for copy) then produces the
+        // stereo downmix, because `channel_cap` declares no cap for live.
+
         // A codec profile can cap the channels of a codec the client plays, which
         // rules out copying a source with more than that.
         let copy_exceeds_channel_limit = client_profile
@@ -917,7 +923,8 @@ fn resolve_hls_audio_codec(
 
 /// The transcoding profile the client declared for HLS in the segment
 /// container the session produces (`ts` or `mp4`), falling back to any HLS
-/// profile and then to its first video transcoding profile.
+/// profile. A non-HLS profile (e.g. progressive mkv) says nothing about what
+/// the segments may carry, so none is used then.
 fn hls_transcoding_profile(
     profile: &remux_sdks::remux::DeviceProfile,
     segment_container: SegmentContainer,
@@ -945,7 +952,6 @@ fn hls_transcoding_profile(
             _ => false,
         })
         .or_else(|| hls().next())
-        .or_else(|| profile.video_transcoding_profile())
 }
 
 /// Whether the client's transcoding profile lists the source audio codec, so it
@@ -1035,6 +1041,14 @@ fn hls_client_max_channels(
         hls_codec_channel_limit(profile, audio_codec)
             .map_or(declared, |l| l.min(declared)),
     )
+}
+
+/// The lower of two optional caps; either alone when only one is declared.
+fn min_cap(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// The channel count re-encoded audio is capped at: the client's declared cap,
@@ -2312,6 +2326,32 @@ mod tests {
             Some(2)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn requested_and_profile_caps_combine_to_the_lower() {
+        assert_eq!(super::min_cap(Some(6), Some(2)), Some(2));
+        assert_eq!(super::min_cap(None, Some(2)), Some(2));
+        assert_eq!(super::min_cap(Some(6), None), Some(6));
+        assert_eq!(super::min_cap(None, None), None);
+    }
+
+    #[test]
+    fn a_client_without_an_hls_profile_declares_no_audio_allowlist() {
+        let profile: remux_sdks::remux::DeviceProfile =
+            serde_json::from_value(serde_json::json!({
+                "TranscodingProfiles": [{
+                    "Type": "Video",
+                    "Protocol": "http",
+                    "Container": "mkv",
+                    "AudioCodec": "dts,aac"
+                }]
+            }))
+            .unwrap();
+        assert!(
+            super::hls_transcoding_profile(&profile, super::SegmentContainer::Ts)
+                .is_none()
+        );
     }
 
     #[test]
