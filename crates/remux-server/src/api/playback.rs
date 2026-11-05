@@ -934,6 +934,13 @@ async fn items_playbackinfo_inner(
     } else {
         0
     };
+    if let Some(source) = media_sources.get(selected_idx) {
+        StreamService::save_advertised_tracks(
+            &state.ctx,
+            &play_session_id,
+            &source.media_streams,
+        );
+    }
     if let Some(extras) = source_extras.get(selected_idx) {
         service.save_selected_stream(
             &play_session_id,

@@ -122,6 +122,14 @@ fn quality_ordered_probe_pool(streams: &[db::Media]) -> Vec<db::Media> {
     pool
 }
 
+/// A track PlaybackInfo listed for a session.
+#[derive(Clone)]
+struct AdvertisedTrack {
+    index: i64,
+    kind: api::MediaStreamType,
+    language: Option<String>,
+}
+
 /// How long a playback session may go without a report and still count as the
 /// one a PlaybackInfo continues.
 const RUNNING_RELEASE_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
@@ -1270,8 +1278,38 @@ impl StreamService {
         }
     }
 
-    /// Two-letter language of track `index` in the release `play_session_id`
-    /// is playing, if it has one.
+    /// Remember the tracks PlaybackInfo advertised for `play_session_id`, with
+    /// the language of each. Addon and sidecar subtitles are added after the
+    /// probe, so their indexes exist nowhere else.
+    pub fn save_advertised_tracks(
+        ctx: &AppContext,
+        play_session_id: &str,
+        streams: &[api::MediaStream],
+    ) {
+        let tracks: Vec<AdvertisedTrack> = streams
+            .iter()
+            .filter_map(|s| {
+                Some(AdvertisedTrack {
+                    index: s.index,
+                    kind: s
+                        .type_
+                        .clone()?,
+                    language: s
+                        .language
+                        .clone(),
+                })
+            })
+            .collect();
+        ctx.store
+            .save(
+                format!("ptracks:{play_session_id}"),
+                tracks,
+                std::time::Duration::from_secs(24 * 3600),
+            );
+    }
+
+    /// Two-letter language of track `index` in what `play_session_id` was
+    /// told, if it has one.
     async fn track_language(
         ctx: &AppContext,
         play_session_id: &str,
@@ -1280,6 +1318,20 @@ impl StreamService {
         index: i32,
         kind: api::MediaStreamType,
     ) -> Option<String> {
+        let index = i64::from(index);
+        if let Some(tracks) = ctx
+            .store
+            .get::<Vec<AdvertisedTrack>>(format!("ptracks:{play_session_id}"))
+        {
+            return tracks
+                .iter()
+                .find(|t| t.index == index && t.kind == kind)?
+                .language
+                .as_deref()
+                .and_then(remux_sdks::remux::lang_to_two_letter);
+        }
+        // No PlaybackInfo answered this session (a client that skipped it):
+        // the probed release is the best there is.
         let release = Self::selected_stream_for(ctx, play_session_id, item_id)
             .or_else(|| {
                 let source = media_source_id.and_then(|id| Uuid::parse_str(id).ok())?;
@@ -1292,7 +1344,7 @@ impl StreamService {
             .probe_data?
             .media_streams
             .into_iter()
-            .find(|s| s.type_ == Some(kind.clone()) && s.index == i64::from(index))?
+            .find(|s| s.type_ == Some(kind.clone()) && s.index == index)?
             .language?;
         remux_sdks::remux::lang_to_two_letter(&language)
     }

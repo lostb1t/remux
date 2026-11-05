@@ -2988,6 +2988,9 @@ impl MediaSourceInfo {
         // fallback override it, matching Jellyfin's behaviour.
         let mut audio_decided = false;
         let mut subtitle_decided = false;
+        // The user last watched without subtitles: no subtitle mode turns them
+        // back on.
+        let mut subtitles_remembered_off = false;
 
         // --- client explicit selection wins ---
         if client_wants_audio {
@@ -3023,6 +3026,7 @@ impl MediaSourceInfo {
                 Some(RememberedSubtitle::Off) => {
                     self.default_subtitle_stream_index = None;
                     subtitle_decided = true;
+                    subtitles_remembered_off = true;
                 }
                 Some(RememberedSubtitle::Language(lang)) => {
                     if let Some(stream) = self.best_subtitle_for_language(lang) {
@@ -3035,7 +3039,16 @@ impl MediaSourceInfo {
         }
 
         // --- remembered selections ---
-        if !client_wants_audio && !audio_decided && user.remember_audio_selections {
+        // A remembered language that this release lacks must not fall back to
+        // an index: the index belongs to another release and would pick an
+        // unrelated language. It only serves rows saved before languages were.
+        if !client_wants_audio
+            && !audio_decided
+            && languages
+                .audio
+                .is_none()
+            && user.remember_audio_selections
+        {
             if let Some(idx) = remembered_audio {
                 if self.stream_exists(idx, MediaStreamType::Audio) {
                     self.default_audio_stream_index = Some(idx);
@@ -3045,6 +3058,9 @@ impl MediaSourceInfo {
         }
         if !client_wants_subtitle
             && !subtitle_decided
+            && languages
+                .subtitle
+                .is_none()
             && user.remember_subtitle_selections
         {
             if let Some(idx) = remembered_subtitle {
@@ -3159,7 +3175,9 @@ impl MediaSourceInfo {
         }
 
         // --- subtitle_mode ---
-        self.apply_subtitle_mode(&user.subtitle_mode);
+        if !subtitles_remembered_off {
+            self.apply_subtitle_mode(&user.subtitle_mode);
+        }
     }
 
     /// Modes only decide the *selection* (`default_subtitle_stream_index`); the
@@ -9028,12 +9046,47 @@ mod tests {
     /// language preferences) decide instead of an unrelated track.
     #[test]
     fn remembered_language_missing_in_the_release_falls_through() {
+        // The index belongs to another release: it must not pick an
+        // unrelated language here.
         let mut src = source_with_subs();
         resolve_with(&mut src, &user_cfg(), Some(1), &languages(Some("de"), None));
-        assert_eq!(src.default_audio_stream_index, Some(1));
-        let mut src = source_with_subs();
-        resolve_with(&mut src, &user_cfg(), None, &languages(Some("de"), None));
         assert_eq!(src.default_audio_stream_index, None);
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = false;
+        cfg.audio_language_preference = Some("eng".to_string());
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &cfg, Some(2), &languages(Some("de"), None));
+        assert_eq!(
+            src.default_audio_stream_index,
+            Some(1),
+            "the configured preference decides"
+        );
+        // Rows saved before languages existed still use their index.
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &user_cfg(), Some(2), &languages(None, None));
+        assert_eq!(src.default_audio_stream_index, Some(2));
+    }
+
+    /// A remembered "off" is not undone by a subtitle mode that would pick a
+    /// track on its own.
+    #[test]
+    fn remembered_subtitles_off_beats_the_subtitle_mode() {
+        let mut cfg = user_cfg();
+        cfg.subtitle_mode = SubtitleMode::Always;
+        let mut src = source_with_subs();
+        resolve_with(
+            &mut src,
+            &cfg,
+            None,
+            &languages(None, Some(RememberedSubtitle::Off)),
+        );
+        assert_eq!(src.default_subtitle_stream_index, None);
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &cfg, None, &languages(None, None));
+        assert!(
+            src.default_subtitle_stream_index
+                .is_some()
+        );
     }
 
     /// An explicit request from the client still wins over a remembered

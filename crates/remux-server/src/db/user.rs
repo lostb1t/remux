@@ -448,7 +448,9 @@ pub struct UserMediaState {
     /// Two-letter code of the audio language the user last chose here.
     pub audio_lang: Option<String>,
     /// `off` or a two-letter code, as [`remux_sdks::remux::RememberedSubtitle`] stores it.
+    pub audio_lang_at: Option<NaiveDateTime>,
     pub subtitle_lang: Option<String>,
+    pub subtitle_lang_at: Option<NaiveDateTime>,
     /// Set via [`UserMediaState::set_rating`] so it only holds parsed [`UserRating`]s.
     pub rating: Option<f64>,
     /// Set via [`UserMediaState::set_flag`] so `watchlisted_at` stays in step.
@@ -671,6 +673,9 @@ impl UserMediaState {
                                 .audio_lang
                                 .clone()
                         }),
+                    audio_lang_at: primary
+                        .audio_lang_at
+                        .or(other.audio_lang_at),
                     subtitle_lang: primary
                         .subtitle_lang
                         .clone()
@@ -679,6 +684,9 @@ impl UserMediaState {
                                 .subtitle_lang
                                 .clone()
                         }),
+                    subtitle_lang_at: primary
+                        .subtitle_lang_at
+                        .or(other.subtitle_lang_at),
                     rating: primary
                         .rating
                         .or(other.rating),
@@ -701,9 +709,10 @@ impl UserMediaState {
             INSERT INTO user_media_state (
                 user_id, media_id, media_raw, stream_id, favorite, play_count,
                 played_at, playback_position, last_played_at, subtitle_idx, audio_idx, rating,
-                watchlist, ignored, watchlisted_at, audio_lang, subtitle_lang
+                watchlist, ignored, watchlisted_at, audio_lang, audio_lang_at,
+                subtitle_lang, subtitle_lang_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(user_id, media_id) DO UPDATE SET
                 media_raw = excluded.media_raw,
                 stream_id = excluded.stream_id,
@@ -719,7 +728,9 @@ impl UserMediaState {
                 ignored = excluded.ignored,
                 watchlisted_at = excluded.watchlisted_at,
                 audio_lang = excluded.audio_lang,
-                subtitle_lang = excluded.subtitle_lang
+                audio_lang_at = excluded.audio_lang_at,
+                subtitle_lang = excluded.subtitle_lang,
+                subtitle_lang_at = excluded.subtitle_lang_at
             "#,
         )
         .bind(merged.user_id)
@@ -738,7 +749,9 @@ impl UserMediaState {
         .bind(merged.ignored)
         .bind(merged.watchlisted_at)
         .bind(&merged.audio_lang)
+        .bind(merged.audio_lang_at)
         .bind(&merged.subtitle_lang)
+        .bind(merged.subtitle_lang_at)
         .execute(&mut *tx)
         .await?;
 
@@ -1257,7 +1270,7 @@ impl UserMediaState {
         sqlx::query_scalar(&format!(
             "SELECT {column} FROM user_media_state \
              WHERE user_id = ?1 AND {column} IS NOT NULL \
-             ORDER BY last_played_at DESC LIMIT 1"
+             ORDER BY {column}_at DESC LIMIT 1"
         ))
         .bind(user_id)
         .fetch_optional(db)
@@ -1280,10 +1293,13 @@ impl UserMediaState {
             return Ok(());
         }
         let mut ms = Self::get_or_new(db, user, media).await?;
+        let now = chrono::Utc::now().naive_utc();
         if let Some(audio) = audio {
             ms.audio_lang = Some(audio.to_string());
+            ms.audio_lang_at = Some(now);
         }
         if let Some(subtitle) = subtitle {
+            ms.subtitle_lang_at = Some(now);
             ms.subtitle_lang = Some(
                 subtitle
                     .as_stored()
@@ -1319,9 +1335,11 @@ impl UserMediaState {
                 ignored,
                 watchlisted_at,
                 audio_lang,
-                subtitle_lang
+                audio_lang_at,
+                subtitle_lang,
+                subtitle_lang_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(user_id, media_id)
             DO UPDATE SET
                 media_raw = excluded.media_raw,
@@ -1338,7 +1356,9 @@ impl UserMediaState {
                 ignored = excluded.ignored,
                 watchlisted_at = excluded.watchlisted_at,
                 audio_lang = excluded.audio_lang,
-                subtitle_lang = excluded.subtitle_lang
+                audio_lang_at = excluded.audio_lang_at,
+                subtitle_lang = excluded.subtitle_lang,
+                subtitle_lang_at = excluded.subtitle_lang_at
             "#,
         )
         .bind(self.user_id)
@@ -1357,7 +1377,9 @@ impl UserMediaState {
         .bind(self.ignored)
         .bind(self.watchlisted_at)
         .bind(&self.audio_lang)
+        .bind(self.audio_lang_at)
         .bind(&self.subtitle_lang)
+        .bind(self.subtitle_lang_at)
         .execute(db)
         .await?;
 
@@ -2210,6 +2232,79 @@ mod identity_reattach_tests {
         .unwrap();
         assert!(row.favorite, "save() must not have wiped it");
         assert_eq!(row.play_count, 7);
+    }
+
+    /// A title with no choice of its own follows the language chosen most
+    /// recently, not the title played most recently: replaying an old title
+    /// moves `last_played_at`, which is not a choice.
+    #[tokio::test]
+    async fn the_last_chosen_language_wins_over_the_last_played_title() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let movie = async |imdb: &str| {
+            let mut movie = db::Media {
+                title: imdb.to_string(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            movie
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            movie
+        };
+        let (a, b, c) = (
+            movie("tt0000001").await,
+            movie("tt0000002").await,
+            movie("tt0000003").await,
+        );
+        let off = remux_sdks::remux::RememberedSubtitle::Off;
+        UserMediaState::remember_languages(&ctx.db, &user, &a, Some("fr"), Some(&off))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        UserMediaState::remember_languages(&ctx.db, &user, &b, Some("en"), None)
+            .await
+            .unwrap();
+        // Replaying `a` moves its play time past `b`'s.
+        sqlx::query(
+            "UPDATE user_media_state SET last_played_at = ? WHERE media_id = ?",
+        )
+        .bind(chrono::Utc::now().naive_utc() + chrono::Duration::minutes(1))
+        .bind(a.id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let for_c =
+            UserMediaState::remembered_languages(&ctx.db, &user.id, &c.id).await;
+        assert_eq!(
+            for_c
+                .audio
+                .as_deref(),
+            Some("en")
+        );
+        // Audio and subtitles look separately: only `a` ever chose subtitles.
+        assert_eq!(for_c.subtitle, Some(off));
+        // A title's own choice comes first.
+        let for_a =
+            UserMediaState::remembered_languages(&ctx.db, &user.id, &a.id).await;
+        assert_eq!(
+            for_a
+                .audio
+                .as_deref(),
+            Some("fr")
+        );
     }
 
     /// A row can already exist at the *target* id when `get_or_new` goes to
