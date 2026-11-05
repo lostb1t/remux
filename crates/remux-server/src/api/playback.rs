@@ -222,6 +222,17 @@ async fn items_playbackinfo_inner(
     id: Uuid,
     mut q: api::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
+    if let Some(running) = StreamService::running_release(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        id,
+        q.media_source_id,
+    ) {
+        debug!(%running, "PlaybackInfo stays on the release being played");
+        q.media_source_id = Some(running);
+    }
     let media_source_id = q.media_source_id;
 
     trace!(?id, ?q, "items_playbackinfo");
@@ -360,7 +371,11 @@ async fn items_playbackinfo_inner(
                 .id,
         ),
     });
-    let is_live = media.is_live();
+    // A pinned or picked stream is a child of the channel: the channel decides.
+    let is_live = media.is_live()
+        || title
+            .as_ref()
+            .is_some_and(|item| item.is_live());
 
     // A live channel's source is often an addon relay URL. It may be a valid
     // HLS stream, but browsers cannot reliably open it directly: redirects,
@@ -3292,6 +3307,165 @@ mod tests {
                 "SupportsDirectPlay": true,
             }]
         }));
+    }
+
+    /// A client that changes audio track mid-playback asks PlaybackInfo again
+    /// with the item id (the id auto-play handed out for source 0). That must
+    /// stay on the release being played, not rank the releases anew, or the
+    /// track index chosen for the old release lands on another language.
+    #[tokio::test]
+    async fn playbackinfo_during_playback_stays_on_the_playing_release() {
+        use crate::{
+            integration_test::{auth_header_with_token, seed_movie},
+            services::stream_service::{StreamService, StreamServiceConfig},
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let owner = seed_movie(ctx).await;
+        let now = chrono::Utc::now().naive_utc();
+        let mut releases = vec![];
+        for name in ["first", "second"] {
+            let template = insert_test_source(ctx).await;
+            let mut release = crate::db::Media {
+                title: name.to_string(),
+                kind: crate::db::MediaKind::Stream,
+                parent_id: Some(owner.id),
+                stream_info: template.stream_info,
+                probe_data: template.probe_data,
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            release
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            releases.push(release);
+        }
+        // Already refreshed, so no refresh drops the releases as stale.
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(5))
+            .bind(owner.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        // The release playing is the one that does not rank first.
+        let playing = releases
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .unwrap();
+        let device = crate::db::auth::Device::get_by_access_token(&ctx.db, &token)
+            .await
+            .unwrap()
+            .unwrap();
+        StreamService::new(StreamServiceConfig {
+            ctx: ctx.clone(),
+            item_id: owner.id,
+            requested_id: None,
+            show_ungrouped: true,
+            stream_filter: None,
+            user_id: Some(device.user_id),
+        })
+        .save_selected_stream("running", &device.id, false, playing, playing);
+
+        let ask = async || {
+            let resp = server
+                .post(&format!(
+                    "/items/{}/playbackinfo?MediaSourceId={}&AudioStreamIndex=1",
+                    owner.id, owner.id
+                ))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&json!({}))
+                .await;
+            resp.assert_status_ok();
+            let body: serde_json::Value = resp.json();
+            let ids = body["MediaSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    s["Id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            (
+                ids,
+                body["PlaySessionId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
+        };
+
+        assert_eq!(
+            ask()
+                .await
+                .0[0],
+            owner
+                .id
+                .simple()
+                .to_string(),
+            "nothing is playing: auto-play lists the best release under the item id"
+        );
+
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({
+                "ItemId": owner.id.simple().to_string(),
+                "PlaySessionId": "running",
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let playing_ids = vec![
+            playing
+                .simple()
+                .to_string(),
+        ];
+        let (ids, next_session) = ask().await;
+        assert_eq!(ids, playing_ids, "playback is running: stay on its release");
+
+        // The client starts the session the answer named; a second switch
+        // (by item id again, or without any id) must still stay on it.
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({
+                "ItemId": owner.id.simple().to_string(),
+                "PlaySessionId": next_session,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            ask()
+                .await
+                .0,
+            playing_ids,
+            "the restarted session keeps the release too"
+        );
+
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({
+                "ItemId": owner.id.simple().to_string(),
+                "PlaySessionId": next_session,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            ask()
+                .await
+                .0
+                .len(),
+            2,
+            "playback ended: a fresh play ranks anew"
+        );
     }
 
     /// Switching audio (and subtitles) while watching one title is remembered

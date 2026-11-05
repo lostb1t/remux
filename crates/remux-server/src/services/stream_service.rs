@@ -122,6 +122,10 @@ fn quality_ordered_probe_pool(streams: &[db::Media]) -> Vec<db::Media> {
     pool
 }
 
+/// How long a playback session may go without a report and still count as the
+/// one a PlaybackInfo continues.
+const RUNNING_RELEASE_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
+
 impl StreamService {
     /// Capability-ranks `items` best-first. `describe` yields each item's
     /// `MediaSourceInfo` and whether on-demand subtitle extraction is
@@ -1068,6 +1072,22 @@ impl StreamService {
                 effective_stream_id,
                 std::time::Duration::from_secs(24 * 3600),
             );
+        // A client continuing playback (audio switch) asks again by item id,
+        // so the release must be findable under it as well as under the
+        // release id the answer carried.
+        if self
+            .group
+            .is_none()
+            && source_id != self.item_id
+        {
+            self.ctx
+                .store
+                .save(
+                    Self::selected_stream_key(play_session_id, self.item_id),
+                    effective_stream_id,
+                    std::time::Duration::from_secs(24 * 3600),
+                );
+        }
         // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
         // DeviceId query parameter, and subtitle downloads carry no
         // PlaySessionId either. Keep a mapping for those requests too, keyed
@@ -1275,6 +1295,37 @@ impl StreamService {
             .find(|s| s.type_ == Some(kind.clone()) && s.index == i64::from(index))?
             .language?;
         remux_sdks::remux::lang_to_two_letter(&language)
+    }
+
+    /// The release `device_id` is playing for `item_id` right now, when a
+    /// PlaybackInfo for that item should stay on it.
+    ///
+    /// Auto-play answers stamp the first source's id with the item id, so a
+    /// client that changes audio track or restarts mid-playback asks again with
+    /// `MediaSourceId == item_id`. Ranking the releases anew would pick another
+    /// release whenever the requested track index favours it, and the index
+    /// (valid for the old release only) would then land on the wrong language.
+    /// A request that names a specific source is never overridden, and neither
+    /// is one for an item the device is not playing, or whose session went
+    /// quiet (a client that died without reporting a stop): a fresh play ranks
+    /// anew.
+    pub fn running_release(
+        ctx: &AppContext,
+        device_id: &str,
+        item_id: Uuid,
+        requested: Option<Uuid>,
+    ) -> Option<Uuid> {
+        if requested.is_some_and(|id| id != item_id) {
+            return None;
+        }
+        let running = ctx
+            .sessions
+            .get_by_device(device_id)
+            .filter(|session| session.item_id == item_id)
+            .filter(|session| {
+                chrono::Utc::now() - session.last_activity < RUNNING_RELEASE_WINDOW
+            })?;
+        Self::selected_stream_for(ctx, &running.play_session_id, item_id)
     }
 
     fn device_selected_stream_key(
