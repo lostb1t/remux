@@ -133,9 +133,11 @@ fn deserialize_simple<'de, D>(d: D) -> Result<ResourceType, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    // Only accept a string for the Simple variant:
+    // Only accept a string for the Simple variant. A name this server does not
+    // know is kept as `Other`, like the detailed form does: a manifest listing
+    // a resource of its own must still be readable.
     let s = String::deserialize(d)?;
-    ResourceType::from_str(&s).map_err(serde::de::Error::custom)
+    Ok(ResourceType::from_str(&s).unwrap_or(ResourceType::Other(s)))
 }
 
 impl Resource {
@@ -1360,6 +1362,49 @@ mod tests {
                 start: 2016,
                 end: 2025
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    /// Manifests list resources this server has never heard of (AIOMetadata
+    /// advertises `watch_state` and `playback`). They must not make the whole
+    /// manifest unreadable.
+    #[test]
+    fn a_manifest_with_unknown_resources_still_parses() {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id": "aiometadata",
+            "name": "AIOMetadata",
+            "version": "1.0.0",
+            "resources": [
+                "catalog",
+                "meta",
+                "watch_state",
+                "playback",
+                {"name": "stream", "types": ["movie"]},
+                {"name": "something_new", "types": ["movie"]}
+            ],
+            "types": ["movie", "series"]
+        }))
+        .unwrap();
+        let kinds: Vec<_> = manifest
+            .resources
+            .iter()
+            .map(Resource::resource_type)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ResourceType::Catalog,
+                ResourceType::Meta,
+                ResourceType::Other("watch_state".into()),
+                ResourceType::Other("playback".into()),
+                ResourceType::Stream,
+                ResourceType::Other("something_new".into()),
+            ]
         );
     }
 }
