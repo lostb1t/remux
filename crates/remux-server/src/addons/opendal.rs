@@ -918,7 +918,7 @@ impl StreamAddon for OpendalAddon {
             .operator
             .stat(path)
             .await
-            .context_not_found("file not found in opendal backend")?;
+            .map_err(|e| backend_error(self.addon_id, path, "stat", e))?;
         let file_size = meta.content_length();
         let content_type = crate::stream::mime_from_path(std::path::Path::new(path));
 
@@ -942,11 +942,11 @@ impl StreamAddon for OpendalAddon {
                 .operator
                 .reader_with(path)
                 .await
-                .context_bad_request("failed to open opendal reader")?;
+                .map_err(|e| backend_error(self.addon_id, path, "open", e))?;
             let bytes_stream = reader
                 .into_bytes_stream(start..start + length)
                 .await
-                .context_bad_request("failed to create opendal byte stream")?
+                .map_err(|e| backend_error(self.addon_id, path, "read", e))?
                 .map_err(io::Error::other);
 
             Ok(axum::response::Response::builder()
@@ -965,11 +965,11 @@ impl StreamAddon for OpendalAddon {
                 .operator
                 .reader(path)
                 .await
-                .context_bad_request("failed to open opendal reader")?;
+                .map_err(|e| backend_error(self.addon_id, path, "open", e))?;
             let bytes_stream = reader
                 .into_bytes_stream(..)
                 .await
-                .context_bad_request("failed to create opendal byte stream")?
+                .map_err(|e| backend_error(self.addon_id, path, "read", e))?
                 .map_err(io::Error::other);
 
             Ok(axum::response::Response::builder()
@@ -2255,6 +2255,40 @@ async fn run_probe_jobs(ctx: &AppContext, addon: &Addon, jobs: Vec<ProbeJob>) {
     info!(addon = %addon.name, stored, "opendal: probing complete");
 }
 
+/// The response for a storage backend that failed to serve `path`, with what the
+/// backend actually said logged: a file that is gone is a 404, but a refused
+/// login or an unreachable server is not, and answering 404 for those sent
+/// people looking for a missing file.
+fn backend_error(
+    addon_id: Uuid,
+    path: &str,
+    step: &str,
+    error: opendal::Error,
+) -> axum_anyhow::ApiError {
+    use axum::http::StatusCode;
+    let (status, detail) = match error.kind() {
+        opendal::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            "file not found in the storage backend",
+        ),
+        opendal::ErrorKind::PermissionDenied => (
+            StatusCode::BAD_GATEWAY,
+            "the storage backend refused access (check its credentials)",
+        ),
+        opendal::ErrorKind::RateLimited => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the storage backend is rate limiting requests",
+        ),
+        _ => (StatusCode::BAD_GATEWAY, "the storage backend failed"),
+    };
+    warn!(%addon_id, path, step, kind = ?error.kind(), error = %error, "opendal backend request failed");
+    axum_anyhow::ApiError::builder()
+        .status(status)
+        .title("stream")
+        .detail(detail)
+        .build()
+}
+
 /// Directory form of a configured WebDAV path (always with a trailing slash).
 ///
 /// opendal's WebDAV backend cannot list recursively on its own, so it falls back to a
@@ -2801,6 +2835,89 @@ mod tests {
             }
         });
         (base, hits)
+    }
+
+    /// A server that answers every request with `status` and no body.
+    async fn webdav_answering(status: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let base = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .unwrap()
+        );
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener
+                    .accept()
+                    .await
+                    .unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock
+                        .read(&mut buf)
+                        .await;
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = sock
+                        .write_all(resp.as_bytes())
+                        .await;
+                });
+            }
+        });
+        base
+    }
+
+    async fn serve_status(status: &'static str) -> axum::http::StatusCode {
+        let base = webdav_answering(status).await;
+        let addon = OpendalAddon {
+            addon_id: Uuid::new_v4(),
+            operator: Arc::new(
+                opendal::Operator::new(
+                    opendal::services::Webdav::default().endpoint(&base),
+                )
+                .unwrap()
+                .finish(),
+            ),
+            root: base,
+            backend: "webdav".to_string(),
+            media_kind: "movie".to_string(),
+        };
+        let descriptor = crate::stream::StreamDescriptor::Opendal {
+            addon_id: addon.addon_id,
+            path: "movies/a.mkv".to_string(),
+        };
+        addon
+            .serve_stream(&descriptor, &axum::http::HeaderMap::new())
+            .await
+            .err()
+            .expect("the backend refused")
+            .status()
+    }
+
+    /// Only a file that is really gone is a 404. A refused login or a failing
+    /// server must not look like a missing file.
+    #[tokio::test]
+    async fn serving_a_file_reports_what_the_backend_said() {
+        use axum::http::StatusCode;
+        assert_eq!(serve_status("404 Not Found").await, StatusCode::NOT_FOUND);
+        assert_eq!(
+            serve_status("401 Unauthorized").await,
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(serve_status("403 Forbidden").await, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            serve_status("500 Internal Server Error").await,
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            serve_status("429 Too Many Requests").await,
+            StatusCode::BAD_GATEWAY
+        );
     }
 
     // A top-level WebDAV path configured without a trailing slash used to make opendal
