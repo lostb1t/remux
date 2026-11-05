@@ -84,6 +84,7 @@ pub(crate) struct DefaultStreamPrefs<'a> {
     pub requested_subtitle: Option<i64>,
     pub remembered_audio: Option<i64>,
     pub remembered_subtitle: Option<i64>,
+    pub remembered_languages: &'a remux_sdks::remux::RememberedLanguages,
 }
 
 pub(crate) struct StreamServiceConfig {
@@ -223,7 +224,7 @@ impl StreamService {
                         ranking.subtitle_mode,
                     )
                 });
-            info.resolve_default_streams(
+            info.resolve_default_streams_remembering(
                 prefs.user_cfg,
                 prefs.server_metadata_language,
                 prefs.original_language,
@@ -231,6 +232,7 @@ impl StreamService {
                 prefs.requested_subtitle,
                 prefs.remembered_audio,
                 prefs.remembered_subtitle,
+                prefs.remembered_languages,
             );
             (info, allow_subtitle_extraction)
         });
@@ -1157,6 +1159,124 @@ impl StreamService {
         }
     }
 
+    /// Remember the audio/subtitle language the user just switched to, so the
+    /// next play (of any release or title) starts with it. Only an explicit
+    /// change counts: a report that merely repeats the track the session
+    /// started on, or names one for the first time, may be the server's own
+    /// default echoed back and must not turn into the user's choice.
+    pub async fn remember_track_choice(
+        ctx: &AppContext,
+        user: &db::User,
+        before: &crate::playback_session::PlaybackSession,
+        report: &api::PlaybackInfo,
+    ) {
+        let cfg = user
+            .configuration
+            .as_ref()
+            .map(|c| {
+                c.0.clone()
+            })
+            .unwrap_or_default();
+        let changed =
+            |before: Option<i32>, reported: Option<i32>| match (before, reported) {
+                (Some(before), Some(reported)) if before != reported => Some(reported),
+                _ => None,
+            };
+        let audio = changed(before.audio_stream_index, report.audio_stream_index)
+            .filter(|_| cfg.remember_audio_selections)
+            .filter(|index| *index >= 0);
+        let subtitle =
+            changed(before.subtitle_stream_index, report.subtitle_stream_index)
+                .filter(|_| cfg.remember_subtitle_selections);
+        if audio.is_none() && subtitle.is_none() {
+            return;
+        }
+        let item_id = if report
+            .item_id
+            .is_nil()
+        {
+            before.item_id
+        } else {
+            report.item_id
+        };
+        let psid = &before.play_session_id;
+        let audio_lang = match audio {
+            Some(index) => {
+                Self::track_language(
+                    ctx,
+                    psid,
+                    item_id,
+                    before
+                        .media_source_id
+                        .as_deref(),
+                    index,
+                    api::MediaStreamType::Audio,
+                )
+                .await
+            }
+            None => None,
+        };
+        let subtitle_choice = match subtitle {
+            Some(index) if index < 0 => {
+                Some(remux_sdks::remux::RememberedSubtitle::Off)
+            }
+            Some(index) => Self::track_language(
+                ctx,
+                psid,
+                item_id,
+                before
+                    .media_source_id
+                    .as_deref(),
+                index,
+                api::MediaStreamType::Subtitle,
+            )
+            .await
+            .map(remux_sdks::remux::RememberedSubtitle::Language),
+            None => None,
+        };
+        let Ok(Some(media)) = db::Media::get_by_id(&ctx.db, &item_id).await else {
+            return;
+        };
+        if let Err(err) = db::UserMediaState::remember_languages(
+            &ctx.db,
+            user,
+            &media,
+            audio_lang.as_deref(),
+            subtitle_choice.as_ref(),
+        )
+        .await
+        {
+            tracing::warn!(%err, "failed to remember the chosen track language");
+        }
+    }
+
+    /// Two-letter language of track `index` in the release `play_session_id`
+    /// is playing, if it has one.
+    async fn track_language(
+        ctx: &AppContext,
+        play_session_id: &str,
+        item_id: Uuid,
+        media_source_id: Option<&str>,
+        index: i32,
+        kind: api::MediaStreamType,
+    ) -> Option<String> {
+        let release = Self::selected_stream_for(ctx, play_session_id, item_id)
+            .or_else(|| {
+                let source = media_source_id.and_then(|id| Uuid::parse_str(id).ok())?;
+                Self::selected_stream_for(ctx, play_session_id, source).or(Some(source))
+            })?;
+        let release = db::Media::get_by_id(&ctx.db, &release)
+            .await
+            .ok()??;
+        let language = release
+            .probe_data?
+            .media_streams
+            .into_iter()
+            .find(|s| s.type_ == Some(kind.clone()) && s.index == i64::from(index))?
+            .language?;
+        remux_sdks::remux::lang_to_two_letter(&language)
+    }
+
     fn device_selected_stream_key(
         device_id: &str,
         item_id: Uuid,
@@ -1502,6 +1622,7 @@ mod tests {
             requested_subtitle: None,
             remembered_audio: None,
             remembered_subtitle: None,
+            remembered_languages: &Default::default(),
         };
         let ranking = SourceRankingContext {
             mode: remux_sdks::remux::SortMediaSourcesMode::Compatibility,
@@ -1569,6 +1690,7 @@ mod tests {
             requested_subtitle: None,
             remembered_audio: None,
             remembered_subtitle: None,
+            remembered_languages: &Default::default(),
         };
         let ranking = SourceRankingContext {
             mode: remux_sdks::remux::SortMediaSourcesMode::Compatibility,
@@ -1651,6 +1773,7 @@ mod tests {
             requested_subtitle: None,
             remembered_audio: None,
             remembered_subtitle: None,
+            remembered_languages: &Default::default(),
         };
         let candidates = vec![low.clone(), high.clone()];
         let order = async |candidates: Vec<db::Media>, ranking| {

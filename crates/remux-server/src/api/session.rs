@@ -246,6 +246,10 @@ pub async fn report_playback_progress(
                 .map(|s| s.play_session_id)
         });
     if let Some(ref psid) = effective_psid {
+        let before = state
+            .ctx
+            .sessions
+            .get(psid);
         state
             .ctx
             .sessions
@@ -259,6 +263,15 @@ pub async fn report_playback_progress(
             )
             .await
             .context_internal("failed to update progress")?;
+        if let Some(before) = before.as_ref() {
+            crate::services::StreamService::remember_track_choice(
+                &state.ctx,
+                &session.user,
+                before,
+                &data,
+            )
+            .await;
+        }
         state
             .ctx
             .signals
