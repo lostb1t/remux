@@ -1774,6 +1774,7 @@ async fn rank_item_sources(
     original_language: Option<&str>,
     remembered_audio: Option<i64>,
     remembered_subtitle: Option<i64>,
+    remembered_languages: &remux_sdks::remux::RememberedLanguages,
     include_groups: bool,
 ) {
     crate::services::StreamService::rank_media_sources_with_groups(
@@ -1788,6 +1789,7 @@ async fn rank_item_sources(
             requested_subtitle: None,
             remembered_audio,
             remembered_subtitle,
+            remembered_languages,
         },
         include_groups,
     )
@@ -1915,6 +1917,16 @@ async fn item_for_user(
         .as_ref()
         .map(|s| (s.audio_idx, s.subtitle_idx))
         .unwrap_or_default();
+    let remembered_languages = db::UserMediaState::remembered_languages(
+        &state
+            .ctx
+            .db,
+        &session
+            .user
+            .id,
+        &media.id,
+    )
+    .await;
 
     let needs_streams = want_streams
         && matches!(
@@ -2039,6 +2051,7 @@ async fn item_for_user(
             original_language.as_deref(),
             remembered_audio,
             remembered_subtitle,
+            &remembered_languages,
             false,
         )
         .await;
@@ -2124,6 +2137,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    &remembered_languages,
                     sort_groups,
                 )
                 .await;
@@ -2162,6 +2176,7 @@ async fn item_for_user(
             original_language.as_deref(),
             remembered_audio,
             remembered_subtitle,
+            &remembered_languages,
             false,
         )
         .await;
@@ -2212,6 +2227,7 @@ async fn item_for_user(
                     original_language.as_deref(),
                     remembered_audio,
                     remembered_subtitle,
+                    &remembered_languages,
                     sort_groups,
                 )
                 .await;
@@ -2311,7 +2327,7 @@ async fn item_for_user(
             // run before the label block below, which needs to know the real
             // resolved subtitle to judge a possible burn-in.
             for source in sources.iter_mut() {
-                source.resolve_default_streams(
+                source.resolve_default_streams_remembering(
                     &user_cfg,
                     server_config
                         .preferred_metadata_language
@@ -2321,6 +2337,7 @@ async fn item_for_user(
                     None,
                     remembered_audio,
                     remembered_subtitle,
+                    &remembered_languages,
                 );
             }
         }

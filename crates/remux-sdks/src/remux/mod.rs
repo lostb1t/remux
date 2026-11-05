@@ -2773,6 +2773,43 @@ pub struct MediaSourceInfo {
     pub transcoding_reasons: TranscodeReasons,
 }
 
+/// What the user last chose for subtitles: none at all, or a language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RememberedSubtitle {
+    Off,
+    Language(String),
+}
+
+impl RememberedSubtitle {
+    const OFF: &'static str = "off";
+
+    /// The stored form: `off`, or a two-letter language code.
+    pub fn parse(stored: &str) -> Option<Self> {
+        let stored = stored.trim();
+        if stored.eq_ignore_ascii_case(Self::OFF) {
+            Some(Self::Off)
+        } else {
+            lang_to_two_letter(stored).map(Self::Language)
+        }
+    }
+
+    pub fn as_stored(&self) -> &str {
+        match self {
+            Self::Off => Self::OFF,
+            Self::Language(lang) => lang,
+        }
+    }
+}
+
+/// The languages a user last chose, as two-letter codes. Looked up per play
+/// rather than per file, so the choice follows the user across releases and
+/// titles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RememberedLanguages {
+    pub audio: Option<String>,
+    pub subtitle: Option<RememberedSubtitle>,
+}
+
 /// Normalize a language tag (two-letter code, three-letter ISO 639-3 code, or
 /// full name) to its two-letter ISO 639-1 form. Returns `None` when the tag
 /// cannot be mapped or is empty.
@@ -2852,6 +2889,19 @@ impl MediaSourceInfo {
     /// (PGS/VobSub/DVDSub) — text works almost everywhere with no burn-in or
     /// OCR needed, so a release with both an image and a text track in the
     /// same language should default to the text one.
+    fn audio_stream_for_language(&self, target: &str) -> Option<&MediaStream> {
+        self.media_streams
+            .iter()
+            .find(|s| {
+                matches!(s.type_, Some(MediaStreamType::Audio))
+                    && s.language
+                        .as_deref()
+                        .and_then(lang_to_two_letter)
+                        .as_deref()
+                        == Some(target)
+            })
+    }
+
     fn best_subtitle_for_language(&self, target: &str) -> Option<&MediaStream> {
         let matches_lang = |s: &&MediaStream| {
             matches!(s.type_, Some(MediaStreamType::Subtitle))
@@ -2898,6 +2948,33 @@ impl MediaSourceInfo {
         remembered_audio: Option<i64>,
         remembered_subtitle: Option<i64>,
     ) {
+        self.resolve_default_streams_remembering(
+            user,
+            server_metadata_language,
+            original_language,
+            requested_audio,
+            requested_subtitle,
+            remembered_audio,
+            remembered_subtitle,
+            &RememberedLanguages::default(),
+        );
+    }
+
+    /// [`Self::resolve_default_streams`] that also knows the languages the user
+    /// last chose. A remembered language beats a remembered index (an index
+    /// only means something in the file it was saved for) and is looked for in
+    /// this source's own tracks; one this source lacks is skipped.
+    pub fn resolve_default_streams_remembering(
+        &mut self,
+        user: &UserConfiguration,
+        server_metadata_language: Option<&str>,
+        original_language: Option<&str>,
+        requested_audio: Option<i64>,
+        requested_subtitle: Option<i64>,
+        remembered_audio: Option<i64>,
+        remembered_subtitle: Option<i64>,
+        languages: &RememberedLanguages,
+    ) {
         // -1 is Jellyfin's sentinel for "not set"; treat it the same as None.
         let client_wants_audio = requested_audio
             .map(|x| x >= 0)
@@ -2911,6 +2988,9 @@ impl MediaSourceInfo {
         // fallback override it, matching Jellyfin's behaviour.
         let mut audio_decided = false;
         let mut subtitle_decided = false;
+        // The user last watched without subtitles: no subtitle mode turns them
+        // back on.
+        let mut subtitles_remembered_off = false;
 
         // --- client explicit selection wins ---
         if client_wants_audio {
@@ -2930,8 +3010,45 @@ impl MediaSourceInfo {
             }
         }
 
-        // --- remembered selections ---
+        // --- remembered languages ---
         if !client_wants_audio && user.remember_audio_selections {
+            if let Some(stream) = languages
+                .audio
+                .as_deref()
+                .and_then(|lang| self.audio_stream_for_language(lang))
+            {
+                self.default_audio_stream_index = Some(stream.index);
+                audio_decided = true;
+            }
+        }
+        if !client_wants_subtitle && user.remember_subtitle_selections {
+            match &languages.subtitle {
+                Some(RememberedSubtitle::Off) => {
+                    self.default_subtitle_stream_index = None;
+                    subtitle_decided = true;
+                    subtitles_remembered_off = true;
+                }
+                Some(RememberedSubtitle::Language(lang)) => {
+                    if let Some(stream) = self.best_subtitle_for_language(lang) {
+                        self.default_subtitle_stream_index = Some(stream.index);
+                        subtitle_decided = true;
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // --- remembered selections ---
+        // A remembered language that this release lacks must not fall back to
+        // an index: the index belongs to another release and would pick an
+        // unrelated language. It only serves rows saved before languages were.
+        if !client_wants_audio
+            && !audio_decided
+            && languages
+                .audio
+                .is_none()
+            && user.remember_audio_selections
+        {
             if let Some(idx) = remembered_audio {
                 if self.stream_exists(idx, MediaStreamType::Audio) {
                     self.default_audio_stream_index = Some(idx);
@@ -2939,7 +3056,13 @@ impl MediaSourceInfo {
                 }
             }
         }
-        if !client_wants_subtitle && user.remember_subtitle_selections {
+        if !client_wants_subtitle
+            && !subtitle_decided
+            && languages
+                .subtitle
+                .is_none()
+            && user.remember_subtitle_selections
+        {
             if let Some(idx) = remembered_subtitle {
                 if self.stream_exists(idx, MediaStreamType::Subtitle) {
                     self.default_subtitle_stream_index = Some(idx);
@@ -3040,9 +3163,11 @@ impl MediaSourceInfo {
                 self.default_audio_stream_index = Some(s.index);
             }
         }
-        if self
-            .default_subtitle_stream_index
-            .is_none()
+        // A subtitle choice already made, "off" included, is not second-guessed.
+        if !subtitle_decided
+            && self
+                .default_subtitle_stream_index
+                .is_none()
         {
             if let Some(s) = self.default_subtitle_stream() {
                 self.default_subtitle_stream_index = Some(s.index);
@@ -3050,7 +3175,9 @@ impl MediaSourceInfo {
         }
 
         // --- subtitle_mode ---
-        self.apply_subtitle_mode(&user.subtitle_mode);
+        if !subtitles_remembered_off {
+            self.apply_subtitle_mode(&user.subtitle_mode);
+        }
     }
 
     /// Modes only decide the *selection* (`default_subtitle_stream_index`); the
@@ -8875,6 +9002,167 @@ mod tests {
         src.resolve_default_streams(&cfg, None, None, None, None, Some(2), Some(4));
         assert_eq!(src.default_audio_stream_index, Some(2));
         assert_eq!(src.default_subtitle_stream_index, Some(4));
+    }
+
+    fn languages(
+        audio: Option<&str>,
+        subtitle: Option<RememberedSubtitle>,
+    ) -> RememberedLanguages {
+        RememberedLanguages {
+            audio: audio.map(str::to_string),
+            subtitle,
+        }
+    }
+
+    fn resolve_with(
+        src: &mut MediaSourceInfo,
+        cfg: &UserConfiguration,
+        remembered_audio: Option<i64>,
+        languages: &RememberedLanguages,
+    ) {
+        src.resolve_default_streams_remembering(
+            cfg,
+            None,
+            None,
+            None,
+            None,
+            remembered_audio,
+            None,
+            languages,
+        );
+    }
+
+    /// The language the user last chose picks the matching track of *this*
+    /// release, even when the remembered index points at another language.
+    #[test]
+    fn remembered_language_beats_a_remembered_index() {
+        let mut src = source_with_subs();
+        // Index 1 is English here, but the user last chose French.
+        resolve_with(&mut src, &user_cfg(), Some(1), &languages(Some("fr"), None));
+        assert_eq!(src.default_audio_stream_index, Some(2));
+    }
+
+    /// A language the release has no track for is skipped: the index (or the
+    /// language preferences) decide instead of an unrelated track.
+    #[test]
+    fn remembered_language_missing_in_the_release_falls_through() {
+        // The index belongs to another release: it must not pick an
+        // unrelated language here.
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &user_cfg(), Some(1), &languages(Some("de"), None));
+        assert_eq!(src.default_audio_stream_index, None);
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = false;
+        cfg.audio_language_preference = Some("eng".to_string());
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &cfg, Some(2), &languages(Some("de"), None));
+        assert_eq!(
+            src.default_audio_stream_index,
+            Some(1),
+            "the configured preference decides"
+        );
+        // Rows saved before languages existed still use their index.
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &user_cfg(), Some(2), &languages(None, None));
+        assert_eq!(src.default_audio_stream_index, Some(2));
+    }
+
+    /// A remembered "off" is not undone by a subtitle mode that would pick a
+    /// track on its own.
+    #[test]
+    fn remembered_subtitles_off_beats_the_subtitle_mode() {
+        let mut cfg = user_cfg();
+        cfg.subtitle_mode = SubtitleMode::Always;
+        let mut src = source_with_subs();
+        resolve_with(
+            &mut src,
+            &cfg,
+            None,
+            &languages(None, Some(RememberedSubtitle::Off)),
+        );
+        assert_eq!(src.default_subtitle_stream_index, None);
+        let mut src = source_with_subs();
+        resolve_with(&mut src, &cfg, None, &languages(None, None));
+        assert!(
+            src.default_subtitle_stream_index
+                .is_some()
+        );
+    }
+
+    /// An explicit request from the client still wins over a remembered
+    /// language, and turning remembering off ignores it.
+    #[test]
+    fn remembered_language_yields_to_the_client_and_to_the_setting() {
+        let mut src = source_with_subs();
+        src.resolve_default_streams_remembering(
+            &user_cfg(),
+            None,
+            None,
+            Some(1),
+            None,
+            None,
+            None,
+            &languages(Some("fr"), None),
+        );
+        assert_eq!(src.default_audio_stream_index, Some(1));
+
+        let mut cfg = user_cfg();
+        cfg.remember_audio_selections = false;
+        cfg.remember_subtitle_selections = false;
+        let mut src = source_with_subs();
+        resolve_with(
+            &mut src,
+            &cfg,
+            None,
+            &languages(Some("fr"), Some(RememberedSubtitle::Language("fr".into()))),
+        );
+        assert_eq!(src.default_audio_stream_index, None);
+        assert_eq!(src.default_subtitle_stream_index, None);
+    }
+
+    /// Subtitles follow the remembered language, and "off" stays off even when
+    /// the container flags a subtitle as default.
+    #[test]
+    fn remembered_subtitle_language_and_off() {
+        let mut src = source_with_subs();
+        resolve_with(
+            &mut src,
+            &user_cfg(),
+            None,
+            &languages(None, Some(RememberedSubtitle::Language("fr".into()))),
+        );
+        assert_eq!(src.default_subtitle_stream_index, Some(3));
+
+        let mut src = source_with_subs();
+        src.media_streams[3].is_default = Some(true);
+        resolve_with(
+            &mut src,
+            &user_cfg(),
+            None,
+            &languages(None, Some(RememberedSubtitle::Off)),
+        );
+        assert_eq!(src.default_subtitle_stream_index, None);
+    }
+
+    #[test]
+    fn remembered_subtitle_round_trips_through_its_stored_form() {
+        assert_eq!(
+            RememberedSubtitle::parse("off"),
+            Some(RememberedSubtitle::Off)
+        );
+        assert_eq!(
+            RememberedSubtitle::parse("fra"),
+            Some(RememberedSubtitle::Language("fr".into()))
+        );
+        assert_eq!(RememberedSubtitle::parse(""), None);
+        for stored in ["off", "fr"] {
+            assert_eq!(
+                RememberedSubtitle::parse(stored)
+                    .unwrap()
+                    .as_stored(),
+                stored
+            );
+        }
     }
 
     /// PlayDefaultAudioTrack=true selects the track matching the title's

@@ -445,6 +445,12 @@ pub struct UserMediaState {
     pub last_played_at: Option<NaiveDateTime>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
+    /// Two-letter code of the audio language the user last chose here.
+    pub audio_lang: Option<String>,
+    /// `off` or a two-letter code, as [`remux_sdks::remux::RememberedSubtitle`] stores it.
+    pub audio_lang_at: Option<NaiveDateTime>,
+    pub subtitle_lang: Option<String>,
+    pub subtitle_lang_at: Option<NaiveDateTime>,
     /// Set via [`UserMediaState::set_rating`] so it only holds parsed [`UserRating`]s.
     pub rating: Option<f64>,
     /// Set via [`UserMediaState::set_flag`] so `watchlisted_at` stays in step.
@@ -659,6 +665,28 @@ impl UserMediaState {
                         .max(old_row.last_played_at),
                     subtitle_idx: primary.subtitle_idx,
                     audio_idx: primary.audio_idx,
+                    audio_lang: primary
+                        .audio_lang
+                        .clone()
+                        .or_else(|| {
+                            other
+                                .audio_lang
+                                .clone()
+                        }),
+                    audio_lang_at: primary
+                        .audio_lang_at
+                        .or(other.audio_lang_at),
+                    subtitle_lang: primary
+                        .subtitle_lang
+                        .clone()
+                        .or_else(|| {
+                            other
+                                .subtitle_lang
+                                .clone()
+                        }),
+                    subtitle_lang_at: primary
+                        .subtitle_lang_at
+                        .or(other.subtitle_lang_at),
                     rating: primary
                         .rating
                         .or(other.rating),
@@ -681,9 +709,10 @@ impl UserMediaState {
             INSERT INTO user_media_state (
                 user_id, media_id, media_raw, stream_id, favorite, play_count,
                 played_at, playback_position, last_played_at, subtitle_idx, audio_idx, rating,
-                watchlist, ignored, watchlisted_at
+                watchlist, ignored, watchlisted_at, audio_lang, audio_lang_at,
+                subtitle_lang, subtitle_lang_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(user_id, media_id) DO UPDATE SET
                 media_raw = excluded.media_raw,
                 stream_id = excluded.stream_id,
@@ -697,7 +726,11 @@ impl UserMediaState {
                 rating = excluded.rating,
                 watchlist = excluded.watchlist,
                 ignored = excluded.ignored,
-                watchlisted_at = excluded.watchlisted_at
+                watchlisted_at = excluded.watchlisted_at,
+                audio_lang = excluded.audio_lang,
+                audio_lang_at = excluded.audio_lang_at,
+                subtitle_lang = excluded.subtitle_lang,
+                subtitle_lang_at = excluded.subtitle_lang_at
             "#,
         )
         .bind(merged.user_id)
@@ -715,6 +748,10 @@ impl UserMediaState {
         .bind(merged.watchlist)
         .bind(merged.ignored)
         .bind(merged.watchlisted_at)
+        .bind(&merged.audio_lang)
+        .bind(merged.audio_lang_at)
+        .bind(&merged.subtitle_lang)
+        .bind(merged.subtitle_lang_at)
         .execute(&mut *tx)
         .await?;
 
@@ -1060,6 +1097,12 @@ impl UserMediaState {
                 .subtitle_idx
                 .is_none()
             && self
+                .audio_lang
+                .is_none()
+            && self
+                .subtitle_lang
+                .is_none()
+            && self
                 .last_played_at
                 .is_none()
     }
@@ -1179,6 +1222,94 @@ impl UserMediaState {
         Ok(crossed_played_threshold)
     }
 
+    /// The languages `user_id` last chose, for resolving the default tracks
+    /// of `media_id`: its own row's when it has one, else those of the most
+    /// recently played row that has one. Audio and subtitles each look on
+    /// their own, so a title never chosen subtitles for still follows the
+    /// user's last subtitle choice.
+    pub async fn remembered_languages(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        media_id: &Uuid,
+    ) -> remux_sdks::remux::RememberedLanguages {
+        let audio =
+            Self::remembered_language(db, user_id, media_id, "audio_lang").await;
+        let subtitle =
+            Self::remembered_language(db, user_id, media_id, "subtitle_lang").await;
+        remux_sdks::remux::RememberedLanguages {
+            audio: audio
+                .as_deref()
+                .and_then(remux_sdks::remux::lang_to_two_letter),
+            subtitle: subtitle
+                .as_deref()
+                .and_then(remux_sdks::remux::RememberedSubtitle::parse),
+        }
+    }
+
+    /// `column` is one of this module's own column names, never user input.
+    async fn remembered_language(
+        db: &SqlitePool,
+        user_id: &Uuid,
+        media_id: &Uuid,
+        column: &'static str,
+    ) -> Option<String> {
+        use crate::errors::LogErr;
+        let own: Option<Option<String>> = sqlx::query_scalar(&format!(
+            "SELECT {column} FROM user_media_state WHERE user_id = ?1 AND media_id = ?2"
+        ))
+        .bind(user_id)
+        .bind(media_id)
+        .fetch_optional(db)
+        .await
+        .log_err("failed to read the item's remembered language")
+        .ok()
+        .flatten();
+        if let Some(own) = own.flatten() {
+            return Some(own);
+        }
+        sqlx::query_scalar(&format!(
+            "SELECT {column} FROM user_media_state \
+             WHERE user_id = ?1 AND {column} IS NOT NULL \
+             ORDER BY {column}_at DESC LIMIT 1"
+        ))
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .log_err("failed to read the user's last chosen language")
+        .ok()
+        .flatten()
+    }
+
+    /// Record the languages the user just chose on `media`. `None` leaves that
+    /// side as it was.
+    pub async fn remember_languages(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        audio: Option<&str>,
+        subtitle: Option<&remux_sdks::remux::RememberedSubtitle>,
+    ) -> Result<()> {
+        if audio.is_none() && subtitle.is_none() {
+            return Ok(());
+        }
+        let mut ms = Self::get_or_new(db, user, media).await?;
+        let now = chrono::Utc::now().naive_utc();
+        if let Some(audio) = audio {
+            ms.audio_lang = Some(audio.to_string());
+            ms.audio_lang_at = Some(now);
+        }
+        if let Some(subtitle) = subtitle {
+            ms.subtitle_lang_at = Some(now);
+            ms.subtitle_lang = Some(
+                subtitle
+                    .as_stored()
+                    .to_string(),
+            );
+        }
+        ms.save(db)
+            .await
+    }
+
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         debug!(
             "Saving user media state for user {} and media_id {}",
@@ -1202,9 +1333,13 @@ impl UserMediaState {
                 rating,
                 watchlist,
                 ignored,
-                watchlisted_at
+                watchlisted_at,
+                audio_lang,
+                audio_lang_at,
+                subtitle_lang,
+                subtitle_lang_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(user_id, media_id)
             DO UPDATE SET
                 media_raw = excluded.media_raw,
@@ -1219,7 +1354,11 @@ impl UserMediaState {
                 rating = excluded.rating,
                 watchlist = excluded.watchlist,
                 ignored = excluded.ignored,
-                watchlisted_at = excluded.watchlisted_at
+                watchlisted_at = excluded.watchlisted_at,
+                audio_lang = excluded.audio_lang,
+                audio_lang_at = excluded.audio_lang_at,
+                subtitle_lang = excluded.subtitle_lang,
+                subtitle_lang_at = excluded.subtitle_lang_at
             "#,
         )
         .bind(self.user_id)
@@ -1237,6 +1376,10 @@ impl UserMediaState {
         .bind(self.watchlist)
         .bind(self.ignored)
         .bind(self.watchlisted_at)
+        .bind(&self.audio_lang)
+        .bind(self.audio_lang_at)
+        .bind(&self.subtitle_lang)
+        .bind(self.subtitle_lang_at)
         .execute(db)
         .await?;
 
@@ -2089,6 +2232,79 @@ mod identity_reattach_tests {
         .unwrap();
         assert!(row.favorite, "save() must not have wiped it");
         assert_eq!(row.play_count, 7);
+    }
+
+    /// A title with no choice of its own follows the language chosen most
+    /// recently, not the title played most recently: replaying an old title
+    /// moves `last_played_at`, which is not a choice.
+    #[tokio::test]
+    async fn the_last_chosen_language_wins_over_the_last_played_title() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let movie = async |imdb: &str| {
+            let mut movie = db::Media {
+                title: imdb.to_string(),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            movie
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            movie
+        };
+        let (a, b, c) = (
+            movie("tt0000001").await,
+            movie("tt0000002").await,
+            movie("tt0000003").await,
+        );
+        let off = remux_sdks::remux::RememberedSubtitle::Off;
+        UserMediaState::remember_languages(&ctx.db, &user, &a, Some("fr"), Some(&off))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        UserMediaState::remember_languages(&ctx.db, &user, &b, Some("en"), None)
+            .await
+            .unwrap();
+        // Replaying `a` moves its play time past `b`'s.
+        sqlx::query(
+            "UPDATE user_media_state SET last_played_at = ? WHERE media_id = ?",
+        )
+        .bind(chrono::Utc::now().naive_utc() + chrono::Duration::minutes(1))
+        .bind(a.id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let for_c =
+            UserMediaState::remembered_languages(&ctx.db, &user.id, &c.id).await;
+        assert_eq!(
+            for_c
+                .audio
+                .as_deref(),
+            Some("en")
+        );
+        // Audio and subtitles look separately: only `a` ever chose subtitles.
+        assert_eq!(for_c.subtitle, Some(off));
+        // A title's own choice comes first.
+        let for_a =
+            UserMediaState::remembered_languages(&ctx.db, &user.id, &a.id).await;
+        assert_eq!(
+            for_a
+                .audio
+                .as_deref(),
+            Some("fr")
+        );
     }
 
     /// A row can already exist at the *target* id when `get_or_new` goes to
