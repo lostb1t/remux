@@ -1070,6 +1070,22 @@ impl StreamService {
                 effective_stream_id,
                 std::time::Duration::from_secs(24 * 3600),
             );
+        // A client continuing playback (audio switch) asks again by item id,
+        // so the release must be findable under it as well as under the
+        // release id the answer carried.
+        if self
+            .group
+            .is_none()
+            && source_id != self.item_id
+        {
+            self.ctx
+                .store
+                .save(
+                    Self::selected_stream_key(play_session_id, self.item_id),
+                    effective_stream_id,
+                    std::time::Duration::from_secs(24 * 3600),
+                );
+        }
         // Infuse's direct stream URL has MediaSourceId but no PlaySessionId or
         // DeviceId query parameter, and subtitle downloads carry no
         // PlaySessionId either. Keep a mapping for those requests too, keyed

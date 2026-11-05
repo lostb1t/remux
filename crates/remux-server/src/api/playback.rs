@@ -365,7 +365,11 @@ async fn items_playbackinfo_inner(
                 .id,
         ),
     });
-    let is_live = media.is_live();
+    // A pinned or picked stream is a child of the channel: the channel decides.
+    let is_live = media.is_live()
+        || title
+            .as_ref()
+            .is_some_and(|item| item.is_live());
 
     // A live channel's source is often an addon relay URL. It may be a valid
     // HLS stream, but browsers cannot reliably open it directly: redirects,
@@ -3361,7 +3365,7 @@ mod tests {
                 .await;
             resp.assert_status_ok();
             let body: serde_json::Value = resp.json();
-            body["MediaSources"]
+            let ids = body["MediaSources"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3371,11 +3375,20 @@ mod tests {
                         .unwrap()
                         .to_string()
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (
+                ids,
+                body["PlaySessionId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
         };
 
         assert_eq!(
-            ask().await[0],
+            ask()
+                .await
+                .0[0],
             owner
                 .id
                 .simple()
@@ -3392,14 +3405,31 @@ mod tests {
             }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
+        let playing_ids = vec![
+            playing
+                .simple()
+                .to_string(),
+        ];
+        let (ids, next_session) = ask().await;
+        assert_eq!(ids, playing_ids, "playback is running: stay on its release");
+
+        // The client starts the session the answer named; a second switch
+        // (by item id again, or without any id) must still stay on it.
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({
+                "ItemId": owner.id.simple().to_string(),
+                "PlaySessionId": next_session,
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
         assert_eq!(
-            ask().await,
-            vec![
-                playing
-                    .simple()
-                    .to_string()
-            ],
-            "playback is running: stay on its release"
+            ask()
+                .await
+                .0,
+            playing_ids,
+            "the restarted session keeps the release too"
         );
 
         server
@@ -3407,13 +3437,14 @@ mod tests {
             .add_header(http::header::AUTHORIZATION, auth.clone())
             .json(&json!({
                 "ItemId": owner.id.simple().to_string(),
-                "PlaySessionId": "running",
+                "PlaySessionId": next_session,
             }))
             .await
             .assert_status(StatusCode::NO_CONTENT);
         assert_eq!(
             ask()
                 .await
+                .0
                 .len(),
             2,
             "playback ended: a fresh play ranks anew"
