@@ -1082,7 +1082,8 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if let Some(audio_idx) = params.audio_stream_index {
+        }
+        if let Some(audio_idx) = params.audio_stream_index {
             args.extend([
                 "-map".into(),
                 "0:v:0".into(),
@@ -1903,7 +1904,8 @@ pub(crate) fn build_progressive_args(
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if params
+        }
+        if params
             .audio_stream_index
             .is_some()
             || params
@@ -2434,6 +2436,13 @@ mod tests {
         args.windows(2)
             .find(|w| w[0] == flag)
             .map(|w| w[1].as_str())
+    }
+
+    fn mapped_streams(args: &[String]) -> Vec<&str> {
+        args.windows(2)
+            .filter(|w| w[0] == "-map")
+            .map(|w| w[1].as_str())
+            .collect()
     }
 
     fn no_devices(_: &str) -> bool {
@@ -3357,6 +3366,19 @@ mod tests {
         let vf = arg_after(&args, "-vf").expect("-vf missing");
         assert!(vf.contains("min(1280,iw)"), "vf: {vf}");
         assert!(vf.contains(":-2"), "vf: {vf}");
+    }
+
+    #[test]
+    fn hls_video_filter_keeps_selected_audio_track() {
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1280),
+            audio_stream_index: Some(1),
+            ..default_hls(PathBuf::from("/tmp/test_vf_audio"))
+        });
+
+        assert!(args_contains(&args, "-vf"));
+        assert_eq!(mapped_streams(&args), ["0:v:0", "0:1"]);
     }
 
     #[test]
@@ -4714,6 +4736,19 @@ mod tests {
 
         assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
         assert!(!args_contains(&args, "-filter_complex"));
+    }
+
+    #[test]
+    fn progressive_video_filter_keeps_selected_audio_track() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1280),
+            audio_stream_index: Some(1),
+            ..default_progressive()
+        });
+
+        assert!(args_contains(&args, "-vf"));
+        assert_eq!(mapped_streams(&args), ["0:v:0", "0:1"]);
     }
 
     #[test]
