@@ -2000,21 +2000,50 @@ pub struct UniversalAudioQuery {
     pub media_source_id: Option<Uuid>,
 }
 
+/// Smallest and largest body a bitrate test may ask for. Jellyfin's range;
+/// outside it the request is rejected rather than answered with a different
+/// size, because a client divides by the size it asked for.
+const BITRATE_TEST_DEFAULT_BYTES: u64 = 102_400;
+const BITRATE_TEST_MAX_BYTES: u64 = 100_000_000;
+const BITRATE_TEST_CHUNK_BYTES: u64 = 64 * 1024;
+
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.
+///
+/// The body is random and streamed in chunks: random so compression on the
+/// way (a proxy) cannot shrink it and inflate the measured speed, streamed so
+/// the first byte leaves immediately instead of after building the whole body.
 #[get("/playback/bitratetest")]
 pub async fn playback_bitratetest_sized(
     Query(q): Query<BitrateTestQuery>,
 ) -> Result<impl IntoResponse> {
     let size = q
         .size
-        .unwrap_or(100_000)
-        .min(10_000_000) as usize;
-    let body = vec![0u8; size];
+        .unwrap_or(BITRATE_TEST_DEFAULT_BYTES);
+    (1..=BITRATE_TEST_MAX_BYTES)
+        .contains(&size)
+        .then_some(())
+        .context_bad_request(&format!(
+            "The requested size must be between 1 and {BITRATE_TEST_MAX_BYTES}"
+        ))?;
+    let body = futures_util::stream::unfold(size, |left| async move {
+        if left == 0 {
+            return None;
+        }
+        let len = left.min(BITRATE_TEST_CHUNK_BYTES) as usize;
+        let mut chunk = vec![0u8; len];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut chunk);
+        Some((
+            Ok::<_, io::Error>(bytes::Bytes::from(chunk)),
+            left - len as u64,
+        ))
+    });
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/octet-stream")
         .header("Content-Length", size.to_string())
-        .body(Body::from(body))
+        .header("Content-Encoding", "identity")
+        .header("Cache-Control", "no-store")
+        .body(Body::from_stream(body))
         .unwrap())
 }
 
@@ -2034,6 +2063,73 @@ mod tests {
         authenticated_server, insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
+
+    #[tokio::test]
+    async fn bitrate_test_returns_exactly_the_requested_size() {
+        let (server, _guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        for size in [1usize, 65_536, 65_537, 300_000] {
+            let response = server
+                .get(&format!("/playback/bitratetest?size={size}"))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .await;
+            response.assert_status_ok();
+            assert_eq!(
+                response.header(http::header::CONTENT_LENGTH),
+                size.to_string()
+                    .as_str()
+            );
+            assert_eq!(
+                response
+                    .as_bytes()
+                    .len(),
+                size
+            );
+        }
+
+        let body = server
+            .get("/playback/bitratetest?size=200000")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .into_bytes();
+        assert!(
+            body.iter()
+                .any(|b| *b != 0),
+            "a zero-filled body would compress away on the wire"
+        );
+
+        let default = server
+            .get("/playback/bitratetest")
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await;
+        default.assert_status_ok();
+        assert_eq!(
+            default
+                .as_bytes()
+                .len(),
+            102_400
+        );
+    }
+
+    #[tokio::test]
+    async fn bitrate_test_rejects_sizes_it_will_not_serve() {
+        let (server, _guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        for size in ["0", "-1", "100000001", "1000000000", "abc"] {
+            let response = server
+                .get(&format!("/playback/bitratetest?size={size}"))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .expect_failure()
+                .await;
+            assert_eq!(
+                response.status_code(),
+                StatusCode::BAD_REQUEST,
+                "size={size}"
+            );
+        }
+    }
 
     async fn device_user(ctx: &crate::AppContext, token: &str) -> uuid::Uuid {
         crate::db::auth::Device::get_by_access_token(&ctx.db, token)
