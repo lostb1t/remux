@@ -1963,9 +1963,21 @@ async fn item_for_user(
             == Some(true),
         subtitle_mode,
         explicit_subtitle_index: None,
+        // MaxStaticBitrate is the most this device takes of a file as it is,
+        // which is what picking a version asks; the streaming cap is the
+        // transcode's.
         max_bitrate: persisted_device_profile
             .as_ref()
-            .and_then(|p| p.max_streaming_bitrate),
+            .and_then(|p| {
+                [
+                    p.max_streaming_bitrate,
+                    p.max_static_bitrate
+                        .filter(|b| *b > 0),
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+            }),
     };
     let sort_groups = server_config
         .stream_groups_auto_sort
