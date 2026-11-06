@@ -38,6 +38,40 @@ fn login_code_key(code: &str) -> String {
     format!("oidc:code:{code}")
 }
 
+/// Binds a sign-in to the browser that started it (RFC 9700 §4.7.1): the
+/// callback is only honoured together with this cookie, so opening someone
+/// else's callback URL can't sign a browser in to their account.
+const STATE_COOKIE: &str = "remux_oidc_state";
+
+fn state_cookie(state: &str, redirect_uri: &url::Url) -> String {
+    let secure = if redirect_uri.scheme() == "https" {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!(
+        "{STATE_COOKIE}={state}; Path={}; Max-Age={}; HttpOnly; SameSite=Lax{secure}",
+        redirect_uri.path(),
+        oidc::PENDING_LOGIN_TTL.as_secs()
+    )
+}
+
+fn state_from_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| {
+            v.to_str()
+                .ok()
+        })
+        .flat_map(|v| v.split(';'))
+        .find_map(|c| {
+            c.trim()
+                .strip_prefix(STATE_COOKIE)?
+                .strip_prefix('=')
+        })
+}
+
 /// Proof that the provider vouched for `user_id`, redeemable once.
 struct LoginCode {
     user_id: Uuid,
@@ -190,6 +224,12 @@ pub async fn sso_start(
     let login = provider
         .begin_login(redirect_uri, return_to)
         .await?;
+    let cookie = state_cookie(
+        &login.state,
+        &login
+            .pending
+            .redirect_uri,
+    );
 
     state
         .ctx
@@ -199,12 +239,15 @@ pub async fn sso_start(
             login.pending,
             oidc::PENDING_LOGIN_TTL,
         );
-    Ok(Redirect::to(
-        login
-            .authorization_url
-            .as_str(),
+    Ok((
+        [(header::SET_COOKIE, cookie)],
+        Redirect::to(
+            login
+                .authorization_url
+                .as_str(),
+        ),
     )
-    .into_response())
+        .into_response())
 }
 
 #[query]
@@ -220,27 +263,29 @@ struct CallbackQuery {
 pub async fn sso_redirect(
     State(state): State<AppState>,
     Path(provider): Path<String>,
+    headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> std::result::Result<Response, SsoError> {
     let provider = provider_for(&state, &provider)?;
 
-    // Take the pending login first so a state can't be replayed, even when
-    // the provider reports an error.
-    let pending = query
+    // Only the browser that started this sign-in carries its state cookie.
+    let pending_state = query
         .state
         .as_deref()
-        .and_then(|s| {
-            let key = pending_key(s);
-            let pending = state
-                .ctx
-                .store
-                .get::<PendingLogin>(&key);
-            state
-                .ctx
-                .store
-                .delete(key);
-            pending
-        })
+        .filter(|s| state_from_cookie(&headers) == Some(*s))
+        .ok_or(SsoError::Expired)?;
+    // Take the pending login first so a state can't be replayed, even when
+    // the provider reports an error.
+    let key = pending_key(pending_state);
+    let pending = state
+        .ctx
+        .store
+        .get::<PendingLogin>(&key);
+    state
+        .ctx
+        .store
+        .delete(key);
+    let pending = pending
         .filter(|p| p.provider == provider.name)
         .ok_or(SsoError::Expired)?;
 
@@ -797,6 +842,49 @@ mod tests {
             .expect_failure()
             .await;
         replay.assert_status(http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn callback_is_only_accepted_in_the_browser_that_started_it() {
+        let idp = mock_idp().await;
+        let (server, _guard) = server_with_idp(&idp).await;
+
+        let start = server
+            .get("/sso/oid/start/authentik")
+            .expect_failure()
+            .await;
+        let location = Url::parse(
+            &start
+                .header("location")
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let state = location
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .into_owned();
+
+        // Someone opening another person's callback URL in their own browser
+        // has no (or another) state cookie, so it must not sign them in to
+        // that account. The test server keeps cookies like the starting browser.
+        for cookie in [None, Some("remux_oidc_state=someone-else")] {
+            let mut callback = server
+                .get("/sso/oid/redirect/authentik")
+                .add_query_param("code", "c1")
+                .add_query_param("state", &state)
+                .clear_cookies();
+            if let Some(cookie) = cookie {
+                callback = callback
+                    .add_header(http::header::COOKIE, HeaderValue::from_static(cookie));
+            }
+            callback
+                .expect_failure()
+                .await
+                .assert_status(http::StatusCode::BAD_REQUEST);
+        }
     }
 
     #[tokio::test]
