@@ -1421,6 +1421,9 @@ pub struct MediaFilter {
     pub total_count: bool,
     pub include_user_state: bool,
     pub include_child_count: bool,
+    /// `Fields=RecursiveItemCount`: report a series' or season's episode
+    /// count and, with user state, the played percentage derived from it.
+    pub include_recursive_item_count: bool,
     pub include_relations: bool,
     /// `Some(false)` skips person relations for Jellyfin list queries without
     /// `Fields=People`; `None` preserves the historical internal-query behavior.
@@ -1621,6 +1624,11 @@ pub struct Media {
     pub series_count: Option<i64>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
+    /// Share of a series' or season's episodes the user has played, 0-100.
+    /// Only filled when `MediaFilter::include_recursive_item_count` is set,
+    /// as Jellyfin derives it from `RecursiveItemCount`.
+    #[sqlx(skip)]
+    pub played_percentage: Option<f64>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     /// When this source represents a stream group in a filtered result,
@@ -6105,66 +6113,50 @@ impl Media {
                     }
                 }
 
-                // Compute unplayed episode count for series/seasons
-                let grandparent_ids: Vec<Uuid> = records
+                // Episode counts for series (by grandparent) and seasons (by
+                // parent): total and unplayed by this user, released only.
+                let series_ids: Vec<Uuid> = records
                     .iter()
-                    .filter(|m| matches!(m.kind, MediaKind::Series | MediaKind::Season))
+                    .filter(|m| m.kind == MediaKind::Series)
                     .map(|m| m.id)
                     .collect();
-
-                if !grandparent_ids.is_empty() {
-                    // Count episodes per grandparent_id that have NOT been played by this user
-                    let unplayed_rows =
-                        fetch_all_chunked(db, &grandparent_ids, |chunk| {
-                            let mut qb = sqlx::QueryBuilder::new(
-                                "SELECT e.grandparent_id, COUNT(*) as cnt FROM media e \
-                         WHERE e.kind = 'episode' AND e.grandparent_id IN (",
-                            );
-                            let mut sep = qb.separated(", ");
-                            for id in chunk {
-                                sep.push_bind(id);
-                            }
-                            qb.push(
-                                ") AND NOT EXISTS (\
-                           SELECT 1 FROM user_media_state ums \
-                           WHERE ums.media_id = e.id \
-                           AND ums.user_id = ",
-                            );
-                            qb.push_bind(user_id);
-                            qb.push(" AND ums.play_count > 0)");
-                            if let Some(t) = filter.digital_released_before {
-                                push_release_date_filter(&mut qb, "e", t, true);
-                            }
-                            qb.push(" GROUP BY e.grandparent_id");
-                            qb
-                        })
-                        .await;
-
-                    match unplayed_rows {
-                        Ok(rows) => {
-                            let mut unplayed_map: HashMap<Uuid, i64> = HashMap::new();
-                            for row in rows {
-                                let sid: Uuid = row.get(0);
-                                let cnt: i64 = row.get(1);
-                                unplayed_map.insert(sid, cnt);
-                            }
-                            for media in &mut records {
-                                if matches!(
-                                    media.kind,
-                                    MediaKind::Series | MediaKind::Season
-                                ) {
-                                    media.unplayed_item_count = Some(
-                                        unplayed_map
-                                            .get(&media.id)
-                                            .copied()
-                                            .unwrap_or(0),
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("failed to load unplayed counts: {e}");
-                        }
+                let season_ids: Vec<Uuid> = records
+                    .iter()
+                    .filter(|m| m.kind == MediaKind::Season)
+                    .map(|m| m.id)
+                    .collect();
+                let mut counts: HashMap<Uuid, EpisodeCounts> = HashMap::new();
+                for (column, ids) in
+                    [("grandparent_id", &series_ids), ("parent_id", &season_ids)]
+                {
+                    if ids.is_empty() {
+                        continue;
+                    }
+                    match episode_counts(
+                        db,
+                        column,
+                        ids,
+                        user_id,
+                        filter.digital_released_before,
+                    )
+                    .await
+                    {
+                        Ok(map) => counts.extend(map),
+                        Err(e) => warn!("failed to load unplayed counts: {e}"),
+                    }
+                }
+                for media in &mut records {
+                    if !matches!(media.kind, MediaKind::Series | MediaKind::Season) {
+                        continue;
+                    }
+                    let c = counts
+                        .get(&media.id)
+                        .copied()
+                        .unwrap_or_default();
+                    media.unplayed_item_count = Some(c.unplayed);
+                    if filter.include_recursive_item_count {
+                        media.recursive_item_count = Some(c.total);
+                        media.played_percentage = c.played_percentage();
                     }
                 }
             }
@@ -6794,6 +6786,10 @@ impl Media {
                         .as_deref()
                         .map(|f| f.contains(&api::ItemFields::ChildCount))
                         .unwrap_or(false),
+                include_recursive_item_count: filter
+                    .fields
+                    .as_deref()
+                    .is_some_and(|f| f.contains(&api::ItemFields::RecursiveItemCount)),
                 include_relations: api::fields_include_relations(
                     filter
                         .fields
@@ -8777,6 +8773,70 @@ fn push_genre_count_scope<'a>(
     }
 }
 
+/// Episodes under a series or season: all released ones and those the user
+/// has not played.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct EpisodeCounts {
+    total: i64,
+    unplayed: i64,
+}
+
+impl EpisodeCounts {
+    /// Jellyfin's folder `PlayedPercentage`: played / total * 100, set
+    /// whenever there is at least one episode (0 and 100 included).
+    fn played_percentage(self) -> Option<f64> {
+        (self.total > 0)
+            .then(|| (self.total - self.unplayed) as f64 / self.total as f64 * 100.0)
+    }
+}
+
+/// [`EpisodeCounts`] keyed by `column` (`grandparent_id` for series,
+/// `parent_id` for seasons).
+async fn episode_counts(
+    db: &SqlitePool,
+    column: &'static str,
+    ids: &[Uuid],
+    user_id: Uuid,
+    released_before: Option<NaiveDateTime>,
+) -> std::result::Result<HashMap<Uuid, EpisodeCounts>, sqlx::Error> {
+    let rows = fetch_all_chunked(db, ids, |chunk| {
+        let mut qb = sqlx::QueryBuilder::new("SELECT e.");
+        qb.push(column)
+            .push(
+                ", COUNT(*), SUM(NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                 WHERE ums.media_id = e.id AND ums.user_id = ",
+            )
+            .push_bind(user_id)
+            .push(" AND ums.play_count > 0)) FROM media e WHERE e.kind = 'episode' AND e.")
+            .push(column)
+            .push(" IN (");
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        if let Some(t) = released_before {
+            push_release_date_filter(&mut qb, "e", t, true);
+        }
+        qb.push(" GROUP BY e.")
+            .push(column);
+        qb
+    })
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.get(0),
+                EpisodeCounts {
+                    total: row.get(1),
+                    unplayed: row.get(2),
+                },
+            )
+        })
+        .collect())
+}
+
 /// Runs the query `build` makes for each `SQLITE_VAR_LIMIT`-sized chunk of
 /// `ids` and concatenates the rows, so a per-record lookup over a large
 /// unpaged result doesn't go past SQLite's bound-variable limit. Only for
@@ -9713,6 +9773,17 @@ pub(crate) fn build_genre_relations_from_names(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn episode_counts_played_percentage_matches_jellyfin_folders() {
+        let pct = |total, unplayed| {
+            super::EpisodeCounts { total, unplayed }.played_percentage()
+        };
+        assert_eq!(pct(0, 0), None);
+        assert_eq!(pct(4, 4), Some(0.0));
+        assert_eq!(pct(4, 3), Some(25.0));
+        assert_eq!(pct(4, 0), Some(100.0));
+    }
+
     use super::*;
 
     fn tmdb_ratings(score: f64, vote_count: Option<u32>) -> ExternalRatings {

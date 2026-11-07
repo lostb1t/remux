@@ -1874,6 +1874,8 @@ async fn item_for_user(
             id: Some(vec![resolved_id]),
             include_user_state: true,
             include_child_count: true,
+            include_recursive_item_count: fields
+                .is_some_and(|f| f.contains(&api::ItemFields::RecursiveItemCount)),
             user_id: Some(
                 target_user_id.unwrap_or(
                     session
@@ -5283,6 +5285,154 @@ mod tests {
         ms.save(db)
             .await
             .unwrap();
+    }
+
+    /// Series and seasons report their episode progress like Jellyfin's
+    /// folders: `UnplayedItemCount` always, and with `Fields=RecursiveItemCount`
+    /// also the episode count and `PlayedPercentage` (0 included), in lists as
+    /// well as for a single item.
+    #[tokio::test]
+    async fn series_and_seasons_report_played_percentage() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let user_id = get_user_id(&server, &auth).await;
+
+        let series =
+            insert_media(db, "Succession", db::MediaKind::Series, "tt7660850").await;
+        let now = Utc::now().naive_utc();
+        let mut seasons = Vec::new();
+        for n in 1..=2 {
+            let mut season = db::Media {
+                title: format!("Season {n}"),
+                kind: db::MediaKind::Season,
+                parent_id: Some(series.id),
+                grandparent_id: Some(series.id),
+                idx: Some(n),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            season
+                .save(db)
+                .await
+                .unwrap();
+            seasons.push(season);
+        }
+        // Two episodes per season; one of season 1 is played.
+        let mut episodes = Vec::new();
+        for (n, season) in [&seasons[0], &seasons[0], &seasons[1], &seasons[1]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut ep = db::Media {
+                title: format!("Episode {n}"),
+                kind: db::MediaKind::Episode,
+                parent_id: Some(season.id),
+                grandparent_id: Some(series.id),
+                idx: Some(n as i64 + 1),
+                // Unreleased episodes are left out of the counts.
+                released_at: Some(now - chrono::Duration::days(30)),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            ep.save(db)
+                .await
+                .unwrap();
+            episodes.push(ep);
+        }
+        mark_played(db, &episodes[0]).await;
+
+        let get = |path: String, query: Vec<(&'static str, String)>| {
+            let server = &server;
+            let auth = &auth;
+            let uid = user_id.clone();
+            async move {
+                let mut req = server
+                    .get(&path)
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(auth).unwrap(),
+                    )
+                    .add_query_param("userId", uid.as_str());
+                for (k, v) in query {
+                    req = req.add_query_param(k, v);
+                }
+                let resp = req.await;
+                resp.assert_status_ok();
+                resp.json::<serde_json::Value>()
+            }
+        };
+        let find = |body: &serde_json::Value, name: &str| {
+            body["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["Name"] == name)
+                .unwrap_or_else(|| panic!("{name} missing: {body}"))
+                .clone()
+        };
+
+        // Series list without the field: unplayed count only.
+        let list = get(
+            "/items".into(),
+            vec![
+                ("Recursive", "true".into()),
+                ("IncludeItemTypes", "Series".into()),
+            ],
+        )
+        .await;
+        let item = find(&list, "Succession");
+        assert_eq!(item["UserData"]["UnplayedItemCount"], 3);
+        assert!(item["UserData"]["PlayedPercentage"].is_null());
+
+        // Series list with the field, as KefinTweaks asks for it.
+        let list = get(
+            "/items".into(),
+            vec![
+                ("Recursive", "true".into()),
+                ("IncludeItemTypes", "Series".into()),
+                ("Fields", "UserData,RecursiveItemCount".into()),
+            ],
+        )
+        .await;
+        let item = find(&list, "Succession");
+        assert_eq!(item["RecursiveItemCount"], 4);
+        assert_eq!(item["UserData"]["UnplayedItemCount"], 3);
+        assert_eq!(item["UserData"]["PlayedPercentage"], 25.0);
+
+        // Single item.
+        let item = get(
+            format!("/items/{}", series.id),
+            vec![("Fields", "RecursiveItemCount".into())],
+        )
+        .await;
+        assert_eq!(item["UserData"]["PlayedPercentage"], 25.0);
+
+        // Seasons count their own episodes (by parent, not grandparent).
+        let list = get(
+            "/items".into(),
+            vec![
+                (
+                    "ParentId",
+                    series
+                        .id
+                        .to_string(),
+                ),
+                ("Fields", "RecursiveItemCount".into()),
+            ],
+        )
+        .await;
+        let s1 = find(&list, "Season 1");
+        assert_eq!(s1["RecursiveItemCount"], 2);
+        assert_eq!(s1["UserData"]["UnplayedItemCount"], 1);
+        assert_eq!(s1["UserData"]["PlayedPercentage"], 50.0);
+        let s2 = find(&list, "Season 2");
+        assert_eq!(s2["UserData"]["UnplayedItemCount"], 2);
+        assert_eq!(s2["UserData"]["PlayedPercentage"], 0.0);
     }
 
     // Recursive=true + IncludeItemTypes=Episode + Filters=IsPlayed must return
