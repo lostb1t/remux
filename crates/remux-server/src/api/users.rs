@@ -223,7 +223,7 @@ fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result
     Ok(())
 }
 
-async fn build_auth_response(
+pub(crate) async fn build_auth_response(
     state: &AppState,
     device: auth::Device,
     user: db::User,

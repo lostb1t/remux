@@ -673,6 +673,61 @@ pub static JS: &str = r#"
   processRoot(document.body);
 }());
 
+
+// "Sign in with …" buttons on the login page, one per OIDC provider from
+// /remux/sso/providers. Fetched once, only after a login form shows up.
+(function () {
+  var providers = null;
+  var fetching = false;
+  // jellyfin-web may sit under a reverse-proxy prefix and is mounted at
+  // /web/ and /jellyfin/; keep both so the session returns to the same place.
+  var m = location.pathname.match(/^(.*?)\/(web|jellyfin)(\/|$)/i);
+  var base = m ? m[1] : '';
+  var returnTo = m ? '/' + m[2] + '/' : '/web/';
+
+  function addButtons(form) {
+    if (form.querySelector('.remux-sso')) return;
+    var box = document.createElement('div');
+    box.className = 'remux-sso';
+    box.style.marginTop = '1em';
+    for (var i = 0; i < providers.length; i++) {
+      var p = providers[i];
+      var a = document.createElement('a');
+      a.className = 'raised block emby-button';
+      a.style.display = 'block';
+      a.style.textAlign = 'center';
+      a.style.textDecoration = 'none';
+      a.style.marginTop = '0.5em';
+      a.href = base + '/sso/oid/start/' + encodeURIComponent(p.Name) +
+        '?redirect=' + encodeURIComponent(returnTo);
+      a.textContent = 'Sign in with ' + p.DisplayName;
+      box.appendChild(a);
+    }
+    form.appendChild(box);
+  }
+
+  function scan() {
+    var forms = document.querySelectorAll('.manualLoginForm');
+    if (!forms.length) return;
+    if (providers === null) {
+      if (fetching) return;
+      fetching = true;
+      fetch(base + '/remux/sso/providers')
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .catch(function () { return []; })
+        .then(function (list) { providers = list || []; scan(); });
+      return;
+    }
+    // Nothing configured: stop watching the DOM for the rest of the page.
+    if (!providers.length) { observer.disconnect(); return; }
+    for (var i = 0; i < forms.length; i++) addButtons(forms[i]);
+  }
+
+  var observer = new MutationObserver(scan);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  scan();
+}());
+
 "#;
 
 #[cfg(test)]
