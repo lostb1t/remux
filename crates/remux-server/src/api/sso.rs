@@ -192,6 +192,7 @@ pub async fn sso_providers(State(state): State<AppState>) -> Json<Vec<SsoProvide
                 display_name: p
                     .display_name
                     .clone(),
+                auto_redirect: p.auto_redirect,
             })
             .collect(),
     )
@@ -922,6 +923,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn providers_announce_auto_redirect_when_enabled() {
+        let idp = mock_idp().await;
+        let (server, _guard) = new_test_server_with_config(Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            torrent_peer_port: None,
+            disable_dht: true,
+            disable_startup_tasks: true,
+            oidc_issuer_url: Some(idp.base_url()),
+            oidc_client_id: Some(CLIENT_ID.into()),
+            oidc_provider_name: "authentik".into(),
+            oidc_display_name: "Authentik".into(),
+            oidc_auto_redirect: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let listed: Value = server
+            .get("/remux/sso/providers")
+            .await
+            .json();
+        assert_eq!(
+            listed,
+            json!([{ "Name": "authentik", "DisplayName": "Authentik", "AutoRedirect": true }])
+        );
+    }
+
+    #[tokio::test]
     async fn providers_are_listed_only_when_configured() {
         let idp = mock_idp().await;
         let (server, _guard) = server_with_idp(&idp).await;
@@ -931,7 +960,7 @@ mod tests {
             .json();
         assert_eq!(
             listed,
-            json!([{ "Name": "authentik", "DisplayName": "Authentik" }])
+            json!([{ "Name": "authentik", "DisplayName": "Authentik", "AutoRedirect": false }])
         );
 
         let (plain, _guard) = new_test_server()

@@ -6424,6 +6424,10 @@ impl Endpoint for GetBrandingConfiguration {
 pub struct SsoProvider {
     pub name: String,
     pub display_name: String,
+    /// Login pages go straight to this provider instead of showing the
+    /// password form (`OIDC_AUTO_REDIRECT`). Append `?local` to skip it.
+    #[serde(default)]
+    pub auto_redirect: bool,
 }
 
 #[derive(Debug, Clone, Default)]

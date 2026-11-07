@@ -707,6 +707,11 @@ pub struct Config {
     /// let people choose their own username, or anyone could claim `admin`.
     #[serde(default)]
     pub oidc_link_existing_users: bool,
+    /// Send visitors of the web client and dashboard login pages straight to
+    /// the provider instead of showing the password form. Adding `?local` to
+    /// the page address shows the form anyway.
+    #[serde(default)]
+    pub oidc_auto_redirect: bool,
     /// Full callback URL registered with the provider, e.g.
     /// `https://media.example.com/sso/oid/redirect/oidc`. Derived from the
     /// request's `Host` / `X-Forwarded-*` headers when unset.
@@ -899,6 +904,7 @@ impl Default for Config {
             oidc_allowed_groups: None,
             oidc_auto_create_users: true,
             oidc_link_existing_users: false,
+            oidc_auto_redirect: false,
             oidc_redirect_url: None,
         }
         .resolve()

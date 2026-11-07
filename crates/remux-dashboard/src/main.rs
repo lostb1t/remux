@@ -162,6 +162,44 @@ fn App() -> Element {
     }
 }
 
+/// `OIDC_AUTO_REDIRECT`: where to send the browser instead of showing the
+/// login form. Same rules as the web client: one provider only, `?local`
+/// skips it, and at most one attempt per minute so a failing provider
+/// can't cause a redirect loop.
+fn auto_redirect_target(providers: &[SsoProvider]) -> Option<String> {
+    use gloo_storage::SessionStorage;
+    let [p] = providers else { return None };
+    if !p.auto_redirect {
+        return None;
+    }
+    let location = web_sys::window()?.location();
+    let query = location
+        .search()
+        .unwrap_or_default()
+        + &location
+            .hash()
+            .unwrap_or_default();
+    if query
+        .split(['?', '&', '#'])
+        .any(|t| {
+            t.eq_ignore_ascii_case("local")
+                || t.to_ascii_lowercase()
+                    .starts_with("local=")
+        })
+    {
+        return None;
+    }
+    const KEY: &str = "remux_sso_auto_redirect";
+    let now = js_sys::Date::now();
+    let last = SessionStorage::get::<f64>(KEY).unwrap_or(0.0);
+    if now - last < 60_000.0 {
+        return None;
+    }
+    let _ = SessionStorage::set(KEY, now);
+    // Provider names are URL-safe slugs (checked server-side).
+    Some(format!("/sso/oid/start/{}?redirect=%2Fadmin%2F", p.name))
+}
+
 #[component]
 fn Login(on_login: EventHandler) -> Element {
     let mut server_url: Signal<Option<String>> = use_signal(|| None);
@@ -190,6 +228,15 @@ fn Login(on_login: EventHandler) -> Element {
                     .execute(GetSsoProviders)
                     .await
                 {
+                    if auto_redirect_target(&providers).is_some_and(|href| {
+                        web_sys::window().is_some_and(|w| {
+                            w.location()
+                                .replace(&href)
+                                .is_ok()
+                        })
+                    }) {
+                        return;
+                    }
                     sso_providers.set(providers);
                 }
             }

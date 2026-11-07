@@ -706,6 +706,25 @@ pub static JS: &str = r#"
     form.appendChild(box);
   }
 
+  // OIDC_AUTO_REDIRECT: go straight to the provider. `?local` in the address
+  // shows the form instead, and a second attempt within a minute (e.g. after
+  // "Back to sign-in" on an error page) falls back to the buttons so a
+  // failing provider can't trap the browser in a redirect loop.
+  function autoRedirect() {
+    if (providers.length !== 1 || !providers[0].AutoRedirect) return false;
+    var skip = (location.search + location.hash).split(/[?&#]/)
+      .some(function (t) { return /^local(=|$)/i.test(t); });
+    if (skip) return false;
+    var key = 'remux_sso_auto_redirect', now = Date.now(), last = 0;
+    try { last = +sessionStorage.getItem(key) || 0; } catch (e) {}
+    if (now - last < 60000) return false;
+    try { sessionStorage.setItem(key, String(now)); } catch (e) {}
+    observer.disconnect();
+    location.replace(base + '/sso/oid/start/' + encodeURIComponent(providers[0].Name) +
+      '?redirect=' + encodeURIComponent(returnTo));
+    return true;
+  }
+
   function scan() {
     var forms = document.querySelectorAll('.manualLoginForm');
     if (!forms.length) return;
@@ -720,6 +739,7 @@ pub static JS: &str = r#"
     }
     // Nothing configured: stop watching the DOM for the rest of the page.
     if (!providers.length) { observer.disconnect(); return; }
+    if (autoRedirect()) return;
     for (var i = 0; i < forms.length; i++) addButtons(forms[i]);
   }
 
