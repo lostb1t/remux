@@ -1,3 +1,42 @@
+# [0.40.0](https://github.com/lostb1t/remux/compare/v0.39.0...v0.40.0) (2026-11-07)
+
+
+### Bug Fixes
+
+* accept addon manifests that list resources we don't know ([6fabdc6](https://github.com/lostb1t/remux/commit/6fabdc64c6cf01e2d655242e5a1f8874fb64a098))
+* don't let browsers reuse stale copies of patched web pages ([fc879f0](https://github.com/lostb1t/remux/commit/fc879f043d7553583f0b7d6d65764c8b3c27557c))
+* don't map text subtitles into progressive transcodes that fail on them ([6aaba0d](https://github.com/lostb1t/remux/commit/6aaba0d13dcc65cb69a54ee99d24298e5ad0a78e))
+* keep catalog items when a later catalog page fails to load ([#666](https://github.com/lostb1t/remux/issues/666)) ([8455bea](https://github.com/lostb1t/remux/commit/8455beaa3e0848448bea00fa608c36ba2e1c1e71))
+* keep streams in sync on long plays when the server re-encodes video ([#678](https://github.com/lostb1t/remux/issues/678)) ([b3f1f83](https://github.com/lostb1t/remux/commit/b3f1f8388e117ed8b8c28491e95dab00f2716275))
+* keep the chosen audio track when the server scales or tone-maps video (fixes [#526](https://github.com/lostb1t/remux/issues/526)) ([8b83990](https://github.com/lostb1t/remux/commit/8b83990542144d0ae75c04cdcc0b7d33cfd6c207))
+* keep the item page when picking a version in jellyfin-web 12.x (fixes [#673](https://github.com/lostb1t/remux/issues/673)) ([eb1f8ce](https://github.com/lostb1t/remux/commit/eb1f8ce9cb5701dcde30f78a916608e66eeab887))
+* keep the same version playing when you change audio track ([#679](https://github.com/lostb1t/remux/issues/679)) ([d01fbfa](https://github.com/lostb1t/remux/commit/d01fbfafd99c4989ea4dd1ffeb52cf1f206db557))
+* load dashboard styles before first paint ([#654](https://github.com/lostb1t/remux/issues/654)) ([42bd273](https://github.com/lostb1t/remux/commit/42bd273636e4b1be1a82eba96af2d77877731594))
+* make the bitrate test return random data of exactly the requested size ([ff64112](https://github.com/lostb1t/remux/commit/ff641127de42c03dcd00d311aad4fb9a4690e22e))
+* only offer the media kind filter on a user's filters, not on collections ([5f71376](https://github.com/lostb1t/remux/commit/5f71376847168ee50875042a3b8494a231938dba))
+* play 4K HEVC on LG webOS and Samsung Tizen TVs ([#677](https://github.com/lostb1t/remux/issues/677)) ([d3fcfaa](https://github.com/lostb1t/remux/commit/d3fcfaab3d4777aa0a77f06faef4b71a932a1bce))
+* report why a WebDAV file could not be served instead of always 404 ([cf3e56c](https://github.com/lostb1t/remux/commit/cf3e56cba3edf3cf29ff54543d5f9c153475de6d))
+* return MediaSources when an item is fetched by version id (fixes [#661](https://github.com/lostb1t/remux/issues/661)) ([872f03f](https://github.com/lostb1t/remux/commit/872f03f92ffce287badb498debb2473af3a1ef28))
+* show external subtitles without a language and link them to their video ([#670](https://github.com/lostb1t/remux/issues/670)) ([3351c9f](https://github.com/lostb1t/remux/commit/3351c9fe2f0dcd5c6dc3aec72635bdc0b0e0f051))
+* transcode audio the client can't play and keep surround channels (fixes [#636](https://github.com/lostb1t/remux/issues/636)) ([#644](https://github.com/lostb1t/remux/issues/644)) ([08c6e3c](https://github.com/lostb1t/remux/commit/08c6e3cf3da9fd15cb2cf3384a7ec9fdb3819a40))
+* treat an empty meta from a Stremio addon as an unknown title ([#671](https://github.com/lostb1t/remux/issues/671)) ([6a1d873](https://github.com/lostb1t/remux/commit/6a1d873477ceb5c84817d8d417c013302bd810e2))
+* use your own local subtitles and prefer them over provider ones ([#657](https://github.com/lostb1t/remux/issues/657)) ([b5fa933](https://github.com/lostb1t/remux/commit/b5fa933a4663031620fa2787cd1eb6525c2cdc82))
+
+
+### Features
+
+* let admins force the default library order for everyone ([#663](https://github.com/lostb1t/remux/issues/663)) ([d61a08e](https://github.com/lostb1t/remux/commit/d61a08e327c83bc0f5ab33379614e3880b5747a9))
+* let clients see whether the library order is forced ([fbc6a62](https://github.com/lostb1t/remux/commit/fbc6a62eb8f538605a2c92f14b2ea12708bbdace))
+* rank the streams in a group and optionally the groups themselves ([#672](https://github.com/lostb1t/remux/issues/672)) ([d9270da](https://github.com/lostb1t/remux/commit/d9270daa88966bedace888d8b42e2ff49071f2f9))
+* remember the language you last chose for audio and subtitles ([#680](https://github.com/lostb1t/remux/issues/680)) ([5efb249](https://github.com/lostb1t/remux/commit/5efb24944ebfd11223e369173743a073acd62857))
+* **sdks:** fetch recap and outro segments from IntroDB ([#660](https://github.com/lostb1t/remux/issues/660)) ([bdec31c](https://github.com/lostb1t/remux/commit/bdec31cf7a07653c1017dee9840082c9ea6152f2))
+* show upcoming movies, shows and episodes in their own library ([#667](https://github.com/lostb1t/remux/issues/667)) ([eeb99fe](https://github.com/lostb1t/remux/commit/eeb99fec31ae9e1c820175c1542ceff7ed5fd229))
+
+
+### Performance Improvements
+
+* make loading libraries with an upcoming collection fast ([#669](https://github.com/lostb1t/remux/issues/669)) ([d2e1452](https://github.com/lostb1t/remux/commit/d2e1452d2e2c87fdf29377b2f467fcbc7b2ef3e9))
+
 # [0.39.0](https://github.com/lostb1t/remux/compare/v0.38.2...v0.39.0) (2026-11-01)
 
 
