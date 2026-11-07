@@ -1422,7 +1422,7 @@ pub struct MediaFilter {
     pub include_user_state: bool,
     pub include_child_count: bool,
     /// `Fields=RecursiveItemCount`: report a series' or season's episode
-    /// count and, with user state, the played percentage derived from it.
+    /// count as `RecursiveItemCount`.
     pub include_recursive_item_count: bool,
     pub include_relations: bool,
     /// `Some(false)` skips person relations for Jellyfin list queries without
@@ -1625,8 +1625,7 @@ pub struct Media {
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     /// Share of a series' or season's episodes the user has played, 0-100.
-    /// Only filled when `MediaFilter::include_recursive_item_count` is set,
-    /// as Jellyfin derives it from `RecursiveItemCount`.
+    /// Filled with the user state, like `unplayed_item_count`.
     #[sqlx(skip)]
     pub played_percentage: Option<f64>,
     #[sqlx(skip)]
@@ -6154,9 +6153,9 @@ impl Media {
                         .copied()
                         .unwrap_or_default();
                     media.unplayed_item_count = Some(c.unplayed);
+                    media.played_percentage = c.played_percentage();
                     if filter.include_recursive_item_count {
                         media.recursive_item_count = Some(c.total);
-                        media.played_percentage = c.played_percentage();
                     }
                 }
             }
@@ -8782,8 +8781,9 @@ struct EpisodeCounts {
 }
 
 impl EpisodeCounts {
-    /// Jellyfin's folder `PlayedPercentage`: played / total * 100, set
-    /// whenever there is at least one episode (0 and 100 included).
+    /// Jellyfin's folder `PlayedPercentage` (`Folder.FillUserDataDtoValues`
+    /// in 12.x): played / total * 100, set whenever there is at least one
+    /// episode (0 and 100 included).
     fn played_percentage(self) -> Option<f64> {
         (self.total > 0)
             .then(|| (self.total - self.unplayed) as f64 / self.total as f64 * 100.0)

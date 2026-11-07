@@ -5287,9 +5287,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Series and seasons report their episode progress like Jellyfin's
-    /// folders: `UnplayedItemCount` always, and with `Fields=RecursiveItemCount`
-    /// also the episode count and `PlayedPercentage` (0 included), in lists as
+    /// Series and seasons report their episode progress like Jellyfin 12's
+    /// folders: `UnplayedItemCount` and `PlayedPercentage` (0 included)
+    /// always, the episode count with `Fields=RecursiveItemCount`, in lists as
     /// well as for a single item.
     #[tokio::test]
     async fn series_and_seasons_report_played_percentage() {
@@ -5376,7 +5376,7 @@ mod tests {
                 .clone()
         };
 
-        // Series list without the field: unplayed count only.
+        // Series list without the field: progress, but no episode count.
         let list = get(
             "/items".into(),
             vec![
@@ -5387,7 +5387,8 @@ mod tests {
         .await;
         let item = find(&list, "Succession");
         assert_eq!(item["UserData"]["UnplayedItemCount"], 3);
-        assert!(item["UserData"]["PlayedPercentage"].is_null());
+        assert_eq!(item["UserData"]["PlayedPercentage"], 25.0);
+        assert!(item["RecursiveItemCount"].is_null());
 
         // Series list with the field, as KefinTweaks asks for it.
         let list = get(
@@ -5405,11 +5406,7 @@ mod tests {
         assert_eq!(item["UserData"]["PlayedPercentage"], 25.0);
 
         // Single item.
-        let item = get(
-            format!("/items/{}", series.id),
-            vec![("Fields", "RecursiveItemCount".into())],
-        )
-        .await;
+        let item = get(format!("/items/{}", series.id), vec![]).await;
         assert_eq!(item["UserData"]["PlayedPercentage"], 25.0);
 
         // Seasons count their own episodes (by parent, not grandparent).
