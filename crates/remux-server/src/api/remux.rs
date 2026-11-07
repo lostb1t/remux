@@ -442,17 +442,13 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
             .unwrap_or(0)
     });
 
-    let groups = db::StreamGroup::list(
+    let enabled_groups = db::StreamGroup::list_enabled(
         &state
             .ctx
             .db,
     )
     .await
     .unwrap_or_default();
-    let enabled_groups: Vec<&db::StreamGroup> = groups
-        .iter()
-        .filter(|g| g.enabled)
-        .collect();
 
     if enabled_groups.is_empty() {
         let streams = sources

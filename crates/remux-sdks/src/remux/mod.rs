@@ -774,6 +774,10 @@ pub struct ServerConfiguration {
     /// Maximum number of alternative streams to try before giving up (default: 3).
     #[default(Some(3_i64))]
     pub max_probe_fallback_streams: Option<i64>,
+    /// Group streams at all (default true). Off ignores every stream group
+    /// without touching their own enabled flags.
+    #[default(Some(true))]
+    pub stream_groups_enabled: Option<bool>,
     /// Show streams that don't match any group individually (default true).
     #[default(Some(true))]
     pub stream_groups_show_ungrouped: Option<bool>,
