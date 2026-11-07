@@ -359,7 +359,15 @@ impl OpendalAddon {
     /// through the operator would resolve the path under the root a second
     /// time; local files are served straight from disk instead.
     fn descriptor_for(&self, path: &str) -> crate::stream::StreamDescriptor {
-        if self.backend == "local" {
+        // A `.strm` file is indexed under the URL it contains, not under its own
+        // path, so there is no file on the backend to open: play the URL.
+        if path.starts_with("http://") || path.starts_with("https://") {
+            crate::stream::StreamDescriptor::Http {
+                url: path.to_string(),
+                request_headers: Default::default(),
+                response_headers: Default::default(),
+            }
+        } else if self.backend == "local" {
             crate::stream::StreamDescriptor::Local(std::path::PathBuf::from(path))
         } else {
             crate::stream::StreamDescriptor::Opendal {
@@ -2693,6 +2701,40 @@ async fn prune_stale_paths(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strm_urls_are_played_as_urls_on_every_backend() {
+        use crate::stream::StreamDescriptor;
+        let addon = |backend: &str| OpendalAddon {
+            addon_id: Uuid::nil(),
+            operator: Arc::new(
+                opendal::Operator::new(opendal::services::Memory::default())
+                    .unwrap()
+                    .finish(),
+            ),
+            root: String::new(),
+            backend: backend.to_string(),
+            media_kind: "movie".to_string(),
+        };
+        let url = "https://user:pass@host/strm/e/token";
+        for backend in ["webdav", "local"] {
+            assert!(
+                matches!(
+                    addon(backend).descriptor_for(url),
+                    StreamDescriptor::Http { url: ref u, .. } if u == url
+                ),
+                "{backend}"
+            );
+        }
+        assert!(matches!(
+            addon("webdav").descriptor_for("/movies/1917.mkv"),
+            StreamDescriptor::Opendal { .. }
+        ));
+        assert!(matches!(
+            addon("local").descriptor_for("/movies/1917.mkv"),
+            StreamDescriptor::Local(_)
+        ));
+    }
+
     use std::sync::{Arc, atomic::AtomicU64};
 
     use chrono::Utc;
@@ -5039,13 +5081,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(streams.len(), 1);
-        let path = match &streams[0].descriptor {
-            StreamDescriptor::Local(p) => p
-                .to_string_lossy()
-                .to_string(),
-            other => panic!("expected Local descriptor, got {other:?}"),
+        // ...and it is played as that URL, not opened as a file on the backend.
+        let played = match &streams[0].descriptor {
+            StreamDescriptor::Http { url, .. } => url.clone(),
+            other => panic!("expected Http descriptor, got {other:?}"),
         };
-        assert_eq!(path, url, "stream path must be the URL from the .strm file");
+        assert_eq!(played, url, "stream must play the URL from the .strm file");
     }
 
     // -----------------------------------------------------------------------
