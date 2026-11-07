@@ -1536,6 +1536,20 @@ fn source_stream_info(source: &MediaSourceInfo) -> Option<crate::stream::StreamI
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
+/// Below this a stream tagged HDR is squeezed too hard for the tag to be worth
+/// anything: the typical SDR 1080p release already has more (about 8 Mbps), and
+/// a 4 Mbps "HDR10" downscale of a 4K master looks worse than it. Such a stream
+/// gets no head start on `hdr_class`; it still plays and still ranks by the
+/// rest. 10 Mbps leaves out about a third of HDR 1080p and one in twelve HDR 4K
+/// releases in a real library. An unknown bitrate stays neutral.
+const MIN_HDR_BITRATE: i64 = 10_000_000;
+
+fn hdr_is_fed(bitrate: Option<i64>) -> bool {
+    bitrate
+        .filter(|bps| *bps > 0)
+        .is_none_or(|bps| bps >= MIN_HDR_BITRATE)
+}
+
 /// Only demote extreme bitrate/resolution mismatches. One bit per four pixels
 /// per second corresponds to about 0.5 Mbps at 1080p or 2 Mbps at 4K; this
 /// is a plausibility check, not an estimate of visual quality. Below 100 Kbps
@@ -1639,7 +1653,11 @@ impl MediaSourceCapabilityExt for MediaSourceInfo {
             resolution_tier: raw_resolution_tier,
             // HDR vs SDR matters; Dolby Vision vs HDR10 only breaks otherwise
             // equal ranks after release quality, bitrate, bit depth and audio.
-            hdr_class: if hdr_tier > 1 { 2 } else { 1 },
+            hdr_class: if hdr_tier > 1 && hdr_is_fed(self.bitrate) {
+                2
+            } else {
+                1
+            },
             hdr_tier,
             // A missing BitDepth is common for remote (RemuxDB-sourced)
             // probe data that never explicitly set it — fall back to
@@ -3117,6 +3135,34 @@ mod tests {
         assert!(best(healthy_rank) > best(tiny_rank));
         assert!(quality(healthy_rank) > quality(tiny_rank));
         assert!(compat(tiny_rank) > compat(healthy_rank));
+    }
+
+    #[test]
+    fn hdr_only_leads_when_it_has_the_bitrate_to_back_it() {
+        let ranked = |range: VideoRangeType, bitrate: Option<i64>| {
+            let mut source = source_with(
+                video_stream(1920, Some(range)),
+                audio_stream("aac", 2),
+                true,
+            );
+            source.bitrate = bitrate;
+            source.capability_rank(None, &source.transcoding_reasons)
+        };
+        let sdr_remux = ranked(VideoRangeType::Sdr, Some(36_000_000));
+        let thin_hdr = ranked(VideoRangeType::Hdr10, Some(4_292_766));
+        let fed_hdr = ranked(VideoRangeType::Hdr10, Some(12_000_000));
+        let unknown_hdr = ranked(VideoRangeType::Hdr10, None);
+
+        assert_eq!(thin_hdr.hdr_class, 1);
+        assert_eq!(fed_hdr.hdr_class, 2);
+        assert_eq!(unknown_hdr.hdr_class, 2);
+        assert_eq!(ranked(VideoRangeType::Hdr10, Some(10_000_000)).hdr_class, 2);
+        assert_eq!(ranked(VideoRangeType::Hdr10, Some(9_999_999)).hdr_class, 1);
+        // The thin HDR no longer beats a well-fed SDR release...
+        assert!(best(sdr_remux) > best(thin_hdr));
+        assert!(quality(sdr_remux) > quality(thin_hdr));
+        // ...while HDR with a real bitrate still does.
+        assert!(best(fed_hdr) > best(sdr_remux));
     }
 
     #[test]

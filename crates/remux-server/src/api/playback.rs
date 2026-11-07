@@ -440,15 +440,22 @@ async fn items_playbackinfo_inner(
     // `sort_device_profile` (fresh-with-persisted-fallback) so this ranking
     // pass's own bitrate cap is consistent with the resolution/codec
     // judgments it's already making from that same profile.
-    let sort_max_bitrate: Option<i64> = match (
+    // MaxStaticBitrate joins in here only: it picks the version, while
+    // `max_bitrate` above stays what the client asked to transcode that
+    // version to.
+    let sort_max_bitrate: Option<i64> = [
         q.max_streaming_bitrate,
         sort_device_profile
             .as_ref()
             .and_then(|p| p.max_streaming_bitrate),
-    ) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
+        sort_device_profile
+            .as_ref()
+            .and_then(|p| p.max_static_bitrate)
+            .filter(|b| *b > 0),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     let ranking = (sort_mode != remux_sdks::remux::SortMediaSourcesMode::Disabled)
         .then(|| SourceRankingContext {
             mode: sort_mode,
@@ -2129,6 +2136,112 @@ mod tests {
                 "size={size}"
             );
         }
+    }
+
+    /// A device whose profile carries a `MaxStaticBitrate` gets the release below
+    /// it first, whether the profile comes with the request or was stored by
+    /// capabilities. A client that sends a different profile later replaces it.
+    #[tokio::test]
+    async fn a_device_bitrate_ceiling_picks_the_version_that_fits() {
+        use crate::integration_test::seed_movie;
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let owner = seed_movie(ctx).await;
+        let now = chrono::Utc::now().naive_utc();
+        for (name, bitrate) in [("heavy", 50_000_000), ("light", 5_000_000)] {
+            let template = insert_test_source(ctx).await;
+            let mut probe = template
+                .probe_data
+                .unwrap();
+            probe.bitrate = Some(bitrate);
+            let mut release = crate::db::Media {
+                title: name.to_string(),
+                kind: crate::db::MediaKind::Stream,
+                parent_id: Some(owner.id),
+                stream_info: template.stream_info,
+                probe_data: Some(probe),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            release
+                .save(&ctx.db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(5))
+            .bind(owner.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+
+        let ranked = async |body: serde_json::Value| {
+            let resp = server
+                .post(&format!("/items/{}/playbackinfo", owner.id))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&body)
+                .await;
+            resp.assert_status_ok();
+            let body: serde_json::Value = resp.json();
+            body["MediaSources"][0]["Bitrate"]
+                .as_i64()
+                .unwrap()
+        };
+        let profile = |static_bitrate: Option<i64>| {
+            let mut profile = json!({
+                "Name": "Remux Client",
+                "DirectPlayProfiles": [
+                    { "Type": "Video", "Container": "*", "VideoCodec": "*", "AudioCodec": "*" }
+                ],
+                "TranscodingProfiles": [],
+                "CodecProfiles": []
+            });
+            if let Some(bitrate) = static_bitrate {
+                profile["MaxStaticBitrate"] = json!(bitrate);
+            }
+            profile
+        };
+
+        assert_eq!(
+            ranked(json!({})).await,
+            50_000_000,
+            "without a ceiling the heavier release leads"
+        );
+
+        // Reported through capabilities, then used by a request that sends no profile.
+        server
+            .post("/sessions/capabilities/full")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({
+                "PlayableMediaTypes": ["Video"],
+                "DeviceProfile": profile(Some(8_000_000))
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(ranked(json!({})).await, 5_000_000);
+
+        // Sent with the request itself.
+        assert_eq!(
+            ranked(json!({ "DeviceProfile": profile(Some(8_000_000)) })).await,
+            5_000_000
+        );
+
+        // Zero is no ceiling.
+        assert_eq!(
+            ranked(json!({ "DeviceProfile": profile(Some(0)) })).await,
+            50_000_000
+        );
+
+        // A later profile without one replaces it: the client has to send it
+        // in both places.
+        assert_eq!(
+            ranked(json!({ "DeviceProfile": profile(None) })).await,
+            50_000_000
+        );
+        assert_eq!(ranked(json!({})).await, 50_000_000);
     }
 
     async fn device_user(ctx: &crate::AppContext, token: &str) -> uuid::Uuid {
