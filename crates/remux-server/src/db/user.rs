@@ -537,6 +537,9 @@ pub struct UserMediaStateFilter {
     pub watchlist: Option<bool>,
     pub ignored: Option<bool>,
     pub resumable: Option<bool>,
+    /// Jellyfin's `IsLiked`: `true` keeps items rated at or above
+    /// [`UserRating::LIKE_THRESHOLD`], `false` keeps every other item.
+    pub liked: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
