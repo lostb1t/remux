@@ -420,6 +420,7 @@ pub(crate) fn StreamFilterEditor(
 pub fn StreamGroupsCard(app_state: AppState) -> Element {
     let mut groups: Signal<Vec<StreamGroupDto>> = use_signal(Vec::new);
     let addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let mut groups_enabled = use_signal(|| true);
     let mut show_ungrouped = use_signal(|| true);
     let mut auto_sort_groups = use_signal(|| false);
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
@@ -509,6 +510,10 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
             }
             match (groups_res, cfg_res) {
                 (Ok(g), Ok(cfg)) => {
+                    groups_enabled.set(
+                        cfg.stream_groups_enabled
+                            .unwrap_or(true),
+                    );
                     show_ungrouped.set(
                         cfg.stream_groups_show_ungrouped
                             .unwrap_or(true),
@@ -536,6 +541,29 @@ pub fn StreamGroupsCard(app_state: AppState) -> Element {
                 span { class: "card-title", "Settings" }
             }
             div { class: "card-body",
+                ToggleRow {
+                    label: "Enable groups",
+                    checked: *groups_enabled.read(),
+                    disabled: *saving_setting.read(),
+                    on_change: {
+                        let client = app_state.clone();
+                        move |v| {
+                            groups_enabled.set(v);
+                            let Some(cfg) = base_cfg.peek().clone() else { return };
+                            let updated = ServerConfiguration {
+                                stream_groups_enabled: Some(v),
+                                ..cfg
+                            };
+                            base_cfg.set(Some(updated.clone()));
+                            saving_setting.set(true);
+                            let c = client.clone();
+                            spawn(async move {
+                                let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
+                                saving_setting.set(false);
+                            });
+                        }
+                    }
+                }
                 ToggleRow {
                     label: "Show ungrouped streams",
                     description: "Show streams that don't match any group as individual entries.",

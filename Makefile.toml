@@ -6,6 +6,7 @@ CONFIG = "./config"
 DB="db.sqlite"
 SLOW_QUERY_THRESHOLD_MS=700
 JELLYFIN_WEB_TAG="v12.4"
+DX_BIN = { value = "${HOME}/.cargo/bin/dx", condition = { env_not_set = ["DX_BIN"] } }
 
 [tasks.db-prepare]
 command = "cargo"
@@ -43,12 +44,12 @@ watch = { watch = ["${PWD}/crates"] }
 #cwd = "crates/server"
 
 [tasks.dev-serve-dash]
-command = "${HOME}/.cargo/bin/dx"
+command = "${DX_BIN}"
 args = ["serve", "--addr", "0.0.0.0", "--port", "8888"]
 cwd = "crates/remux-dashboard"
 
 [tasks.dev-build-dash]
-command = "${HOME}/.cargo/bin/dx"
+command = "${DX_BIN}"
 args = ["build", "--package", "remux-dashboard"]
 cwd = "crates/remux-dashboard"
 watch = {watch = ["${PWD}/crates/remux-dashboard/src", "${PWD}/crates/remux-dashboard/assets"]}
@@ -67,7 +68,7 @@ args = ["bundle", "--release", "-p", "remux-desktop"]
 
 [tasks.build-desktop-dash]
 description = "Build the dashboard WASM assets required by remux-desktop"
-command = "${HOME}/.cargo/bin/dx"
+command = "${DX_BIN}"
 args = ["build", "--release"]
 cwd = "crates/remux-dashboard"
 

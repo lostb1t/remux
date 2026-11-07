@@ -170,6 +170,24 @@ impl StreamGroup {
         Ok(groups)
     }
 
+    /// The groups that currently take part in grouping: none when groups are
+    /// switched off in the server configuration, otherwise every group that is
+    /// itself enabled.
+    pub async fn list_enabled(db: &SqlitePool) -> Result<Vec<Self>> {
+        let enabled = Settings::get_config_or_default(db)
+            .await
+            .stream_groups_enabled
+            .unwrap_or(true);
+        if !enabled {
+            return Ok(vec![]);
+        }
+        Ok(Self::list(db)
+            .await?
+            .into_iter()
+            .filter(|g| g.enabled)
+            .collect())
+    }
+
     pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {
         let row: Option<Media> = sqlx::query_as(
             "SELECT * FROM media WHERE id = ? AND kind = 'stream_group'",
@@ -245,14 +263,10 @@ impl StreamGroup {
         sources: Vec<Media>,
         show_ungrouped: bool,
     ) -> Vec<Media> {
-        let groups = match Self::list(db).await {
+        let enabled = match Self::list_enabled(db).await {
             Ok(g) => g,
             Err(_) => return sources,
         };
-        let enabled: Vec<&StreamGroup> = groups
-            .iter()
-            .filter(|g| g.enabled)
-            .collect();
         if enabled.is_empty() {
             return sources;
         }
@@ -655,7 +669,7 @@ impl StreamGroup {
         current_group_id: &Uuid,
         parent_id: &Uuid,
     ) -> Result<Vec<Vec<Media>>> {
-        let groups = Self::list(db).await?;
+        let groups = Self::list_enabled(db).await?;
         let mut parent = Media::get_by_id(db, parent_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("parent item not found"))?;
@@ -666,10 +680,7 @@ impl StreamGroup {
 
         let mut result = vec![];
         let mut found = false;
-        for group in groups
-            .iter()
-            .filter(|g| g.enabled)
-        {
+        for group in &groups {
             if !found {
                 if group.id == *current_group_id {
                     found = true;
@@ -1026,6 +1037,55 @@ mod tests {
 
     use super::*;
     use crate::stream::StreamDescriptor;
+
+    #[tokio::test]
+    async fn switching_groups_off_leaves_their_own_settings_alone() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        StreamGroup::create(db, "1080p", StreamFilter::default(), 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            StreamGroup::list_enabled(db)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut config = Settings::get_config_or_default(db).await;
+        config.stream_groups_enabled = Some(false);
+        Settings::set_config(db, &config)
+            .await
+            .unwrap();
+        assert!(
+            StreamGroup::list_enabled(db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let all = StreamGroup::list(db)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].enabled, "the group's own flag must not change");
+
+        config.stream_groups_enabled = Some(true);
+        Settings::set_config(db, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            StreamGroup::list_enabled(db)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     fn group_1080p_bluray() -> StreamGroup {
         StreamGroup {
