@@ -1581,6 +1581,7 @@ pub struct SpecialViewOptionDto {
 )]
 #[serde_as]
 #[derive(default2::Default, Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all(serialize = "PascalCase"))]
 #[skip_serializing_none]
 pub struct GetItemsQuery {
     pub user_id: Option<Uuid>,
@@ -8422,6 +8423,127 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn query_pairs(query: &GetItemsQuery) -> Vec<(String, String)> {
+        let encoded = serde_urlencoded::to_string(query).unwrap();
+        serde_urlencoded::from_str(&encoded).unwrap()
+    }
+
+    #[test]
+    fn items_query_is_written_with_pascal_case_names() {
+        let id = Uuid::new_v4();
+        let query = GetItemsQuery {
+            include_item_types: Some(vec![MediaType::Movie, MediaType::Series]),
+            parent_id: Some(id),
+            user_id: Some(id),
+            start_index: Some(5),
+            search_term: Some("matrix".into()),
+            is_watchlist: Some(true),
+            person_ids: Some(vec!["a".into(), "b".into()]),
+            sort_by: Some(vec![ItemSortBy::SortName]),
+            sort_order: Some(vec![SortOrder::Descending]),
+            ..Default::default()
+        };
+        let pairs = query_pairs(&query);
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+
+        assert_eq!(get("IncludeItemTypes"), Some("Movie,Series"));
+        assert_eq!(
+            get("ParentId"),
+            Some(
+                id.to_string()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            get("UserId"),
+            Some(
+                id.to_string()
+                    .as_str()
+            )
+        );
+        assert_eq!(get("StartIndex"), Some("5"));
+        assert_eq!(get("SearchTerm"), Some("matrix"));
+        assert_eq!(get("IsWatchlist"), Some("true"));
+        assert_eq!(get("PersonIds"), Some("a,b"));
+        assert_eq!(get("SortBy"), Some("SortName"));
+        assert_eq!(get("SortOrder"), Some("Descending"));
+        assert!(
+            pairs
+                .iter()
+                .all(|(k, _)| k
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())),
+            "all keys must be PascalCase: {pairs:?}"
+        );
+    }
+
+    #[test]
+    fn items_query_still_reads_every_spelling() {
+        let id = Uuid::new_v4();
+        let expect = |q: GetItemsQuery| {
+            assert_eq!(
+                q.include_item_types,
+                Some(vec![MediaType::Movie, MediaType::Series])
+            );
+            assert_eq!(q.parent_id, Some(id));
+            assert_eq!(q.start_index, Some(5));
+            assert_eq!(
+                q.search_term
+                    .as_deref(),
+                Some("matrix")
+            );
+            assert_eq!(q.is_watchlist, Some(true));
+        };
+        for (types, parent, start, term, watch) in [
+            (
+                "include_item_types",
+                "parent_id",
+                "start_index",
+                "search_term",
+                "is_watchlist",
+            ),
+            (
+                "includeItemTypes",
+                "parentId",
+                "startIndex",
+                "searchTerm",
+                "isWatchlist",
+            ),
+            (
+                "IncludeItemTypes",
+                "ParentId",
+                "StartIndex",
+                "SearchTerm",
+                "IsWatchlist",
+            ),
+        ] {
+            let qs = format!(
+                "{types}=Movie,Series&{parent}={id}&{start}=5&{term}=matrix&{watch}=true"
+            );
+            expect(serde_urlencoded::from_str(&qs).unwrap());
+        }
+
+        // What the SDK writes must be understood by the server's own reader.
+        let written = GetItemsQuery {
+            include_item_types: Some(vec![MediaType::Movie, MediaType::Series]),
+            parent_id: Some(id),
+            start_index: Some(5),
+            search_term: Some("matrix".into()),
+            is_watchlist: Some(true),
+            ..Default::default()
+        };
+        expect(
+            serde_urlencoded::from_str(&serde_urlencoded::to_string(&written).unwrap())
+                .unwrap(),
+        );
+    }
 
     #[test]
     fn items_query_limit_defaults_only_when_omitted() {
