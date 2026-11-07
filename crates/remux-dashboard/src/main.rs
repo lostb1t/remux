@@ -23,7 +23,12 @@ mod state;
 
 use router::Route;
 
+/// Whether the page was opened with a stored session; read before a sign-out
+/// clears it. See `auto_redirect_target`.
+static OPENED_SIGNED_IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 fn main() {
+    let _ = OPENED_SIGNED_IN.set(get_stored_server().is_some());
     dioxus::launch(App);
 }
 
@@ -163,13 +168,14 @@ fn App() -> Element {
 }
 
 /// `OIDC_AUTO_REDIRECT`: where to send the browser instead of showing the
-/// login form. Same rules as the web client: one provider only, `?local`
+/// login form. Same rules as the web client: one provider only, never after
+/// a sign-out (the provider would sign the user straight back in), `?local`
 /// skips it, and at most one attempt per minute so a failing provider
 /// can't cause a redirect loop.
 fn auto_redirect_target(providers: &[SsoProvider]) -> Option<String> {
     use gloo_storage::SessionStorage;
     let [p] = providers else { return None };
-    if !p.auto_redirect {
+    if !p.auto_redirect || OPENED_SIGNED_IN.get() == Some(&true) {
         return None;
     }
     let location = web_sys::window()?.location();

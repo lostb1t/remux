@@ -684,6 +684,15 @@ pub static JS: &str = r#"
   var m = location.pathname.match(/^(.*?)\/(web|jellyfin)(\/|$)/i);
   var base = m ? m[1] : '';
   var returnTo = m ? '/' + m[2] + '/' : '/web/';
+  // Whether the page was opened with a stored session. If so, a login form
+  // showing up later means the user just signed out (or the session ended),
+  // and sending them straight back to the provider would sign them in again.
+  var openedSignedIn = (function () {
+    try {
+      var c = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+      return (c.Servers || []).some(function (s) { return !!s.AccessToken; });
+    } catch (e) { return false; }
+  }());
 
   function addButtons(form) {
     if (form.querySelector('.remux-sso')) return;
@@ -706,11 +715,13 @@ pub static JS: &str = r#"
     form.appendChild(box);
   }
 
-  // OIDC_AUTO_REDIRECT: go straight to the provider. `?local` in the address
-  // shows the form instead, and a second attempt within a minute (e.g. after
-  // "Back to sign-in" on an error page) falls back to the buttons so a
-  // failing provider can't trap the browser in a redirect loop.
+  // OIDC_AUTO_REDIRECT: go straight to the provider, but not after a sign-out
+  // (see openedSignedIn). `?local` in the address shows the form instead, and
+  // a second attempt within a minute (e.g. after "Back to sign-in" on an error
+  // page) falls back to the buttons so a failing provider can't trap the
+  // browser in a redirect loop.
   function autoRedirect() {
+    if (openedSignedIn) return false;
     if (providers.length !== 1 || !providers[0].AutoRedirect) return false;
     var skip = (location.search + location.hash).split(/[?&#]/)
       .some(function (t) { return /^local(=|$)/i.test(t); });
