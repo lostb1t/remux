@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794016490377,
+  "lastUpdate": 1794062027339,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -12783,6 +12783,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 57495461,
             "range": "± 3324637",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "lostb1t",
+            "username": "lostb1t",
+            "email": "coding-mosses0z@icloud.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6ebc83643dddcb08f23b07684bc79583daa2f020",
+          "message": "feat: prefer 4K over low resolutions on screens that scale it down (#684)",
+          "timestamp": "2026-11-07T14:32:22Z",
+          "url": "https://github.com/lostb1t/remux/commit/6ebc83643dddcb08f23b07684bc79583daa2f020"
+        },
+        "date": 1794062025408,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/Limit=20&Recursive=false",
+            "value": 1990037,
+            "range": "± 771269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&Recursive=false",
+            "value": 6667880,
+            "range": "± 2654927",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=500&Recursive=false",
+            "value": 23045995,
+            "range": "± 4058111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&IncludeItemTypes=Movie&Recursive=false",
+            "value": 528416,
+            "range": "± 288375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&IncludeItemTypes=Series&Recursive=false",
+            "value": 47765534,
+            "range": "± 2818615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=20&Recursive=false",
+            "value": 20467010,
+            "range": "± 1768532",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&Recursive=false",
+            "value": 19842194,
+            "range": "± 1428541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=500&Recursive=false",
+            "value": 20008674,
+            "range": "± 1855885",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&IncludeItemTypes=Movie&Recursive=false",
+            "value": 638250,
+            "range": "± 328165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&IncludeItemTypes=Series&Recursive=false",
+            "value": 133225349,
+            "range": "± 6960013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&Filters=IsPlayed&Recursive=false",
+            "value": 20814658,
+            "range": "± 2126020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&SortBy=DateCreated&Recursive=false",
+            "value": 19888254,
+            "range": "± 2149482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=50&Recursive=false",
+            "value": 248749461,
+            "range": "± 14692992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=200&Recursive=false",
+            "value": 261783573,
+            "range": "± 17590320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=500&Recursive=false",
+            "value": 252120370,
+            "range": "± 13301380",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/Limit=500&EnableResumable=true&Recursive=false",
+            "value": 251699539,
+            "range": "± 20358167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/Limit=500&EnableResumable=false&Recursive=false",
+            "value": 250735655,
+            "range": "± 15526843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 267276947,
+            "range": "± 22540465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 68874777,
+            "range": "± 7046062",
             "unit": "ns/iter"
           }
         ]
