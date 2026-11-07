@@ -94,11 +94,20 @@ where
             .poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let path = req
             .uri()
             .path()
             .to_string();
+        // The inner file service validates `If-Modified-Since` / `If-None-Match`
+        // against the file on disk, but the injected patches change without the
+        // file changing (server update, custom JS). Let pages always be served
+        // fresh so browsers never keep a stale copy.
+        if serves_page(&path) {
+            let headers = req.headers_mut();
+            headers.remove(http::header::IF_MODIFIED_SINCE);
+            headers.remove(http::header::IF_NONE_MATCH);
+        }
         let cache = self
             .cache
             .clone();
@@ -162,15 +171,35 @@ where
 
             let out = Bytes::from(html.into_bytes());
             let mut response = Response::from_parts(parts, Body::from(out.clone()));
-            response
-                .headers_mut()
-                .insert(
-                    http::header::CONTENT_LENGTH,
-                    http::HeaderValue::from(out.len()),
-                );
+            let headers = response.headers_mut();
+            headers.insert(
+                http::header::CONTENT_LENGTH,
+                http::HeaderValue::from(out.len()),
+            );
+            // The file's validators don't describe the patched document.
+            headers.remove(http::header::LAST_MODIFIED);
+            headers.remove(http::header::ETAG);
+            headers.insert(
+                http::header::CACHE_CONTROL,
+                http::HeaderValue::from_static("no-cache"),
+            );
             Ok(response)
         })
     }
+}
+
+/// Paths that resolve to an HTML document: directories, `.html` files and
+/// extension-less SPA routes. Assets keep their conditional requests.
+fn serves_page(path: &str) -> bool {
+    let last = path
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    last.is_empty()
+        || !last.contains('.')
+        || last
+            .to_ascii_lowercase()
+            .ends_with(".html")
 }
 
 async fn custom_js_from_db(pool: &sqlx::SqlitePool) -> Option<String> {
@@ -181,4 +210,82 @@ async fn custom_js_from_db(pool: &sqlx::SqlitePool) -> Option<String> {
     opts.remux?
         .custom_js
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+    use tower_http::services::ServeDir;
+
+    fn dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path()
+                .join("index.html"),
+            "<html><head></head><body></body></html>",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("app.js"),
+            "console.log(1)",
+        )
+        .unwrap();
+        dir
+    }
+
+    async fn get(dir: &tempfile::TempDir, path: &str) -> Response {
+        TransformLayer::new(None)
+            .layer(ServeDir::new(dir.path()))
+            .oneshot(
+                Request::get(path)
+                    .header(
+                        http::header::IF_MODIFIED_SINCE,
+                        "Fri, 01 Jan 2100 00:00:00 GMT",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn patched_pages_are_never_answered_from_the_browser_cache() {
+        let dir = dir();
+        for path in ["/", "/index.html"] {
+            let res = get(&dir, path).await;
+            assert_eq!(res.status(), http::StatusCode::OK, "{path}");
+            assert!(
+                res.headers()
+                    .get(http::header::LAST_MODIFIED)
+                    .is_none()
+            );
+            assert_eq!(res.headers()[http::header::CACHE_CONTROL], "no-cache");
+            let body = res
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains("data-remux"));
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_keep_conditional_requests() {
+        let res = get(&dir(), "/app.js").await;
+        assert_eq!(res.status(), http::StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn page_paths() {
+        assert!(serves_page("/"));
+        assert!(serves_page("/web/"));
+        assert!(serves_page("/index.html"));
+        assert!(serves_page("/home"));
+        assert!(!serves_page("/main.bundle.js"));
+        assert!(!serves_page("/assets/style.css"));
+    }
 }
