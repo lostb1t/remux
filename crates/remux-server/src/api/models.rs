@@ -282,6 +282,15 @@ fn parent_image_tag(parent: Option<&db::Media>, kind: db::ImageKind) -> Option<S
         })
 }
 
+/// A series' or season's `PlayedPercentage`: Jellyfin reports it from the
+/// episode counts, 0 included, rather than from a playback position.
+fn folder_played_percentage(media: &db::Media) -> Option<f32> {
+    matches!(media.kind, db::MediaKind::Series | db::MediaKind::Season)
+        .then_some(media.played_percentage)
+        .flatten()
+        .map(|p| p as f32)
+}
+
 pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
@@ -308,8 +317,10 @@ pub fn db_state_to_dto(
         is_favorite: state.favorite,
         rating: state.rating,
         likes: state.likes(),
-        // Jellyfin omits PlayedPercentage when it is 0
-        played_percentage: played_percentage.filter(|&p| p > 0.0),
+        played_percentage: folder_played_percentage(media).or(
+            // Jellyfin omits a video's PlayedPercentage when it is 0
+            played_percentage.filter(|&p| p > 0.0),
+        ),
         unplayed_item_count: media.unplayed_item_count,
         key: media
             .id
@@ -479,6 +490,7 @@ fn db_media_to_item_inner(
                         .id
                         .to_string(),
                     unplayed_item_count: media.unplayed_item_count,
+                    played_percentage: folder_played_percentage(&media),
                     ..Default::default()
                 }),
         ),
