@@ -1905,24 +1905,15 @@ pub(crate) fn build_progressive_args(
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
         }
-        if params
-            .audio_stream_index
-            .is_some()
-            || params
-                .subtitle_stream_index
-                .is_some()
-        {
-            args.extend(["-map".into(), "0:v:0".into()]);
-            if let Some(audio_idx) = params.audio_stream_index {
-                args.extend(["-map".into(), format!("0:{}", audio_idx)]);
-            } else {
-                args.extend(["-map".into(), "0:a?".into()]);
-            }
-            if let Some(sub_idx) = params.subtitle_stream_index {
-                if sub_idx >= 0 {
-                    args.extend(["-map".into(), format!("0:{}?", sub_idx)]);
-                }
-            }
+        // Text subtitles are delivered separately; mapping one into the mp4
+        // output makes ffmpeg fail ("no encoder for codec none").
+        if let Some(audio_idx) = params.audio_stream_index {
+            args.extend([
+                "-map".into(),
+                "0:v:0".into(),
+                "-map".into(),
+                format!("0:{}", audio_idx),
+            ]);
         }
     }
 
@@ -4748,6 +4739,19 @@ mod tests {
         });
 
         assert!(args_contains(&args, "-vf"));
+        assert_eq!(mapped_streams(&args), ["0:v:0", "0:1"]);
+    }
+
+    #[test]
+    fn progressive_text_subtitle_is_not_mapped_into_output() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1280),
+            audio_stream_index: Some(1),
+            subtitle_stream_index: Some(2),
+            ..default_progressive()
+        });
+
         assert_eq!(mapped_streams(&args), ["0:v:0", "0:1"]);
     }
 
