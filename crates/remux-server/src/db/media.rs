@@ -4587,6 +4587,11 @@ impl Media {
                     "ignored",
                     user_state_filter.ignored,
                 );
+                push_user_liked_filter(
+                    qb,
+                    user_state_filter.user_id,
+                    user_state_filter.liked,
+                );
 
                 // favorite — always uses EXISTS
                 if let Some(favorite) = &user_state_filter.favorite {
@@ -6691,10 +6696,12 @@ impl Media {
         let favorite = filter.favorite();
         let watchlist = filter.watchlist();
         let ignored = filter.ignored();
+        let liked = filter.liked();
 
         let user_state = if favorite.is_some()
             || watchlist.is_some()
             || ignored.is_some()
+            || liked.is_some()
             || is_played
             || is_unplayed
             || is_resumable
@@ -6712,6 +6719,7 @@ impl Media {
                     None
                 },
                 resumable: if is_resumable { Some(true) } else { None },
+                liked,
                 ..Default::default()
             })
         } else {
@@ -8869,6 +8877,32 @@ fn push_user_flag_filter<'a>(
     qb.push("SELECT ums.media_id FROM user_media_state ums WHERE ums.")
         .push(column)
         .push(" = 1");
+    if let Some(user_id) = user_id {
+        qb.push(" AND ums.user_id = ")
+            .push_bind(user_id);
+    }
+    qb.push(")");
+}
+
+/// Jellyfin's `IsLiked` filter (`Filters=Likes` / `Filters=Dislikes`): a like
+/// is a rating at or above `UserRating::LIKE_THRESHOLD`. Dislikes is the
+/// complement of the liked set, so unrated items count as not liked, exactly
+/// as Jellyfin's `!likedIds.Contains(e.Id)`.
+fn push_user_liked_filter<'a>(
+    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    user_id: Option<Uuid>,
+    want: Option<bool>,
+) {
+    let Some(want) = want else {
+        return;
+    };
+    qb.push(if want {
+        " AND media.id IN ("
+    } else {
+        " AND media.id NOT IN ("
+    });
+    qb.push("SELECT ums.media_id FROM user_media_state ums WHERE ums.rating >= ")
+        .push_bind(super::UserRating::LIKE_THRESHOLD);
     if let Some(user_id) = user_id {
         qb.push(" AND ums.user_id = ")
             .push_bind(user_id);

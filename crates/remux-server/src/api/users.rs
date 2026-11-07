@@ -4779,6 +4779,104 @@ mod e2e_tests {
         );
     }
 
+    /// `Filters=Likes` and `Filters=Dislikes` filter on the personal rating the
+    /// way Jellyfin's `IsLiked` does: liked is a rating of at least 6.5,
+    /// disliked is everything else, unrated items included.
+    #[tokio::test]
+    async fn likes_and_dislikes_filters_follow_the_rating() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let user_id = get_user_id(&server, &auth).await;
+        let hdr = || {
+            (
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+        };
+        let names = ["Alpha", "Bravo", "Charlie", "Delta"];
+        let mut ids = Vec::new();
+        for (i, title) in names
+            .iter()
+            .enumerate()
+        {
+            let external_ids = db::ExternalIds {
+                imdb: db::NonEmptyString::try_new(format!("tt340000{i}")).ok(),
+                ..Default::default()
+            };
+            let mut movie = db::Media {
+                id: Uuid::from(&db::MediaIdRaw {
+                    kind: db::MediaKind::Movie,
+                    external_ids: external_ids.clone(),
+                    season: None,
+                    episode: None,
+                }),
+                title: title.to_string(),
+                kind: db::MediaKind::Movie,
+                external_ids,
+                released_at: Some(
+                    chrono::Utc::now().naive_utc() - chrono::Duration::days(365),
+                ),
+                ..Default::default()
+            };
+            movie
+                .save(db)
+                .await
+                .unwrap();
+            ids.push(movie.id);
+        }
+        // Alpha liked (10), Bravo disliked (1), Charlie rated 7 (above the
+        // like threshold), Delta never rated.
+        for (id, query) in [
+            (ids[0], "likes=true"),
+            (ids[1], "likes=false"),
+            (ids[2], "rating=7"),
+        ] {
+            server
+                .post(&format!("/useritems/{id}/rating?{query}"))
+                .add_header(hdr().0, hdr().1)
+                .await
+                .assert_status_ok();
+        }
+
+        let titles = |filter: &'static str| {
+            let server = &server;
+            let auth = &auth;
+            let uid = &user_id;
+            async move {
+                let body = server
+                    .get("/items")
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(auth).unwrap(),
+                    )
+                    .add_query_param("Recursive", "true")
+                    .add_query_param("SortBy", "SortName")
+                    .add_query_param("userId", uid.as_str())
+                    .add_query_param("Filters", filter)
+                    .await
+                    .json::<serde_json::Value>();
+                body["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        i["Name"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    // The test server also lists seeded views.
+                    .filter(|name| names.contains(&name.as_str()))
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(titles("Likes").await, ["Alpha", "Charlie"]);
+        assert_eq!(titles("Dislikes").await, ["Bravo", "Delta"]);
+    }
+
     /// Another update to the same row (here a played-state change) must not
     /// wipe the watchlist and ignore marks.
     #[tokio::test]

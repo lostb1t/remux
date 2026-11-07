@@ -1853,6 +1853,22 @@ impl GetItemsQuery {
                     .then_some(true)
             })
     }
+
+    /// The like constraint, from `Filters=Likes` (liked) or `Filters=Dislikes`
+    /// (everything not liked, unrated items included, as in Jellyfin).
+    pub fn liked(&self) -> Option<bool> {
+        let filters = self
+            .filters
+            .as_deref()
+            .unwrap_or(&[]);
+        if filters.contains(&ItemFilter::Likes) {
+            Some(true)
+        } else if filters.contains(&ItemFilter::Dislikes) {
+            Some(false)
+        } else {
+            None
+        }
+    }
 }
 
 impl GetItemsQuery {
