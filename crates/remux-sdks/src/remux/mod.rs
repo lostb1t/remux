@@ -2188,6 +2188,7 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct TranscodingProfile {
@@ -2212,6 +2213,7 @@ pub struct TranscodingProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
@@ -2227,6 +2229,7 @@ pub struct DeviceProfile {
     pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DirectPlayProfile {
@@ -2249,6 +2252,7 @@ pub struct DirectPlayProfile {
     pub type_: Option<DlnaProfileType>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ContainerProfile {
@@ -2258,6 +2262,7 @@ pub struct ContainerProfile {
     pub conditions: Vec<ProfileCondition>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct CodecProfile {
@@ -2270,6 +2275,7 @@ pub struct CodecProfile {
     pub apply_conditions: Vec<ProfileCondition>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
@@ -2374,6 +2380,7 @@ impl<'de> Deserialize<'de> for ProfileConditionProperty {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct ProfileCondition {
@@ -3570,6 +3577,14 @@ pub enum ImageType {
     Thumb,
 }
 
+/// Jellyfin renders user ids without dashes.
+fn serialize_uuid_simple<S: serde::Serializer>(
+    id: &Uuid,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&id.simple())
+}
+
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "PascalCase")]
@@ -3579,6 +3594,7 @@ pub struct UserDto {
     pub has_configured_easy_password: bool,
     pub has_configured_password: bool,
     pub has_password: bool,
+    #[serde(serialize_with = "serialize_uuid_simple")]
     pub id: Uuid,
     pub last_activity_date: Option<DateTime<Utc>>,
     pub last_login_date: Option<DateTime<Utc>>,
