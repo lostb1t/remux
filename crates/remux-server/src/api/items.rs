@@ -1914,12 +1914,12 @@ async fn item_for_user(
 
     // Same remembered track selections PlaybackInfo resolves with, so both
     // endpoints rank and default sources identically.
-    let (remembered_audio, remembered_subtitle) = media
+    let (remembered_audio, remembered_subtitle, indexes_source) = media
         .user_state
         .as_ref()
-        .map(|s| (s.audio_idx, s.subtitle_idx))
+        .map(db::UserMediaState::remembered_indexes)
         .unwrap_or_default();
-    let remembered_languages = db::UserMediaState::remembered_languages(
+    let mut remembered_languages = db::UserMediaState::remembered_languages(
         &state
             .ctx
             .db,
@@ -1929,6 +1929,7 @@ async fn item_for_user(
         &media.id,
     )
     .await;
+    remembered_languages.indexes_source = indexes_source;
 
     let needs_streams = want_streams
         && matches!(

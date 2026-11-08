@@ -401,13 +401,15 @@ impl PlaybackSessionManager {
     ///
     /// Updates the in-memory session state, notifies the transcode buffer
     /// monitor, persists the playback position to the DB, and logs stream-
-    /// selection changes.
+    /// selection changes. `release` is the stream being played, which the
+    /// remembered track indexes are saved with.
     pub async fn progress(
         &self,
         db: &sqlx::SqlitePool,
         user: &db::User,
         psid: &str,
         data: &PlaybackInfo,
+        release: Option<Uuid>,
     ) -> anyhow::Result<()> {
         let ps_snapshot = self.get(psid);
         let ps = match ps_snapshot.as_ref() {
@@ -572,7 +574,6 @@ impl PlaybackSessionManager {
             } else {
                 None
             };
-
             db::UserMediaState::update_playback(
                 db,
                 user,
@@ -580,6 +581,7 @@ impl PlaybackSessionManager {
                 position_ticks,
                 audio_idx,
                 subtitle_idx,
+                release,
                 media.runtime,
             )
             .await?;
@@ -675,6 +677,7 @@ impl PlaybackSessionManager {
             &media,
             final_ticks,
             None, // don't overwrite stream selections on stop
+            None,
             None,
             media.runtime, // Some(runtime) triggers watched-threshold check
         )

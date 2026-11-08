@@ -178,7 +178,7 @@ async fn load_saved_selections(
     let Some(media) = media else {
         return (None, None, Default::default());
     };
-    let languages =
+    let mut languages =
         crate::db::UserMediaState::remembered_languages(db, user_id, &media.id).await;
     match sqlx::query_as::<_, crate::db::UserMediaState>(
         "SELECT * FROM user_media_state WHERE user_id = ?1 AND media_id = ?2",
@@ -188,7 +188,11 @@ async fn load_saved_selections(
     .fetch_optional(db)
     .await
     {
-        Ok(Some(state)) => (state.audio_idx, state.subtitle_idx, languages),
+        Ok(Some(state)) => {
+            let (audio, subtitle, source) = state.remembered_indexes();
+            languages.indexes_source = source;
+            (audio, subtitle, languages)
+        }
         _ => (None, None, languages),
     }
 }
@@ -5178,7 +5182,21 @@ mod tests {
         let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let media = insert_multilang_source(&guard.0).await;
-        let psid = "recall-audio-test";
+        // The index is saved with the release this play session's PlaybackInfo
+        // answer selected, as a client plays it.
+        let info: serde_json::Value = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await
+            .json();
+        let psid = info["PlaySessionId"]
+            .as_str()
+            .expect("PlaySessionId")
+            .to_string();
 
         server
             .post("/sessions/playing")
@@ -5222,6 +5240,148 @@ mod tests {
             body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
             Some(2),
             "Saved audio selection (index 2) should be recalled as DefaultAudioStreamIndex"
+        );
+    }
+
+    /// A remembered track index belongs to the release it was played on. Another
+    /// release of the same episode with a different track order gets its
+    /// original-language default instead of the language at that index.
+    #[tokio::test]
+    async fn remembered_audio_index_stays_with_its_release() {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
+        use uuid::Uuid;
+        let (server, guard, token) = authenticated_server().await;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let ctx = &guard.0;
+        let now = chrono::Utc::now().naive_utc();
+
+        let episode = crate::integration_test::seed_episode(ctx).await;
+        sqlx::query("UPDATE media SET original_language = 'en' WHERE id = ?")
+            .bind(episode.grandparent_id)
+            .execute(&ctx.db)
+            .await
+            .expect("set series original_language");
+        // Mark streams fresh so refresh_streams doesn't replace the fixtures.
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now - chrono::Duration::seconds(30))
+            .bind(episode.id)
+            .execute(&ctx.db)
+            .await
+            .expect("set streams_refreshed_at");
+
+        let audio = |index: i64, language: &str| MediaStream {
+            codec: Some("aac".to_string()),
+            type_: Some(MediaStreamType::Audio),
+            index,
+            language: Some(language.to_string()),
+            ..Default::default()
+        };
+        let mut releases = Vec::new();
+        for (title, tracks) in [
+            ("compatible", [audio(1, "eng"), audio(2, "rus")]),
+            ("quality", [audio(1, "rus"), audio(2, "eng")]),
+        ] {
+            let mut source = db::Media {
+                title: title.to_string(),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(episode.id),
+                stream_info: Some(crate::stream::StreamInfo {
+                    descriptor: crate::stream::StreamDescriptor::Local(
+                        format!("test-fixture-{title}.mp4").into(),
+                    ),
+                    ..Default::default()
+                }),
+                probe_data: Some(MediaSourceInfo {
+                    container: Some(VideoContainer::Mp4),
+                    media_streams: tracks.to_vec(),
+                    ..Default::default()
+                }),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            source
+                .save(&ctx.db)
+                .await
+                .expect("save source");
+            releases.push(source.id);
+        }
+        let (compatible, quality) = (releases[0], releases[1]);
+
+        let default_audio = |info: &serde_json::Value, release: Uuid| {
+            info["MediaSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| {
+                    s["Id"]
+                        .as_str()
+                        .and_then(|id| Uuid::parse_str(id).ok())
+                        == Some(release)
+                })
+                .unwrap_or_else(|| panic!("release {release} in {info}"))
+                ["DefaultAudioStreamIndex"]
+                .as_i64()
+        };
+        let playback_info = |release: Uuid| {
+            server
+                .post(&format!("/items/{}/playbackinfo", episode.id))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&json!({ "MediaSourceId": release.to_string() }))
+        };
+
+        // Play the compatible release on its English track, index 1.
+        let info: serde_json::Value = playback_info(compatible)
+            .await
+            .json();
+        assert_eq!(default_audio(&info, compatible), Some(1));
+        let psid = info["PlaySessionId"]
+            .as_str()
+            .expect("PlaySessionId")
+            .to_string();
+        for (path, position) in [
+            ("/sessions/playing", 0),
+            ("/sessions/playing/progress", 100_000_000i64),
+        ] {
+            server
+                .post(path)
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&json!({
+                    "ItemId": episode.id.to_string(),
+                    "MediaSourceId": compatible.to_string(),
+                    "PlaySessionId": psid,
+                    "PositionTicks": position,
+                    "AudioStreamIndex": 1
+                }))
+                .await
+                .assert_status_success();
+        }
+
+        let info: serde_json::Value = playback_info(quality)
+            .await
+            .json();
+        assert_eq!(
+            default_audio(&info, quality),
+            Some(2),
+            "index 1 is Russian in this release: English comes from the original language"
+        );
+        let details: serde_json::Value = server
+            .get(&format!("/items/{}", episode.id))
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .add_query_params(&[("Fields", "MediaSources")])
+            .await
+            .json();
+        assert_eq!(default_audio(&details, quality), Some(2), "item details");
+        let info: serde_json::Value = playback_info(compatible)
+            .await
+            .json();
+        assert_eq!(
+            default_audio(&info, compatible),
+            Some(1),
+            "the release it was saved on still recalls it"
         );
     }
 
