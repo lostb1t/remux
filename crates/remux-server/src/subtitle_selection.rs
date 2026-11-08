@@ -116,8 +116,8 @@ pub(crate) fn is_release_match(
         })
 }
 
-/// A subtitle file sitting on the server's own disk, next to the library
-/// file (a local addon's sidecar). Someone put it there for this video, so it
+/// A subtitle file sitting next to the library file: on the server's own disk,
+/// or on a WebDAV share the library is indexed from (an opendal addon's sidecar). Someone put it there for this video, so it
 /// outranks anything a provider offers; no release-name guessing is needed.
 ///
 /// The local addon returns every sidecar indexed for the episode or movie, so
@@ -127,7 +127,13 @@ pub(crate) fn is_release_match(
 /// `Movie.BluRay.en.srt`). With no source filename there is nothing to tell
 /// them apart, so every sidecar counts.
 fn is_local_sidecar(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
-    if !matches!(sub.url, Some(crate::stream::StreamDescriptor::Local(_))) {
+    if !matches!(
+        sub.url,
+        Some(
+            crate::stream::StreamDescriptor::Local(_)
+                | crate::stream::StreamDescriptor::Opendal { .. }
+        )
+    ) {
         return false;
     }
     let Some(video) = source_filename else {
@@ -330,6 +336,44 @@ mod tests {
                 1
             )),
             vec!["french", "plain"],
+        );
+    }
+
+    #[test]
+    fn sidecar_on_a_remote_share_survives_a_language_preference_like_a_local_one() {
+        let remote = |id: &str, filename: &str, lang: Option<&str>| {
+            let mut s = sub(id, filename, "");
+            s.lang = lang.map(Into::into);
+            s.url = Some(crate::stream::StreamDescriptor::Opendal {
+                addon_id: uuid::Uuid::nil(),
+                path: format!("/movies/{filename}"),
+            });
+            s
+        };
+        let video = "1917.2019.UHD.BluRay.2160p.REMUX-FraMeSToR.strm";
+        let subs = [
+            remote(
+                "plain",
+                "1917.2019.UHD.BluRay.2160p.REMUX-FraMeSToR.srt",
+                None,
+            ),
+            remote(
+                "portuguese",
+                "1917.2019.UHD.BluRay.2160p.REMUX-FraMeSToR.pt.srt",
+                Some("pt"),
+            ),
+            remote("other", "Another.Film.srt", None),
+        ];
+        let selected = select_external_subtitles(&subs, &["en".into()], Some(video), 1);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|s| s
+                    .id
+                    .as_str())
+                .collect::<Vec<_>>(),
+            vec!["portuguese", "plain"],
+            "the video's own subtitle files stay, another video's go"
         );
     }
 
