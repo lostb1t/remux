@@ -3,6 +3,7 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(dashboard_built)");
     println!("cargo:rustc-check-cfg=cfg(jellyfin_web_built)");
+    println!("cargo:rustc-check-cfg=cfg(remux_web_built)");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -48,6 +49,29 @@ fn main() {
         }
     } else {
         println!("cargo:warning=WEB_PATH not set — jellyfin-web will not be embedded");
+    }
+
+    println!("cargo:rerun-if-env-changed=REMUX_WEB_PATH");
+    if let Ok(p) = env::var("REMUX_WEB_PATH") {
+        let dir = PathBuf::from(&p);
+        println!("cargo:rerun-if-changed={}", dir.display());
+        if dir
+            .join("index.html")
+            .exists()
+        {
+            let path_str = to_include_path(&dir);
+            std::fs::write(
+                out_dir.join("remux_web_embed.rs"),
+                format!(r#"static REMUX_WEB: include_dir::Dir<'static> = include_dir::include_dir!("{path_str}");"#),
+            ).unwrap();
+            println!("cargo:rustc-cfg=remux_web_built");
+        } else {
+            println!("cargo:error=REMUX_WEB_PATH={p} does not contain index.html");
+        }
+    } else {
+        println!(
+            "cargo:warning=REMUX_WEB_PATH not set — Remux Web will not be embedded"
+        );
     }
 }
 

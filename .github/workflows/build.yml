@@ -254,7 +254,7 @@ jobs:
   build-desktop:
     if: inputs.desktop
     name: Build desktop (${{ matrix.target }})
-    needs: [build-dashboard, build-jellyfin-web]
+    needs: [build-dashboard, build-jellyfin-web, fetch-remux-web]
     runs-on: ${{ matrix.os }}
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -353,12 +353,19 @@ jobs:
           name: jellyfin-web-dist
           path: jellyfin-web/
 
+      - name: Download remux-web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: remux-web-dist
+          path: remux-web/
+
       - name: Bundle remux-desktop (Linux / macOS)
         if: runner.os != 'Windows'
         env:
           SQLX_OFFLINE: "true"
           DASHBOARD_PATH: ${{ github.workspace }}/target/dx/remux-dashboard/release/web/public
           WEB_PATH: ${{ github.workspace }}/jellyfin-web
+          REMUX_WEB_PATH: ${{ github.workspace }}/remux-web
         run: cargo bundle --release --target ${{ matrix.target }} -p remux-desktop
 
       - name: Build remux-desktop (Windows)
@@ -367,6 +374,7 @@ jobs:
           SQLX_OFFLINE: "true"
           DASHBOARD_PATH: ${{ github.workspace }}/target/dx/remux-dashboard/release/web/public
           WEB_PATH: ${{ github.workspace }}/jellyfin-web
+          REMUX_WEB_PATH: ${{ github.workspace }}/remux-web
         run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
 
       - name: Sign and package bundle (macOS .dmg)
@@ -378,7 +386,7 @@ jobs:
           df -h /
           # The dashboard and jellyfin-web are already embedded in the binary at
           # compile time; drop the downloaded copies so hdiutil has headroom.
-          rm -rf jellyfin-web
+          rm -rf jellyfin-web remux-web
           rm -rf target/dx/remux-dashboard/release/web/public
           # Cargo incremental artifacts are dead weight after a successful link.
           rm -rf target/${{ matrix.target }}/release/incremental

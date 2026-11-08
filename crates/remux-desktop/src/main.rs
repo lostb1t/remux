@@ -16,6 +16,9 @@ include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
 #[cfg(jellyfin_web_built)]
 include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
 
+#[cfg(remux_web_built)]
+include!(concat!(env!("OUT_DIR"), "/remux_web_embed.rs"));
+
 fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -182,7 +185,12 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
     };
 
     let addr = std::net::SocketAddr::new(config.host, config.port);
-    let (router, _) = remux_server::init_app(config, None, admin, |pool| {
+    #[cfg(remux_web_built)]
+    let remux_web = Some(remux_server::RemuxWeb::from_embedded(&REMUX_WEB));
+    #[cfg(not(remux_web_built))]
+    let remux_web = None;
+
+    let (router, _) = remux_server::init_app(config, None, admin, remux_web, |pool| {
         #[cfg(jellyfin_web_built)]
         {
             remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, pool)

@@ -96,13 +96,7 @@ pub async fn root_redirect(
     );
     let installed = state
         .ctx
-        .web_paths
-        .as_ref()
-        .is_some_and(|p| {
-            std::path::Path::new(&p.remux_web_path)
-                .join("index.html")
-                .is_file()
-        });
+        .remux_web_installed;
     let client = match chosen {
         crate::api::DefaultWebClient::Remux if !installed => {
             crate::api::DefaultWebClient::Jellyfin
@@ -146,6 +140,44 @@ impl WebClientService {
             TransformLayer::new(None).layer(ServeDir::new(web_path)),
         );
         Self { inner }
+    }
+}
+
+/// The Remux Web client mounted at `/remux`, and whether it is really there:
+/// the redirect from `/` only points at it when it is.
+#[derive(Clone)]
+pub struct RemuxWeb {
+    pub(crate) service: WebClientService,
+    pub(crate) installed: bool,
+}
+
+impl RemuxWeb {
+    /// Serve `remux_web_path` from disk. Mounted even when the directory is
+    /// empty, but `installed` stays false until `index.html` exists.
+    pub fn from_filesystem(remux_web_path: &str) -> Self {
+        let installed = std::path::Path::new(remux_web_path)
+            .join("index.html")
+            .is_file();
+        Self {
+            service: WebClientService::from_filesystem_plain(remux_web_path),
+            installed,
+        }
+    }
+
+    /// Serve a client compiled into the binary (desktop builds).
+    #[cfg(feature = "desktop")]
+    pub fn from_embedded(dir: &'static include_dir::Dir<'static>) -> Self {
+        let inner =
+            BoxCloneSyncService::new(TransformLayer::new(None).layer(EmbeddedDir {
+                dir,
+                spa_fallback: true,
+            }));
+        Self {
+            service: WebClientService { inner },
+            installed: dir
+                .get_file("index.html")
+                .is_some(),
+        }
     }
 }
 
@@ -270,11 +302,13 @@ mod tests {
         let web_path = paths
             .web_path
             .clone();
-        let (router, ctx) = init_app(config, Some(paths), admin, move |pool| {
-            WebClientService::from_filesystem(&web_path, pool)
-        })
-        .await
-        .unwrap();
+        let remux_web = super::RemuxWeb::from_filesystem(&paths.remux_web_path);
+        let (router, ctx) =
+            init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
+                WebClientService::from_filesystem(&web_path, pool)
+            })
+            .await
+            .unwrap();
         let mut cfg = db::Settings::get_config_or_default(&ctx.db).await;
         cfg.default_web_client = Some(chosen);
         db::Settings::set_config(&ctx.db, &cfg)
@@ -421,11 +455,13 @@ mod tests {
         let web_path = paths
             .web_path
             .clone();
-        let (router, _ctx) = init_app(config, Some(paths), admin, move |pool| {
-            WebClientService::from_filesystem(&web_path, pool)
-        })
-        .await
-        .unwrap();
+        let remux_web = super::RemuxWeb::from_filesystem(&paths.remux_web_path);
+        let (router, _ctx) =
+            init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
+                WebClientService::from_filesystem(&web_path, pool)
+            })
+            .await
+            .unwrap();
         let app = MapRequestLayer::new(crate::rewrite_request_uri).layer(router);
 
         for (path, status) in [

@@ -131,7 +131,7 @@ pub fn admin_from_filesystem(dashboard_path: &str) -> AdminService {
     )
 }
 
-pub use web_client::WebClientService;
+pub use web_client::{RemuxWeb, WebClientService};
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
 pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
@@ -155,10 +155,12 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
     let web_path = paths
         .web_path
         .clone();
-    let (router, _ctx) = init_app(config, Some(paths), admin, move |pool| {
-        WebClientService::from_filesystem(&web_path, pool)
-    })
-    .await?;
+    let remux_web = RemuxWeb::from_filesystem(&paths.remux_web_path);
+    let (router, _ctx) =
+        init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
+            WebClientService::from_filesystem(&web_path, pool)
+        })
+        .await?;
     Ok(router)
 }
 
@@ -172,7 +174,8 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
     let web_path = paths
         .web_path
         .clone();
-    init_app(config, Some(paths), admin, move |pool| {
+    let remux_web = RemuxWeb::from_filesystem(&paths.remux_web_path);
+    init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
         WebClientService::from_filesystem(&web_path, pool)
     })
     .await
@@ -190,10 +193,12 @@ pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
         .web_path
         .clone();
     let addr = std::net::SocketAddr::new(config.host, config.port);
-    let (router, _) = init_app(config, Some(paths), admin, move |pool| {
-        WebClientService::from_filesystem(&web_path, pool)
-    })
-    .await?;
+    let remux_web = RemuxWeb::from_filesystem(&paths.remux_web_path);
+    let (router, _) =
+        init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
+            WebClientService::from_filesystem(&web_path, pool)
+        })
+        .await?;
     bind_and_serve(router, addr).await
 }
 
@@ -278,6 +283,7 @@ pub async fn init_app(
     config: Config,
     web_paths: Option<FilesystemPaths>,
     admin: AdminService,
+    remux_web: Option<RemuxWeb>,
     make_web_client: impl FnOnce(sqlx::SqlitePool) -> WebClientService,
 ) -> Result<(Router, AppContext)> {
     raise_open_file_limit();
@@ -356,9 +362,10 @@ pub async fn init_app(
 
     let web_client = make_web_client(conn.clone());
     // The Remux client has its own UI, so no branding scripts are injected.
-    let remux_web = web_paths
+    let remux_web_installed = remux_web
         .as_ref()
-        .map(|p| WebClientService::from_filesystem_plain(&p.remux_web_path));
+        .is_some_and(|r| r.installed);
+    let remux_web = remux_web.map(|r| r.service);
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let transcode_sessions_dir = resolve_transcode_dir(&config.data_dir);
@@ -381,6 +388,7 @@ pub async fn init_app(
                 .to_string(),
         )),
         web_paths,
+        remux_web_installed,
         addons,
         signals,
         started_at: Utc::now(),
@@ -489,6 +497,8 @@ pub struct AppContext {
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
+    /// Whether Remux Web is served at `/remux` with an `index.html` to open.
+    pub remux_web_installed: bool,
     pub addons: addons::AddonService,
     pub signals: signals::Signals,
     /// When this server process started.
