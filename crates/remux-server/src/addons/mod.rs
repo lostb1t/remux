@@ -2094,6 +2094,11 @@ impl AddonService {
                     apply_meta(acc, patch, false);
                 }
                 Ok(None) => {}
+                // The addon simply doesn't know this item; not worth an error
+                // per item on every refresh.
+                Err(e) if is_not_found(&e) => {
+                    debug!(addon = %r.row.name, error = %e, "meta addon has no entry")
+                }
                 Err(e) => {
                     error!(addon = %r.row.name, error = %e, "meta addon error")
                 }
@@ -3827,6 +3832,13 @@ impl RemoteMediaStream for AddonCatalogStream {
 /// while the runtime is busy (Cinemeta answers in ~0.1s when idle), and one
 /// slow moment shouldn't cost a series its metadata. The second attempt gets
 /// the same timeout, so a genuinely hung addon costs at most twice the cap.
+/// Whether `e` is, or was caused by, an addon answering HTTP 404.
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|cause| cause.downcast_ref::<remux_sdks::ClientError>())
+        .any(|err| matches!(err, remux_sdks::ClientError::Http { status: 404, .. }))
+}
+
 async fn fetch_meta_with_retry(
     addon: &dyn MetaAddon,
     addon_name: &str,
@@ -3879,6 +3891,22 @@ pub fn make_media_id(addon_id: Uuid, local_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_404_from_the_addon_counts_as_not_found() {
+        let http = |status| remux_sdks::ClientError::Http {
+            status,
+            message: "http error".into(),
+            endpoint: None,
+            body: None,
+        };
+        assert!(super::is_not_found(&anyhow::anyhow!(http(404))));
+        assert!(super::is_not_found(
+            &anyhow::anyhow!(http(404)).context("fetching meta")
+        ));
+        assert!(!super::is_not_found(&anyhow::anyhow!(http(500))));
+        assert!(!super::is_not_found(&anyhow::anyhow!("boom")));
+    }
+
     use super::*;
 
     fn torrent_stream(hash: &str, file_hint: &str, file_idx: usize) -> db::Media {
