@@ -21,6 +21,9 @@ Remux is a Jellyfin-compatible media server that brings Stremio add-ons, local f
 - **Works with your Jellyfin clients**  
   Infuse, Swiftfin, Jellyfin for Android, and any other Jellyfin-compatible client works without changes.
 
+- **Official client and bundled web UI**  
+  Remux has its own client: [remux-client](https://github.com/lostb1t/remux-client). The server also bundles the web version, so you can open it in a browser right away without installing anything.
+
 - **Multiple content sources**  
   Stream from Stremio add-ons, local files, WebDAV servers, or torrents. Mix and match across a single library.
 
