@@ -207,8 +207,8 @@ pub(crate) fn select_hw_accel(
 const MAX_BUFFER_SECS: u32 = 300;
 /// Seconds behind the playback position before a segment is eligible for deletion.
 const SEGMENT_KEEP_SECS: u32 = 30;
-/// How far back a live stream can be rewound or paused: segments older than
-/// this, counted from the newest one, are deleted.
+/// How far back a live stream can be rewound or paused: the length of its
+/// sliding HLS playlist.
 const LIVE_REWIND_SECS: u32 = 30 * 60;
 
 fn ffmpeg_bin() -> String {
@@ -230,8 +230,8 @@ fn send_signal(_pid: u32, _sig: i32) {}
 /// ffmpeg falls behind or loses the connection, and a client that sends no
 /// progress reports would read as "nothing played" and stall after
 /// MAX_BUFFER_SECS. Jellyfin throttles only recorded files. Its segments are
-/// kept for LIVE_REWIND_SECS instead of the usual few seconds behind the
-/// playback position, so a viewer can pause and rewind.
+/// kept for LIVE_REWIND_SECS (ffmpeg's sliding playlist deletes them), so a
+/// viewer can pause and rewind.
 ///
 /// `start_index` is this run's `-start_number` (see `segment_start_index`):
 /// segment file names are numbered from the seek position, not from 0, so
@@ -291,12 +291,9 @@ fn spawn_buffer_monitor(
 
             // Every 30 seconds, delete segments that are no longer needed.
             if ticks % 30 == 0 {
-                if let Some(cutoff_idx) = cleanup_cutoff(
-                    is_live,
-                    highest_segment_index(&output_dir),
-                    playback_secs,
-                    segment_length,
-                ) {
+                if let Some(cutoff_idx) =
+                    cleanup_cutoff(is_live, playback_secs, segment_length)
+                {
                     delete_old_segments(&output_dir, cutoff_idx);
                 }
             }
@@ -313,23 +310,19 @@ fn spawn_buffer_monitor(
     });
 }
 
-/// The segment index below which segments can be deleted, if any. A recorded
-/// stream keeps SEGMENT_KEEP_SECS behind the playback position; a live one
-/// keeps LIVE_REWIND_SECS behind its newest segment, as clients may report no
-/// position at all.
+/// The segment index below which segments can be deleted, if any: a few
+/// seconds behind the playback position of a recorded stream. A live stream
+/// has none, as its sliding playlist (see `LIVE_REWIND_SECS`) already deletes
+/// what it no longer lists, and clients may report no position at all.
 fn cleanup_cutoff(
     is_live: bool,
-    newest_index: Option<u32>,
     playback_secs: u32,
     segment_length: u32,
 ) -> Option<u32> {
-    let cutoff = if is_live {
-        newest_index?.saturating_sub(LIVE_REWIND_SECS / segment_length.max(1))
-    } else if playback_secs > SEGMENT_KEEP_SECS {
-        (playback_secs - SEGMENT_KEEP_SECS) / segment_length.max(1)
-    } else {
-        0
-    };
+    if is_live || playback_secs <= SEGMENT_KEEP_SECS {
+        return None;
+    }
+    let cutoff = (playback_secs - SEGMENT_KEEP_SECS) / segment_length.max(1);
     (cutoff > 0).then_some(cutoff)
 }
 
@@ -1287,15 +1280,30 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             .into_owned(),
     ]);
 
-    // Keep all segments for the playback session. This is also Jellyfin's
-    // live-TV HLS behavior: EVENT playlists grow for the duration of a live
-    // session and let clients start from its beginning.
-    args.extend([
-        "-hls_playlist_type".into(),
-        "event".into(),
-        "-hls_list_size".into(),
-        "0".into(),
-    ]);
+    if params.is_live {
+        // A sliding window of LIVE_REWIND_SECS: the playlist only lists the
+        // segments still kept, and ffmpeg deletes the ones that fall out of
+        // it, so a client never asks for a segment that is gone.
+        args.extend([
+            "-hls_list_size".into(),
+            (LIVE_REWIND_SECS
+                / params
+                    .segment_length
+                    .max(1))
+            .to_string(),
+            "-hls_flags".into(),
+            "delete_segments".into(),
+        ]);
+    } else {
+        // Keep all segments for the playback session: EVENT playlists grow
+        // for the duration of it and let clients start from its beginning.
+        args.extend([
+            "-hls_playlist_type".into(),
+            "event".into(),
+            "-hls_list_size".into(),
+            "0".into(),
+        ]);
+    }
 
     if is_hevc_copy {
         // Apple HLS spec: HEVC must be delivered in fMP4/CMAF segments, not MPEG-TS.
@@ -2449,25 +2457,6 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_recorded_stream_keeps_a_little_behind_the_playback_position() {
-        // 6 s segments: 130 s played, 30 s kept, so segments below 16 go.
-        assert_eq!(super::cleanup_cutoff(false, Some(99), 130, 6), Some(16));
-        assert_eq!(super::cleanup_cutoff(false, Some(99), 30, 6), None);
-        assert_eq!(super::cleanup_cutoff(false, None, 0, 6), None);
-    }
-
-    #[test]
-    fn a_live_stream_keeps_thirty_minutes_behind_its_newest_segment() {
-        // 30 min of 6 s segments is 300: the newest is 450, so below 150 goes,
-        // whatever position the client reported (none, here).
-        assert_eq!(super::cleanup_cutoff(true, Some(450), 0, 6), Some(150));
-        // Nothing is older than the window yet.
-        assert_eq!(super::cleanup_cutoff(true, Some(299), 0, 6), None);
-        assert_eq!(super::cleanup_cutoff(true, Some(300), 0, 6), None);
-        assert_eq!(super::cleanup_cutoff(true, None, 0, 6), None);
-    }
-
     use super::*;
     use crate::playback::hw_accel;
     use remux_sdks::remux::TranscodeReasons;
@@ -2497,6 +2486,42 @@ mod tests {
     }
     fn all_devices(_: &str) -> bool {
         true
+    }
+
+    #[test]
+    fn a_recorded_stream_keeps_a_little_behind_the_playback_position() {
+        // 6 s segments: 130 s played, 30 s kept, so segments below 16 go.
+        assert_eq!(super::cleanup_cutoff(false, 130, 6), Some(16));
+        assert_eq!(super::cleanup_cutoff(false, 30, 6), None);
+        assert_eq!(super::cleanup_cutoff(false, 0, 6), None);
+    }
+
+    #[test]
+    fn a_live_stream_is_not_cleaned_up_by_position() {
+        // Its sliding playlist deletes segments; a client with no progress
+        // reports must not matter either way.
+        assert_eq!(super::cleanup_cutoff(true, 0, 6), None);
+        assert_eq!(super::cleanup_cutoff(true, 3600, 6), None);
+    }
+
+    #[test]
+    fn live_hls_is_a_thirty_minute_sliding_window_and_vod_an_event_playlist() {
+        let args_for = |is_live| {
+            super::build_hls_args(&super::TranscodeParams {
+                is_live,
+                segment_length: 6,
+                ..Default::default()
+            })
+        };
+        let live = args_for(true);
+        assert_eq!(arg_after(&live, "-hls_list_size"), Some("300"));
+        assert_eq!(arg_after(&live, "-hls_flags"), Some("delete_segments"));
+        assert_eq!(arg_after(&live, "-hls_playlist_type"), None);
+
+        let vod = args_for(false);
+        assert_eq!(arg_after(&vod, "-hls_list_size"), Some("0"));
+        assert_eq!(arg_after(&vod, "-hls_playlist_type"), Some("event"));
+        assert_eq!(arg_after(&vod, "-hls_flags"), None);
     }
 
     #[test]
