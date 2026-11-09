@@ -1683,6 +1683,15 @@ async fn hls_segment_inner(
             let current_idx = get_current_transcoding_index(&output_dir);
             let segment_gap_threshold = 24 / segment_length;
 
+            // A live segment older than the newest has left the sliding
+            // window: restarting ffmpeg cannot bring it back (a live source
+            // has no past) and would wipe what is still kept.
+            if s.is_live && current_idx.is_some_and(|cur| requested_idx < cur) {
+                drop(s);
+                return Err(anyhow::anyhow!("segment expired")
+                    .context_not_found("segment is no longer available"));
+            }
+
             let needs_restart = match current_idx {
                 None => {
                     // No segments on disk yet. If FFmpeg is still running
@@ -1693,9 +1702,11 @@ async fn hls_segment_inner(
                         TranscodeState::Error(_) | TranscodeState::Complete
                     )
                 }
-                Some(cur) if requested_idx < cur => true, // seeking backward
+                Some(cur) if !s.is_live && requested_idx < cur => true, // seeking backward
                 Some(cur)
-                    if requested_idx.saturating_sub(cur) > segment_gap_threshold =>
+                    if !s.is_live
+                        && requested_idx.saturating_sub(cur)
+                            > segment_gap_threshold =>
                 {
                     true
                 } // too far ahead
