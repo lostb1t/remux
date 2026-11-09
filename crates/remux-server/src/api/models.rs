@@ -296,10 +296,20 @@ pub fn db_state_to_dto(
     media: &db::Media,
 ) -> UserItemDataDto {
     use crate::common::ToRunTimeTicks;
+    // Live TV has no position to resume from; clients would open the channel
+    // at that offset.
+    let position = if media
+        .kind
+        .supports_position_resume()
+    {
+        state.playback_position
+    } else {
+        0
+    };
     let played_percentage = media
         .runtime
         .filter(|&r| r > 0)
-        .map(|r| (state.playback_position as f32 / r as f32 * 100.0).clamp(0.0, 100.0));
+        .map(|r| (position as f32 / r as f32 * 100.0).clamp(0.0, 100.0));
     UserItemDataDto {
         played: state.play_count > 0
             || state
@@ -309,8 +319,7 @@ pub fn db_state_to_dto(
             .last_played_at
             .or(state.played_at)
             .map(|x| x.and_utc()),
-        playback_position_ticks: state
-            .playback_position
+        playback_position_ticks: position
             .to_ticks(common::TickUnit::Seconds)
             .unwrap_or(0),
         play_count: state.play_count as i32,

@@ -43,6 +43,13 @@ enum HlsSessionResult {
 
 /// Shared session setup: look up or create the transcode session for an HLS
 /// request. Returns the session handle and the resolved play_session_id.
+/// Whether a request for `requested_start_secs` on a running transcode is a
+/// seek. A live stream has nothing to seek to, and a player refreshing its
+/// playlist repeats the URL it started with: neither is one.
+fn is_seek(requested_start_secs: u32, is_live: bool, running_start_secs: u32) -> bool {
+    !is_live && requested_start_secs != running_start_secs
+}
+
 async fn create_hls_session(
     state: &AppState,
     auth: &auth::AuthSession,
@@ -122,26 +129,41 @@ async fn create_hls_session(
     let _create_guard = TRANSCODE_CREATE_LOCKS
         .lock(play_session_id.clone())
         .await;
-    let is_seeking = q
+    let requested_start_secs = q
         .start_time_ticks
-        .is_some_and(|t| t > 0);
-    if is_seeking {
-        if state
+        .filter(|&t| t > 0)
+        .map(|t| (t / 10_000_000) as u32);
+    if let Some(requested_start_secs) = requested_start_secs {
+        if let Some(existing) = state
             .ctx
             .sessions
             .get_transcode(&play_session_id)
-            .is_some()
         {
-            debug!(
-                play_session_id = %play_session_id,
-                start_time_ticks = ?q.start_time_ticks,
-                "seek detected — stopping old transcode session and restarting"
-            );
-            state
-                .ctx
-                .sessions
-                .stop_transcode(&play_session_id)
-                .await;
+            let (is_live, running_start_secs) = {
+                let s = existing
+                    .read()
+                    .await;
+                (s.is_live, s.start_time_secs)
+            };
+            if !is_seek(requested_start_secs, is_live, running_start_secs) {
+                debug!(
+                    play_session_id = %play_session_id,
+                    start_time_ticks = ?q.start_time_ticks,
+                    is_live,
+                    "keeping the running transcode"
+                );
+            } else {
+                debug!(
+                    play_session_id = %play_session_id,
+                    start_time_ticks = ?q.start_time_ticks,
+                    "seek detected — stopping old transcode session and restarting"
+                );
+                state
+                    .ctx
+                    .sessions
+                    .stop_transcode(&play_session_id)
+                    .await;
+            }
         }
     }
     // A client that switches audio track keeps the PlaySessionId. Reusing the
@@ -635,7 +657,7 @@ async fn create_hls_session(
             video_codec: video_codec.clone(),
             audio_codec: audio_codec.clone(),
             segment_length,
-            start_time_ticks: q.start_time_ticks,
+            start_time_ticks: if is_live { None } else { q.start_time_ticks },
             max_width: q
                 .max_width
                 .map(|v| v as u32),
@@ -1865,6 +1887,16 @@ async fn hls_segment_inner(
 mod tests {
     use super::SegmentContainer::{Fmp4, Ts};
     use remux_sdks::remux::VideoContainer;
+
+    #[test]
+    fn only_a_changed_start_on_a_recorded_stream_is_a_seek() {
+        // Safari refreshes live.m3u8 with the query it started with.
+        assert!(!super::is_seek(3, true, 0));
+        assert!(!super::is_seek(835, true, 835));
+        // The same URL again on a stream with a runtime is no seek either.
+        assert!(!super::is_seek(600, false, 600));
+        assert!(super::is_seek(900, false, 600));
+    }
 
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {

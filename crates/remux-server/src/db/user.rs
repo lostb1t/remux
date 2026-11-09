@@ -1160,6 +1160,14 @@ impl UserMediaState {
         runtime_seconds: Option<i64>,
     ) -> Result<bool> {
         let mut ms = Self::get_or_new(db, user, media).await?;
+        let position_ticks = if media
+            .kind
+            .supports_position_resume()
+        {
+            position_ticks
+        } else {
+            0
+        };
         let position_seconds = position_ticks / 10_000_000;
         ms.playback_position = position_seconds;
 
@@ -1893,6 +1901,69 @@ mod playback_threshold_tests {
         .await
         .unwrap();
         assert!(!crossed, "no runtime means no threshold was applied");
+    }
+}
+
+#[cfg(test)]
+mod live_tv_position_tests {
+    use super::*;
+    use crate::{db, integration_test::new_test_server};
+
+    async fn report(
+        ctx: &crate::AppContext,
+        user: &User,
+        media: &db::Media,
+    ) -> Result<bool> {
+        UserMediaState::update_playback(
+            &ctx.db,
+            user,
+            media,
+            212 * 10_000_000,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Jellyfin stores 0 for live TV (`SupportsPositionTicksResume` is false),
+    /// so a channel is never opened at an offset.
+    #[tokio::test]
+    async fn a_channel_keeps_no_playback_position() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut channel = crate::integration_test::seed_movie(ctx).await;
+        channel.kind = db::MediaKind::TvChannel;
+
+        report(ctx, &user, &channel)
+            .await
+            .unwrap();
+        let state = UserMediaState::get_or_new(&ctx.db, &user, &channel)
+            .await
+            .unwrap();
+        assert_eq!(state.playback_position, 0);
+
+        // Anything recorded before is not handed to clients either.
+        let mut stale = state;
+        stale.playback_position = 835;
+        let dto = crate::api::models::db_state_to_dto(stale, &channel);
+        assert_eq!(dto.playback_position_ticks, 0);
+
+        let movie = crate::integration_test::seed_movie(ctx).await;
+        report(ctx, &user, &movie)
+            .await
+            .unwrap();
+        let state = UserMediaState::get_or_new(&ctx.db, &user, &movie)
+            .await
+            .unwrap();
+        assert_eq!(state.playback_position, 212, "a movie still resumes");
     }
 }
 
