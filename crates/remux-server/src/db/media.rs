@@ -9653,16 +9653,17 @@ fn filter_rule_to_sql(
             let Some(user_id) = user_id else {
                 return Some((if *value { "0" } else { "1" }.to_string(), false));
             };
-            let exists = format!(
-                "EXISTS (SELECT 1 FROM user_media_state ums \
-                 WHERE ums.media_id = media.id AND ums.user_id = X'{}' \
-                 AND ums.watchlist = 1)",
+            // List the user's few watchlisted ids (`idx_ums_user_watchlist`)
+            // rather than probing their state once per media row.
+            let listed = format!(
+                "SELECT ums.media_id FROM user_media_state ums \
+                 WHERE ums.user_id = X'{}' AND ums.watchlist = 1",
                 user_id.simple()
             );
             let sql = if *value {
-                exists
+                format!("media.id IN ({listed})")
             } else {
-                format!("NOT {exists}")
+                format!("media.id NOT IN ({listed})")
             };
             Some((sql, false))
         }
