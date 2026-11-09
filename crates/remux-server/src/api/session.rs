@@ -250,6 +250,28 @@ pub async fn report_playback_progress(
             .ctx
             .sessions
             .get(psid);
+        let item_id = Some(data.item_id)
+            .filter(|id| !id.is_nil())
+            .or_else(|| {
+                before
+                    .as_ref()
+                    .map(|b| b.item_id)
+            });
+        let release = item_id.and_then(|item_id| {
+            crate::services::StreamService::played_release(
+                &state.ctx,
+                psid,
+                item_id,
+                data.media_source_id
+                    .as_deref()
+                    .or(before
+                        .as_ref()
+                        .and_then(|b| {
+                            b.media_source_id
+                                .as_deref()
+                        })),
+            )
+        });
         state
             .ctx
             .sessions
@@ -260,6 +282,7 @@ pub async fn report_playback_progress(
                 &session.user,
                 psid,
                 &data,
+                release,
             )
             .await
             .context_internal("failed to update progress")?;

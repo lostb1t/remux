@@ -2836,6 +2836,11 @@ impl RememberedSubtitle {
 pub struct RememberedLanguages {
     pub audio: Option<String>,
     pub subtitle: Option<RememberedSubtitle>,
+    /// The media source the remembered track *indexes* were saved on. An
+    /// index only means something in that file: another release of the same
+    /// title can carry a different language at the same position. `None`
+    /// puts no limit on the indexes.
+    pub indexes_source: Option<Uuid>,
 }
 
 /// Normalize a language tag (two-letter code, three-letter ISO 639-3 code, or
@@ -2991,7 +2996,9 @@ impl MediaSourceInfo {
     /// [`Self::resolve_default_streams`] that also knows the languages the user
     /// last chose. A remembered language beats a remembered index (an index
     /// only means something in the file it was saved for) and is looked for in
-    /// this source's own tracks; one this source lacks is skipped.
+    /// this source's own tracks; one this source lacks is skipped. Remembered
+    /// indexes saved on another source (see
+    /// [`RememberedLanguages::indexes_source`]) are ignored.
     pub fn resolve_default_streams_remembering(
         &mut self,
         user: &UserConfiguration,
@@ -3003,6 +3010,14 @@ impl MediaSourceInfo {
         remembered_subtitle: Option<i64>,
         languages: &RememberedLanguages,
     ) {
+        // An index saved on another release of this title would pick whatever
+        // that position holds here, often another language.
+        let indexes_apply = languages
+            .indexes_source
+            .is_none_or(|source| source == self.id);
+        let remembered_audio = remembered_audio.filter(|_| indexes_apply);
+        let remembered_subtitle = remembered_subtitle.filter(|_| indexes_apply);
+
         // -1 is Jellyfin's sentinel for "not set"; treat it the same as None.
         let client_wants_audio = requested_audio
             .map(|x| x >= 0)
@@ -9169,6 +9184,7 @@ mod tests {
         RememberedLanguages {
             audio: audio.map(str::to_string),
             subtitle,
+            ..Default::default()
         }
     }
 
@@ -9276,6 +9292,52 @@ mod tests {
         );
         assert_eq!(src.default_audio_stream_index, None);
         assert_eq!(src.default_subtitle_stream_index, None);
+    }
+
+    /// A remembered index only counts on the source it was saved on. Another
+    /// release of the same title can hold a different language at the same
+    /// position, so it gets the original-language default instead.
+    #[test]
+    fn remembered_index_only_applies_to_its_own_source() {
+        let saved_on = source_with_subs(); // index 1 = English
+        let mut other = source_with_subs();
+        other.media_streams[0].language = Some("rus".to_string()); // index 1
+        other.media_streams[1].language = Some("eng".to_string()); // index 2
+        let mut cfg = user_cfg();
+        cfg.play_default_audio_track = true;
+        let remembered = RememberedLanguages {
+            indexes_source: Some(saved_on.id),
+            ..Default::default()
+        };
+        let resolve = |src: &mut MediaSourceInfo| {
+            src.resolve_default_streams_remembering(
+                &cfg,
+                None,
+                Some("en"),
+                None,
+                None,
+                Some(1),
+                Some(3),
+                &remembered,
+            )
+        };
+
+        let mut src = saved_on.clone();
+        resolve(&mut src);
+        assert_eq!(src.default_audio_stream_index, Some(1));
+        assert_eq!(src.default_subtitle_stream_index, Some(3));
+
+        let mut src = other.clone();
+        resolve(&mut src);
+        assert_eq!(
+            src.default_audio_stream_index,
+            Some(2),
+            "the original language decides, not index 1 (Russian here)"
+        );
+        assert_eq!(
+            src.default_subtitle_stream_index, None,
+            "the subtitle index belongs to the other release too"
+        );
     }
 
     /// Subtitles follow the remembered language, and "off" stays off even when

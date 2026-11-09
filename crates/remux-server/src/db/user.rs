@@ -1139,6 +1139,9 @@ impl UserMediaState {
     /// * `position_ticks` – current playback position in 100-nanosecond ticks.
     /// * `audio_idx` / `subtitle_idx` – stream selections to remember; pass
     ///   `None` to leave existing values unchanged.
+    /// * `source_id` – the media source those selections were made on. An
+    ///   index means nothing in another release, so a change of source drops
+    ///   the index of the other kind that this report leaves unchanged.
     /// * `runtime_seconds` – when `Some`, the 90 % "mark as watched" threshold
     ///   is applied. Pass `None` for progress updates (no watched-check) and
     ///   `Some(media.runtime)` for stop events.
@@ -1153,12 +1156,19 @@ impl UserMediaState {
         position_ticks: i64,
         audio_idx: Option<i64>,
         subtitle_idx: Option<i64>,
+        source_id: Option<Uuid>,
         runtime_seconds: Option<i64>,
     ) -> Result<bool> {
         let mut ms = Self::get_or_new(db, user, media).await?;
         let position_seconds = position_ticks / 10_000_000;
         ms.playback_position = position_seconds;
 
+        if (audio_idx.is_some() || subtitle_idx.is_some()) && ms.stream_id != source_id
+        {
+            ms.stream_id = source_id;
+            ms.audio_idx = None;
+            ms.subtitle_idx = None;
+        }
         if let Some(idx) = audio_idx {
             ms.audio_idx = Some(idx);
         }
@@ -1246,6 +1256,18 @@ impl UserMediaState {
             subtitle: subtitle
                 .as_deref()
                 .and_then(remux_sdks::remux::RememberedSubtitle::parse),
+            indexes_source: None,
+        }
+    }
+
+    /// The remembered audio and subtitle indexes with the media source they
+    /// were picked on. Indexes saved without their source are left out: they
+    /// may come from any release of the title and point at another language
+    /// in this one.
+    pub fn remembered_indexes(&self) -> (Option<i64>, Option<i64>, Option<Uuid>) {
+        match self.stream_id {
+            Some(source) => (self.audio_idx, self.subtitle_idx, Some(source)),
+            None => (None, None, None),
         }
     }
 
@@ -1803,6 +1825,7 @@ mod playback_threshold_tests {
             ticks(secs),
             None,
             None,
+            None,
             media.runtime,
         )
         .await
@@ -1865,10 +1888,67 @@ mod playback_threshold_tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
         assert!(!crossed, "no runtime means no threshold was applied");
+    }
+}
+
+#[cfg(test)]
+mod remembered_index_tests {
+    use super::*;
+    use crate::{db, integration_test::new_test_server};
+
+    /// Track indexes are saved with the release they were picked on, and a
+    /// report from another release drops the index it leaves unchanged.
+    #[tokio::test]
+    async fn indexes_are_saved_with_their_release() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let media = crate::integration_test::seed_movie(ctx).await;
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        let report = |audio, subtitle, release| {
+            UserMediaState::update_playback(
+                &ctx.db, &user, &media, 10_000_000, audio, subtitle, release, None,
+            )
+        };
+        let indexes = || async {
+            UserMediaState::get_or_new(&ctx.db, &user, &media)
+                .await
+                .unwrap()
+                .remembered_indexes()
+        };
+
+        report(Some(1), Some(3), Some(first))
+            .await
+            .unwrap();
+        assert_eq!(indexes().await, (Some(1), Some(3), Some(first)));
+
+        report(Some(2), None, Some(second))
+            .await
+            .unwrap();
+        assert_eq!(
+            indexes().await,
+            (Some(2), None, Some(second)),
+            "subtitle 3 was picked on the first release"
+        );
+
+        report(Some(1), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexes().await,
+            (None, None, None),
+            "an index without its release is not recalled"
+        );
     }
 }
 

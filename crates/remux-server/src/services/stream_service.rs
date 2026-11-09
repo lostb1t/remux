@@ -1332,11 +1332,8 @@ impl StreamService {
         }
         // No PlaybackInfo answered this session (a client that skipped it):
         // the probed release is the best there is.
-        let release = Self::selected_stream_for(ctx, play_session_id, item_id)
-            .or_else(|| {
-                let source = media_source_id.and_then(|id| Uuid::parse_str(id).ok())?;
-                Self::selected_stream_for(ctx, play_session_id, source).or(Some(source))
-            })?;
+        let release =
+            Self::played_release(ctx, play_session_id, item_id, media_source_id)?;
         let release = db::Media::get_by_id(&ctx.db, &release)
             .await
             .ok()??;
@@ -1347,6 +1344,22 @@ impl StreamService {
             .find(|s| s.type_ == Some(kind.clone()) && s.index == index)?
             .language?;
         remux_sdks::remux::lang_to_two_letter(&language)
+    }
+
+    /// The release (stream) `play_session_id` plays for `item_id`: the one its
+    /// PlaybackInfo answer selected, else the source the client named. The
+    /// reported `MediaSourceId` alone is not enough, as auto-play answers
+    /// stamp the first source with the item id.
+    pub fn played_release(
+        ctx: &AppContext,
+        play_session_id: &str,
+        item_id: Uuid,
+        media_source_id: Option<&str>,
+    ) -> Option<Uuid> {
+        Self::selected_stream_for(ctx, play_session_id, item_id).or_else(|| {
+            let source = media_source_id.and_then(|id| Uuid::parse_str(id).ok())?;
+            Self::selected_stream_for(ctx, play_session_id, source).or(Some(source))
+        })
     }
 
     /// The release `device_id` is playing for `item_id` right now, when a
