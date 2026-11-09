@@ -1036,7 +1036,7 @@ fn collection_item_filter(
     }
 }
 
-/// Whether the collection's items differ per user (a favourites or watchlist
+/// Whether the collection's items differ per user (favourites or watchlist
 /// rule). Its image is shared by everyone, so it must not show any one user's
 /// items.
 fn is_per_user(

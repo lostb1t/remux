@@ -889,17 +889,12 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let is_favorite = field_val == "favorite";
-    let is_watchlist = field_val == "watchlist";
-    let is_watched = field_val == "played";
-    let is_upcoming = field_val == "upcoming";
+    // Yes/No fields: one rule per field, no operator.
+    let boolean_field = ["favorite", "watchlist", "played", "upcoming"]
+        .into_iter()
+        .find(|field| *field == field_val);
     let is_media_kind = field_val == "media_kind";
-    let hide_operator = is_trailer
-        || is_parental_rating
-        || is_favorite
-        || is_watchlist
-        || is_watched
-        || is_upcoming;
+    let hide_operator = is_trailer || is_parental_rating || boolean_field.is_some();
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -1090,53 +1085,14 @@ pub fn FilterRuleRow(
                     rules,
                     value_labels: Some(collection_options),
                 }
-            } else if is_favorite {
+            } else if let Some(field) = boolean_field {
                 select {
                     class: "select-input",
                     style: "flex:2 1 130px;min-width:130px",
                     value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("favorite", "", &e.value());
-                        }
-                    },
-                    option { value: "true",  selected: value_val == "true",  "Yes" }
-                    option { value: "false", selected: value_val == "false", "No" }
-                }
-            } else if is_watchlist {
-                select {
-                    class: "select-input",
-                    style: "flex:2 1 130px;min-width:130px",
-                    value: "{value_val}",
-                    onchange: move |e| {
-                        if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("watchlist", "", &e.value());
-                        }
-                    },
-                    option { value: "true",  selected: value_val == "true",  "Yes" }
-                    option { value: "false", selected: value_val == "false", "No" }
-                }
-            } else if is_watched {
-                select {
-                    class: "select-input",
-                    style: "flex:2 1 130px;min-width:130px",
-                    value: "{value_val}",
-                    onchange: move |e| {
-                        if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("played", "", &e.value());
-                        }
-                    },
-                    option { value: "true",  selected: value_val == "true",  "Yes" }
-                    option { value: "false", selected: value_val == "false", "No" }
-                }
-            } else if is_upcoming {
-                select {
-                    class: "select-input",
-                    style: "flex:2 1 130px;min-width:130px",
-                    value: "{value_val}",
-                    onchange: move |e| {
-                        if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("upcoming", "", &e.value());
+                            *row = raw_to_rule(field, "", &e.value());
                         }
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }

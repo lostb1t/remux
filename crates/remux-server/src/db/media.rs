@@ -9648,12 +9648,16 @@ fn filter_rule_to_sql(
             Some((sql, false))
         }
         R::Watchlist { value } => {
-            let user_clause = user_id
-                .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
-                .unwrap_or_default();
+            // A watchlist is one user's. With no requesting user there is no
+            // list to read, rather than the union of everyone's.
+            let Some(user_id) = user_id else {
+                return Some((if *value { "0" } else { "1" }.to_string(), false));
+            };
             let exists = format!(
                 "EXISTS (SELECT 1 FROM user_media_state ums \
-                 WHERE ums.media_id = media.id{user_clause} AND ums.watchlist = 1)"
+                 WHERE ums.media_id = media.id AND ums.user_id = X'{}' \
+                 AND ums.watchlist = 1)",
+                user_id.simple()
             );
             let sql = if *value {
                 exists
@@ -12932,6 +12936,54 @@ mod tests {
             vec!["Neither", "Theirs"],
             "items without a row count as not on the watchlist"
         );
+    }
+
+    #[tokio::test]
+    async fn watchlist_filter_rule_without_a_user_matches_no_ones_list() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut item = media_row(MediaKind::Movie, "Listed", "tt8884001");
+        item.save(db)
+            .await
+            .unwrap();
+        put_on_watchlist(db, uuid::Uuid::new_v4(), item.id).await;
+
+        let titles = |value| {
+            let filter = remux_sdks::remux::CollectionFilter {
+                groups: vec![remux_sdks::remux::FilterGroup {
+                    rules: vec![remux_sdks::remux::FilterRule::Watchlist { value }],
+                    match_mode: remux_sdks::remux::FilterMatchMode::All,
+                }],
+                match_mode: remux_sdks::remux::FilterMatchMode::All,
+            };
+            async move {
+                Media::get_by_filter(
+                    db,
+                    &MediaFilter {
+                        kind: Some(vec![MediaKind::Movie]),
+                        filter_rules: Some(filter),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .records
+                .into_iter()
+                .map(|m| m.title)
+                .collect::<Vec<_>>()
+            }
+        };
+        assert!(
+            titles(true)
+                .await
+                .is_empty(),
+            "another user's watchlist must not stand in for no user"
+        );
+        assert_eq!(titles(false).await, vec!["Listed"]);
     }
 
     /// The migration seeds one smart collection of the requesting user's own
