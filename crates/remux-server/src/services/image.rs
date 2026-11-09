@@ -1036,6 +1036,18 @@ fn collection_item_filter(
     }
 }
 
+/// Whether the collection's items differ per user (a favourites or watchlist
+/// rule). Its image is shared by everyone, so it must not show any one user's
+/// items.
+fn is_per_user(
+    collection: &db::Media,
+    smart_filter_override: Option<&CollectionFilter>,
+) -> bool {
+    smart_filter_override
+        .or_else(|| collection.parse_smart_filter())
+        .is_some_and(CollectionFilter::is_per_user)
+}
+
 /// Collect distinct poster image paths/URLs from collection items.
 async fn collect_poster_urls(
     _id: Uuid,
@@ -1044,6 +1056,9 @@ async fn collect_poster_urls(
     limit: u32,
     smart_filter_override: Option<&CollectionFilter>,
 ) -> Vec<String> {
+    if is_per_user(collection, smart_filter_override) {
+        return Vec::new();
+    }
     // Inspect extra records so duplicate artwork does not consume a grid cell.
     let filter = db::MediaFilter {
         limit: Some(limit.saturating_mul(2)),
@@ -1082,6 +1097,12 @@ async fn find_backdrop_url_from_collection(
     collection: &db::Media,
     db: &sqlx::SqlitePool,
 ) -> anyhow::Result<String> {
+    if is_per_user(collection, None) {
+        anyhow::bail!(
+            "collection {} lists different items per user",
+            collection.id
+        );
+    }
     let filter = db::MediaFilter {
         limit: Some(8),
         ..collection_item_filter(collection, None)
@@ -1894,6 +1915,28 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_watchlist_collection_is_not_drawn_from_anyones_items() {
+        use remux_sdks::remux::{CollectionFilter, FilterGroup, FilterRule};
+        let filter = |rule| CollectionFilter {
+            groups: vec![FilterGroup {
+                rules: vec![rule],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let collection = db::Media {
+            collection_smart_filter: Some(filter(FilterRule::Watchlist {
+                value: true,
+            })),
+            ..Default::default()
+        };
+        assert!(super::is_per_user(&collection, None));
+        // A preview of an edited filter is judged by that filter instead.
+        let edited = filter(FilterRule::HasTrailer { value: true });
+        assert!(!super::is_per_user(&collection, Some(&edited)));
+    }
+
     use super::*;
 
     #[test]

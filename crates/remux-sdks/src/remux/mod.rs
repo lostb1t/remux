@@ -4227,6 +4227,10 @@ pub enum FilterRule {
     Favorite {
         value: bool,
     },
+    /// Matches items the requesting user has (or has not) put on their watchlist.
+    Watchlist {
+        value: bool,
+    },
     /// Matches items the requesting user has (or has not) played (play_count > 0).
     #[serde(alias = "watched")]
     Played {
@@ -4258,6 +4262,27 @@ pub enum FilterMatchMode {
 }
 
 impl CollectionFilter {
+    /// Whether the result depends on who asks: a rule on the requesting user's
+    /// own favourites, watchlist or play state. Such a collection has no one
+    /// list of items, so anything shared by all users (its generated poster)
+    /// must not be built from it.
+    pub fn is_per_user(&self) -> bool {
+        self.groups
+            .iter()
+            .flat_map(|g| {
+                g.rules
+                    .iter()
+            })
+            .any(|r| {
+                matches!(
+                    r,
+                    FilterRule::Favorite { .. }
+                        | FilterRule::Watchlist { .. }
+                        | FilterRule::Played { .. }
+                )
+            })
+    }
+
     /// Whether every item this filter returns is upcoming, which makes the
     /// server-wide "hide unreleased" setting pointless for it. An AND needs one
     /// operand that requires `Upcoming`; an OR needs all of its (non-empty)
@@ -9617,6 +9642,33 @@ mod tests {
 
     fn id(n: u128) -> Uuid {
         Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn a_collection_filter_on_user_marks_depends_on_who_asks() {
+        let with = |rule| CollectionFilter {
+            groups: vec![FilterGroup {
+                rules: vec![rule],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(with(FilterRule::Watchlist { value: true }).is_per_user());
+        assert!(with(FilterRule::Favorite { value: true }).is_per_user());
+        assert!(with(FilterRule::Played { value: false }).is_per_user());
+        assert!(!with(FilterRule::HasTrailer { value: true }).is_per_user());
+        assert!(!CollectionFilter::default().is_per_user());
+    }
+
+    #[test]
+    fn watchlist_rule_round_trips_as_a_snake_case_field() {
+        let rule: FilterRule =
+            serde_json::from_str(r#"{"field":"watchlist","value":true}"#).unwrap();
+        assert_eq!(rule, FilterRule::Watchlist { value: true });
+        assert_eq!(
+            serde_json::to_value(&rule).unwrap(),
+            serde_json::json!({"field": "watchlist", "value": true})
+        );
     }
 
     #[test]

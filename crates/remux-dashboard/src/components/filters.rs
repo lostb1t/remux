@@ -32,6 +32,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
             .collect(),
         FilterRule::MediaKind { values, .. } => values.clone(),
         FilterRule::Favorite { .. } => vec![],
+        FilterRule::Watchlist { .. } => vec![],
         FilterRule::Played { .. } => vec![],
         FilterRule::Upcoming { .. } => vec![],
         _ => vec![],
@@ -236,6 +237,7 @@ fn field_label(key: &str) -> &'static str {
         "collection_id" => "Collection",
         "collection_member" => "Collection",
         "favorite" => "Favorite",
+        "watchlist" => "Watchlist",
         "played" => "Played",
         "upcoming" => "Upcoming",
         "media_kind" => "Media Kind",
@@ -248,7 +250,8 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "favorite" | "played" | "upcoming" => {
+        "parental_rating" | "has_trailer" | "favorite" | "watchlist" | "played"
+        | "upcoming" => {
             vec![]
         }
         _ => vec![("is", "is"), ("is_not", "is not")],
@@ -364,6 +367,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         }
         FilterRule::Favorite { value } => {
             ("favorite".into(), String::new(), value.to_string())
+        }
+        FilterRule::Watchlist { value } => {
+            ("watchlist".into(), String::new(), value.to_string())
         }
         FilterRule::Played { value } => {
             ("played".into(), String::new(), value.to_string())
@@ -482,6 +488,9 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             values: set_values(),
         },
         "favorite" => FilterRule::Favorite {
+            value: value_str == "true",
+        },
+        "watchlist" => FilterRule::Watchlist {
             value: value_str == "true",
         },
         "played" => FilterRule::Played {
@@ -881,11 +890,16 @@ pub fn FilterRuleRow(
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
     let is_favorite = field_val == "favorite";
+    let is_watchlist = field_val == "watchlist";
     let is_watched = field_val == "played";
     let is_upcoming = field_val == "upcoming";
     let is_media_kind = field_val == "media_kind";
-    let hide_operator =
-        is_trailer || is_parental_rating || is_favorite || is_watched || is_upcoming;
+    let hide_operator = is_trailer
+        || is_parental_rating
+        || is_favorite
+        || is_watchlist
+        || is_watched
+        || is_upcoming;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -980,6 +994,7 @@ pub fn FilterRuleRow(
                 // stay visible everywhere else they'd otherwise appear.
                 if show_field("collection_id")   { option { value: "collection_id",    selected: field_val == "collection_id",    { field_label("collection_id") } } }
                 if show_field("favorite")        { option { value: "favorite",         selected: field_val == "favorite",         { field_label("favorite") } } }
+                if show_field("watchlist")       { option { value: "watchlist",        selected: field_val == "watchlist",        { field_label("watchlist") } } }
                 if show_field("played")         { option { value: "played",          selected: field_val == "played",          { field_label("played") } } }
                 if show_field("upcoming")        { option { value: "upcoming",         selected: field_val == "upcoming",         { field_label("upcoming") } } }
                 if show_field("media_kind")      { option { value: "media_kind",       selected: field_val == "media_kind",       { field_label("media_kind") } } }
@@ -1083,6 +1098,19 @@ pub fn FilterRuleRow(
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
                             *row = raw_to_rule("favorite", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_watchlist {
+                select {
+                    class: "select-input",
+                    style: "flex:2 1 130px;min-width:130px",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("watchlist", "", &e.value());
                         }
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }

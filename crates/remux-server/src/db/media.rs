@@ -9647,6 +9647,21 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
+        R::Watchlist { value } => {
+            let user_clause = user_id
+                .map(|id| format!(" AND ums.user_id = X'{}'", id.simple()))
+                .unwrap_or_default();
+            let exists = format!(
+                "EXISTS (SELECT 1 FROM user_media_state ums \
+                 WHERE ums.media_id = media.id{user_clause} AND ums.watchlist = 1)"
+            );
+            let sql = if *value {
+                exists
+            } else {
+                format!("NOT {exists}")
+            };
+            Some((sql, false))
+        }
         R::Played { value } => {
             // CROSS JOIN: start the rollup from the user's play state, see
             // push_played_filter.
@@ -12847,6 +12862,144 @@ mod tests {
         assert!(
             titles.is_empty(),
             "another user's favorite must not bleed through"
+        );
+    }
+
+    // ── Watchlist filter rule tests ───────────────────────────────────
+
+    async fn put_on_watchlist(
+        db: &sqlx::SqlitePool,
+        user_id: uuid::Uuid,
+        media_id: uuid::Uuid,
+    ) {
+        sqlx::query(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, watchlist, watchlisted_at, playback_position) \
+             VALUES (?1, ?2, 1, ?3, 0)",
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(chrono::Utc::now().naive_utc())
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn watchlist_filter_rule_lists_only_the_requesting_users_items() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let (uid, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+        let mut mine = media_row(MediaKind::Movie, "Mine", "tt8882001");
+        mine.save(db)
+            .await
+            .unwrap();
+        let mut theirs = media_row(MediaKind::Movie, "Theirs", "tt8882002");
+        theirs
+            .save(db)
+            .await
+            .unwrap();
+        let mut neither = media_row(MediaKind::Movie, "Neither", "tt8882003");
+        neither
+            .save(db)
+            .await
+            .unwrap();
+        put_on_watchlist(db, uid, mine.id).await;
+        put_on_watchlist(db, other, theirs.id).await;
+
+        let on = filter_rule_titles(
+            db,
+            remux_sdks::remux::FilterRule::Watchlist { value: true },
+            uid,
+        )
+        .await;
+        assert_eq!(on, vec!["Mine"], "another user's watchlist must not show");
+
+        let mut off = filter_rule_titles(
+            db,
+            remux_sdks::remux::FilterRule::Watchlist { value: false },
+            uid,
+        )
+        .await;
+        off.sort();
+        assert_eq!(
+            off,
+            vec!["Neither", "Theirs"],
+            "items without a row count as not on the watchlist"
+        );
+    }
+
+    /// The migration seeds one smart collection of the requesting user's own
+    /// watchlist, listing movies and series.
+    #[tokio::test]
+    async fn the_seeded_watchlist_collection_lists_each_users_own_watchlist() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let id = uuid::Uuid::parse_str("a1b2c3d4-0000-4000-8000-000000000004").unwrap();
+        let collection = Media::get_by_id(db, &id)
+            .await
+            .unwrap()
+            .expect("seeded watchlist collection");
+        assert_eq!(collection.title, "Watchlist");
+        assert_eq!(collection.kind, MediaKind::Collection);
+        assert_eq!(collection.collection_kind, Some(CollectionKind::Smart));
+        assert_eq!(
+            collection.collection_media_kind,
+            Some(CollectionMediaKind::Mixed)
+        );
+        assert!(collection.promoted, "a library view of its own");
+
+        let (uid, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let mut film = media_row(MediaKind::Movie, "Film", "tt8883001");
+        film.save(db)
+            .await
+            .unwrap();
+        let mut show = media_row(MediaKind::Series, "Show", "tt8883002");
+        show.save(db)
+            .await
+            .unwrap();
+        put_on_watchlist(db, uid, film.id).await;
+        put_on_watchlist(db, uid, show.id).await;
+        put_on_watchlist(db, other, film.id).await;
+
+        let members = |user_id| {
+            let filter = MediaFilter {
+                kind: collection
+                    .collection_media_kind
+                    .as_ref()
+                    .map(CollectionMediaKind::media_kinds),
+                filter_rules: collection
+                    .parse_smart_filter()
+                    .cloned(),
+                user_id: Some(user_id),
+                sort_by: vec![api::ItemSortBy::SortName],
+                ..Default::default()
+            };
+            async move {
+                Media::get_by_filter(db, &filter)
+                    .await
+                    .unwrap()
+                    .records
+                    .into_iter()
+                    .map(|m| m.title)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(members(uid).await, vec!["Film", "Show"]);
+        assert_eq!(members(other).await, vec!["Film"]);
+        assert!(
+            members(uuid::Uuid::new_v4())
+                .await
+                .is_empty()
         );
     }
 
