@@ -43,6 +43,13 @@ enum HlsSessionResult {
 
 /// Shared session setup: look up or create the transcode session for an HLS
 /// request. Returns the session handle and the resolved play_session_id.
+/// Whether a request for `requested_start_secs` on a running transcode is a
+/// seek. A live stream has nothing to seek to, and a player refreshing its
+/// playlist repeats the URL it started with: neither is one.
+fn is_seek(requested_start_secs: u32, is_live: bool, running_start_secs: u32) -> bool {
+    !is_live && requested_start_secs != running_start_secs
+}
+
 async fn create_hls_session(
     state: &AppState,
     auth: &auth::AuthSession,
@@ -122,28 +129,55 @@ async fn create_hls_session(
     let _create_guard = TRANSCODE_CREATE_LOCKS
         .lock(play_session_id.clone())
         .await;
-    let is_seeking = q
+    let requested_start_secs = q
         .start_time_ticks
-        .is_some_and(|t| t > 0);
-    if is_seeking {
-        if state
+        .filter(|&t| t > 0)
+        .map(|t| (t / 10_000_000) as u32);
+    if let Some(requested_start_secs) = requested_start_secs {
+        if let Some(existing) = state
             .ctx
             .sessions
             .get_transcode(&play_session_id)
-            .is_some()
         {
-            debug!(
-                play_session_id = %play_session_id,
-                start_time_ticks = ?q.start_time_ticks,
-                "seek detected — stopping old transcode session and restarting"
-            );
-            state
-                .ctx
-                .sessions
-                .stop_transcode(&play_session_id)
-                .await;
+            let (is_live, running_start_secs) = {
+                let s = existing
+                    .read()
+                    .await;
+                (s.is_live, s.start_time_secs)
+            };
+            if !is_seek(requested_start_secs, is_live, running_start_secs) {
+                debug!(
+                    play_session_id = %play_session_id,
+                    start_time_ticks = ?q.start_time_ticks,
+                    is_live,
+                    "keeping the running transcode"
+                );
+            } else {
+                debug!(
+                    play_session_id = %play_session_id,
+                    start_time_ticks = ?q.start_time_ticks,
+                    "seek detected — stopping old transcode session and restarting"
+                );
+                state
+                    .ctx
+                    .sessions
+                    .stop_transcode(&play_session_id)
+                    .await;
+            }
         }
     }
+    // Burned-in subtitles are part of the video, so a different track (or
+    // turning them off) needs a new transcode; a seek check alone misses it
+    // for live, which ignores the start time.
+    restart_on_subtitle_change(
+        &state
+            .ctx
+            .sessions,
+        &play_session_id,
+        burn_subtitle,
+        q.subtitle_stream_index,
+    )
+    .await;
     // A client that switches audio track keeps the PlaySessionId. Reusing the
     // session would keep the old track (and the codec decided for it), so
     // restart it for the requested one. Runs under `_create_guard`, so two
@@ -635,7 +669,7 @@ async fn create_hls_session(
             video_codec: video_codec.clone(),
             audio_codec: audio_codec.clone(),
             segment_length,
-            start_time_ticks: q.start_time_ticks,
+            start_time_ticks: if is_live { None } else { q.start_time_ticks },
             max_width: q
                 .max_width
                 .map(|v| v as u32),
@@ -1146,6 +1180,50 @@ async fn restart_on_audio_switch(
         .stop_transcode(play_session_id)
         .await;
     true
+}
+
+/// Stops the session's transcode when the burned-in subtitle differs from the
+/// one it was started with. Returns whether it was stopped.
+async fn restart_on_subtitle_change(
+    sessions: &crate::playback_session::PlaybackSessionManager,
+    play_session_id: &str,
+    burn_subtitle: bool,
+    requested: Option<i32>,
+) -> bool {
+    let Some(existing) = sessions.get_transcode(play_session_id) else {
+        return false;
+    };
+    let (session_burn, session_index) = {
+        let session = existing
+            .read()
+            .await;
+        (session.burn_subtitle, session.subtitle_stream_index)
+    };
+    if !burned_subtitle_changed(session_burn, session_index, burn_subtitle, requested) {
+        return false;
+    }
+    debug!(
+        play_session_id = %play_session_id,
+        ?session_index,
+        ?requested,
+        "burned-in subtitle changed — stopping old transcode session and restarting"
+    );
+    sessions
+        .stop_transcode(play_session_id)
+        .await;
+    true
+}
+
+/// What a transcode burns in: the track when subtitles are burned, otherwise
+/// nothing, whatever index the client happens to name.
+fn burned_subtitle_changed(
+    session_burn: bool,
+    session_index: Option<i32>,
+    requested_burn: bool,
+    requested_index: Option<i32>,
+) -> bool {
+    let burned = |burn: bool, index: Option<i32>| burn.then_some(index);
+    burned(session_burn, session_index) != burned(requested_burn, requested_index)
 }
 
 /// A request for an existing play session names a different audio track than
@@ -1865,6 +1943,39 @@ async fn hls_segment_inner(
 mod tests {
     use super::SegmentContainer::{Fmp4, Ts};
     use remux_sdks::remux::VideoContainer;
+
+    #[test]
+    fn only_a_different_burned_in_subtitle_restarts_the_transcode() {
+        // The same playlist URL again.
+        assert!(!super::burned_subtitle_changed(
+            true,
+            Some(3),
+            true,
+            Some(3)
+        ));
+        assert!(!super::burned_subtitle_changed(false, None, false, None));
+        // An index that is not burned in changes nothing.
+        assert!(!super::burned_subtitle_changed(
+            false,
+            Some(2),
+            false,
+            Some(5)
+        ));
+        // Another track, or burning one in or out.
+        assert!(super::burned_subtitle_changed(true, Some(3), true, Some(4)));
+        assert!(super::burned_subtitle_changed(false, None, true, Some(3)));
+        assert!(super::burned_subtitle_changed(true, Some(3), false, None));
+    }
+
+    #[test]
+    fn only_a_changed_start_on_a_recorded_stream_is_a_seek() {
+        // Safari refreshes live.m3u8 with the query it started with.
+        assert!(!super::is_seek(3, true, 0));
+        assert!(!super::is_seek(835, true, 835));
+        // The same URL again on a stream with a runtime is no seek either.
+        assert!(!super::is_seek(600, false, 600));
+        assert!(super::is_seek(900, false, 600));
+    }
 
     #[test]
     fn vod_hls_source_reencodes_copied_audio_to_aac() {

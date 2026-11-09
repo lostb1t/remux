@@ -220,6 +220,13 @@ impl MediaKind {
         matches!(self, Self::TvChannel | Self::TvProgram)
     }
 
+    /// Whether a playback position means anything for the kind. Live TV has
+    /// none to come back to; Jellyfin stores 0 for it
+    /// (`SupportsPositionTicksResume`).
+    pub fn supports_position_resume(&self) -> bool {
+        !self.is_live_tv()
+    }
+
     /// Whether the kind is a directly-playable leaf item, as opposed to a
     /// container that only groups other media (albums, artists, series, ...).
     pub fn is_playable_leaf(&self) -> bool {
