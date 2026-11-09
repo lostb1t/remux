@@ -1160,16 +1160,17 @@ impl UserMediaState {
         runtime_seconds: Option<i64>,
     ) -> Result<bool> {
         let mut ms = Self::get_or_new(db, user, media).await?;
-        let position_ticks = if media
+        let position_seconds = position_ticks / 10_000_000;
+        // Only what is stored is cleared for live TV. The reported position
+        // still decides completion below, as in Jellyfin's `UpdatePlayState`.
+        ms.playback_position = if media
             .kind
             .supports_position_resume()
         {
-            position_ticks
+            position_seconds
         } else {
             0
         };
-        let position_seconds = position_ticks / 10_000_000;
-        ms.playback_position = position_seconds;
 
         if (audio_idx.is_some() || subtitle_idx.is_some()) && ms.stream_id != source_id
         {
@@ -1964,6 +1965,44 @@ mod live_tv_position_tests {
             .await
             .unwrap();
         assert_eq!(state.playback_position, 212, "a movie still resumes");
+    }
+
+    /// Clearing the stored position must not hide that a program with a known
+    /// duration was watched to the end.
+    #[tokio::test]
+    async fn a_program_watched_to_the_end_is_still_marked_played() {
+        let (_s, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let user = db::User::get_by_username(&ctx.db, "test")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut program = crate::integration_test::seed_movie(ctx).await;
+        program.kind = db::MediaKind::TvProgram;
+        let runtime = program
+            .runtime
+            .expect("seeded runtime");
+
+        let played = UserMediaState::update_playback(
+            &ctx.db,
+            &user,
+            &program,
+            runtime * 95 / 100 * 10_000_000,
+            None,
+            None,
+            None,
+            program.runtime,
+        )
+        .await
+        .unwrap();
+
+        assert!(played, "95% of a program is watched");
+        let state = UserMediaState::get_or_new(&ctx.db, &user, &program)
+            .await
+            .unwrap();
+        assert_eq!(state.playback_position, 0);
     }
 }
 

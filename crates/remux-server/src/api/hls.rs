@@ -166,6 +166,18 @@ async fn create_hls_session(
             }
         }
     }
+    // Burned-in subtitles are part of the video, so a different track (or
+    // turning them off) needs a new transcode; a seek check alone misses it
+    // for live, which ignores the start time.
+    restart_on_subtitle_change(
+        &state
+            .ctx
+            .sessions,
+        &play_session_id,
+        burn_subtitle,
+        q.subtitle_stream_index,
+    )
+    .await;
     // A client that switches audio track keeps the PlaySessionId. Reusing the
     // session would keep the old track (and the codec decided for it), so
     // restart it for the requested one. Runs under `_create_guard`, so two
@@ -1170,6 +1182,50 @@ async fn restart_on_audio_switch(
     true
 }
 
+/// Stops the session's transcode when the burned-in subtitle differs from the
+/// one it was started with. Returns whether it was stopped.
+async fn restart_on_subtitle_change(
+    sessions: &crate::playback_session::PlaybackSessionManager,
+    play_session_id: &str,
+    burn_subtitle: bool,
+    requested: Option<i32>,
+) -> bool {
+    let Some(existing) = sessions.get_transcode(play_session_id) else {
+        return false;
+    };
+    let (session_burn, session_index) = {
+        let session = existing
+            .read()
+            .await;
+        (session.burn_subtitle, session.subtitle_stream_index)
+    };
+    if !burned_subtitle_changed(session_burn, session_index, burn_subtitle, requested) {
+        return false;
+    }
+    debug!(
+        play_session_id = %play_session_id,
+        ?session_index,
+        ?requested,
+        "burned-in subtitle changed — stopping old transcode session and restarting"
+    );
+    sessions
+        .stop_transcode(play_session_id)
+        .await;
+    true
+}
+
+/// What a transcode burns in: the track when subtitles are burned, otherwise
+/// nothing, whatever index the client happens to name.
+fn burned_subtitle_changed(
+    session_burn: bool,
+    session_index: Option<i32>,
+    requested_burn: bool,
+    requested_index: Option<i32>,
+) -> bool {
+    let burned = |burn: bool, index: Option<i32>| burn.then_some(index);
+    burned(session_burn, session_index) != burned(requested_burn, requested_index)
+}
+
 /// A request for an existing play session names a different audio track than
 /// the one the session was started with (the client switched tracks).
 /// A session started without a named track maps the source's default one, so
@@ -1887,6 +1943,29 @@ async fn hls_segment_inner(
 mod tests {
     use super::SegmentContainer::{Fmp4, Ts};
     use remux_sdks::remux::VideoContainer;
+
+    #[test]
+    fn only_a_different_burned_in_subtitle_restarts_the_transcode() {
+        // The same playlist URL again.
+        assert!(!super::burned_subtitle_changed(
+            true,
+            Some(3),
+            true,
+            Some(3)
+        ));
+        assert!(!super::burned_subtitle_changed(false, None, false, None));
+        // An index that is not burned in changes nothing.
+        assert!(!super::burned_subtitle_changed(
+            false,
+            Some(2),
+            false,
+            Some(5)
+        ));
+        // Another track, or burning one in or out.
+        assert!(super::burned_subtitle_changed(true, Some(3), true, Some(4)));
+        assert!(super::burned_subtitle_changed(false, None, true, Some(3)));
+        assert!(super::burned_subtitle_changed(true, Some(3), false, None));
+    }
 
     #[test]
     fn only_a_changed_start_on_a_recorded_stream_is_a_seek() {
