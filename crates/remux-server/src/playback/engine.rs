@@ -207,6 +207,9 @@ pub(crate) fn select_hw_accel(
 const MAX_BUFFER_SECS: u32 = 300;
 /// Seconds behind the playback position before a segment is eligible for deletion.
 const SEGMENT_KEEP_SECS: u32 = 30;
+/// How far back a live stream can be rewound or paused: segments older than
+/// this, counted from the newest one, are deleted.
+const LIVE_REWIND_SECS: u32 = 30 * 60;
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -223,6 +226,13 @@ fn send_signal(_pid: u32, _sig: i32) {}
 /// Spawn the buffer-throttle task. It pauses/resumes ffmpeg so it never
 /// encodes more than MAX_BUFFER_SECS ahead of what the client has requested.
 ///
+/// A live stream is never paused: the source keeps sending, so a stopped
+/// ffmpeg falls behind or loses the connection, and a client that sends no
+/// progress reports would read as "nothing played" and stall after
+/// MAX_BUFFER_SECS. Jellyfin throttles only recorded files. Its segments are
+/// kept for LIVE_REWIND_SECS instead of the usual few seconds behind the
+/// playback position, so a viewer can pause and rewind.
+///
 /// `start_index` is this run's `-start_number` (see `segment_start_index`):
 /// segment file names are numbered from the seek position, not from 0, so
 /// it must be subtracted from whatever index ffmpeg has reached before
@@ -237,6 +247,7 @@ fn spawn_buffer_monitor(
     ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     play_session_id: String,
+    is_live: bool,
 ) {
     tokio::spawn(async move {
         let mut paused = false;
@@ -260,7 +271,7 @@ fn spawn_buffer_monitor(
 
             let ahead = buffered_secs.saturating_sub(playback_secs);
 
-            if pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
+            if !is_live && pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
                 debug!(play_session_id, pid, ahead, "Buffer full — pausing ffmpeg");
                 #[cfg(unix)]
                 send_signal(pid, libc::SIGSTOP);
@@ -278,11 +289,16 @@ fn spawn_buffer_monitor(
                 paused = false;
             }
 
-            // Every 30 seconds, delete segments that are more than SEGMENT_KEEP_SECS
-            // behind the current playback position.
-            if ticks % 30 == 0 && playback_secs > SEGMENT_KEEP_SECS {
-                let cutoff_idx = (playback_secs - SEGMENT_KEEP_SECS) / segment_length;
-                delete_old_segments(&output_dir, cutoff_idx);
+            // Every 30 seconds, delete segments that are no longer needed.
+            if ticks % 30 == 0 {
+                if let Some(cutoff_idx) = cleanup_cutoff(
+                    is_live,
+                    highest_segment_index(&output_dir),
+                    playback_secs,
+                    segment_length,
+                ) {
+                    delete_old_segments(&output_dir, cutoff_idx);
+                }
             }
         }
 
@@ -295,6 +311,26 @@ fn spawn_buffer_monitor(
             }
         }
     });
+}
+
+/// The segment index below which segments can be deleted, if any. A recorded
+/// stream keeps SEGMENT_KEEP_SECS behind the playback position; a live one
+/// keeps LIVE_REWIND_SECS behind its newest segment, as clients may report no
+/// position at all.
+fn cleanup_cutoff(
+    is_live: bool,
+    newest_index: Option<u32>,
+    playback_secs: u32,
+    segment_length: u32,
+) -> Option<u32> {
+    let cutoff = if is_live {
+        newest_index?.saturating_sub(LIVE_REWIND_SECS / segment_length.max(1))
+    } else if playback_secs > SEGMENT_KEEP_SECS {
+        (playback_secs - SEGMENT_KEEP_SECS) / segment_length.max(1)
+    } else {
+        0
+    };
+    (cutoff > 0).then_some(cutoff)
 }
 
 /// Parses the numeric index out of a segment filename — `segment_00042.ts`,
@@ -1427,6 +1463,7 @@ pub async fn start_transcode(
                     ffmpeg_pid.clone(),
                     monitor_stop_rx,
                     s.id.clone(),
+                    params.is_live,
                 );
                 s.output_dir
                     .clone()
@@ -2412,6 +2449,25 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_recorded_stream_keeps_a_little_behind_the_playback_position() {
+        // 6 s segments: 130 s played, 30 s kept, so segments below 16 go.
+        assert_eq!(super::cleanup_cutoff(false, Some(99), 130, 6), Some(16));
+        assert_eq!(super::cleanup_cutoff(false, Some(99), 30, 6), None);
+        assert_eq!(super::cleanup_cutoff(false, None, 0, 6), None);
+    }
+
+    #[test]
+    fn a_live_stream_keeps_thirty_minutes_behind_its_newest_segment() {
+        // 30 min of 6 s segments is 300: the newest is 450, so below 150 goes,
+        // whatever position the client reported (none, here).
+        assert_eq!(super::cleanup_cutoff(true, Some(450), 0, 6), Some(150));
+        // Nothing is older than the window yet.
+        assert_eq!(super::cleanup_cutoff(true, Some(299), 0, 6), None);
+        assert_eq!(super::cleanup_cutoff(true, Some(300), 0, 6), None);
+        assert_eq!(super::cleanup_cutoff(true, None, 0, 6), None);
+    }
+
     use super::*;
     use crate::playback::hw_accel;
     use remux_sdks::remux::TranscodeReasons;
