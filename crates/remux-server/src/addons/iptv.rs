@@ -61,6 +61,7 @@ impl AddonPreset for IptvM3uPreset {
                     default: None,
                     kind: AddonOptionType::Url,
                 },
+                enable_new_channels_option(),
             ],
         }
     }
@@ -80,6 +81,9 @@ impl AddonPreset for IptvM3uPreset {
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let enable_new_channels = cfg["enable_new_channels"]
+            .as_bool()
+            .unwrap_or(false);
 
         let addon = Arc::new(IptvAddon {
             addon_id,
@@ -90,6 +94,7 @@ impl AddonPreset for IptvM3uPreset {
             is_xtream: false,
             sync_vod: false,
             sync_series: false,
+            enable_new_channels,
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -170,6 +175,7 @@ impl AddonPreset for IptvXstreamPreset {
                     default: Some(serde_json::Value::Bool(false)),
                     kind: AddonOptionType::Boolean,
                 },
+                enable_new_channels_option(),
             ],
         }
     }
@@ -202,6 +208,9 @@ impl AddonPreset for IptvXstreamPreset {
         let sync_series = cfg["sync_series"]
             .as_bool()
             .unwrap_or(false);
+        let enable_new_channels = cfg["enable_new_channels"]
+            .as_bool()
+            .unwrap_or(false);
 
         let addon = Arc::new(IptvAddon {
             addon_id,
@@ -212,6 +221,7 @@ impl AddonPreset for IptvXstreamPreset {
             is_xtream: true,
             sync_vod,
             sync_series,
+            enable_new_channels,
         });
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
@@ -230,6 +240,21 @@ inventory::submit! {
 // Shared runtime
 // ---------------------------------------------------------------------------
 
+fn enable_new_channels_option() -> AddonOption {
+    AddonOption {
+        id: "enable_new_channels".to_string(),
+        name: "Enable new channels".to_string(),
+        description: Some(
+            "Import new channels as enabled instead of disabled. Channels that \
+             are already imported keep their current state."
+                .to_string(),
+        ),
+        required: false,
+        default: Some(serde_json::Value::Bool(false)),
+        kind: AddonOptionType::Boolean,
+    }
+}
+
 pub(crate) struct IptvAddon {
     pub(crate) addon_id: Uuid,
     /// M3U URL for M3U addons; Xtream server base URL for Xtream addons.
@@ -240,6 +265,8 @@ pub(crate) struct IptvAddon {
     pub(crate) is_xtream: bool,
     pub(crate) sync_vod: bool,
     pub(crate) sync_series: bool,
+    /// Save live channels as enabled the first time they are imported.
+    pub(crate) enable_new_channels: bool,
 }
 
 impl IptvAddon {
@@ -250,10 +277,14 @@ impl IptvAddon {
     }
 }
 
+/// `enabled` only applies to a channel seen for the first time: on later
+/// imports `db::Media::upsert` keeps the stored value, so an admin's choice
+/// sticks.
 fn channel_to_media(
     ch: &iptv::M3uChannel,
     addon_id: Uuid,
     source_id: &str,
+    enabled: bool,
 ) -> db::Media {
     let id = Uuid::new_v5(
         &addon_id,
@@ -288,7 +319,7 @@ fn channel_to_media(
                 .clone(),
             ..Default::default()
         },
-        enabled: false,
+        enabled,
         program_kind: ch
             .program_kind
             .clone(),
@@ -355,6 +386,7 @@ impl CatalogAddon for IptvAddon {
             .build()?;
         let source_id = self.source_id();
         let addon_id = self.addon_id;
+        let enabled = self.enable_new_channels;
 
         let mut items: Vec<db::Media> = if self.is_xtream {
             let user = self
@@ -384,7 +416,7 @@ impl CatalogAddon for IptvAddon {
             {
                 Ok(channels) => channels
                     .iter()
-                    .map(|ch| channel_to_media(ch, addon_id, &source_id))
+                    .map(|ch| channel_to_media(ch, addon_id, &source_id, enabled))
                     .collect(),
                 Err(e) => {
                     warn!(error = %e, "failed to fetch Xtream channels");
@@ -400,7 +432,7 @@ impl CatalogAddon for IptvAddon {
             let channels = iptv::parse_m3u_stream(resp).await?;
             channels
                 .iter()
-                .map(|ch| channel_to_media(ch, addon_id, &source_id))
+                .map(|ch| channel_to_media(ch, addon_id, &source_id, enabled))
                 .collect()
         };
 
@@ -479,3 +511,191 @@ impl StreamAddon for IptvAddon {
 const _: fn() = || {
     let _ = std::mem::size_of::<ProgressReporter>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use serde_json::json;
+
+    #[test]
+    fn both_presets_offer_the_option_off_by_default() {
+        for meta in [IptvM3uPreset.metadata(), IptvXstreamPreset.metadata()] {
+            let option = meta
+                .options
+                .iter()
+                .find(|o| o.id == "enable_new_channels")
+                .unwrap_or_else(|| {
+                    panic!("{} has no enable_new_channels option", meta.id)
+                });
+            assert!(matches!(option.kind, AddonOptionType::Boolean));
+            assert_eq!(option.default, Some(serde_json::Value::Bool(false)));
+            assert!(!option.required);
+        }
+    }
+
+    #[tokio::test]
+    async fn fetched_channels_follow_the_option() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let provider = httpmock::MockServer::start();
+        provider.mock(|when, then| {
+            when.path("/list.m3u");
+            then.status(200)
+                .body(
+                    "#EXTM3U\n#EXTINF:-1 tvg-id=\"ch1\",Channel 1\nhttp://stream/1\n",
+                );
+        });
+        provider.mock(|when, then| {
+            when.path("/player_api.php")
+                .query_param("action", "get_live_categories");
+            then.status(200)
+                .json_body(json!([]));
+        });
+        provider.mock(|when, then| {
+            when.path("/player_api.php")
+                .query_param("action", "get_live_streams");
+            then.status(200)
+                .json_body(json!([{ "name": "Channel 1", "stream_id": 1 }]));
+        });
+        let config = crate::Config::default();
+        let with_option = |mut cfg: serde_json::Value, option: Option<bool>| {
+            if let Some(on) = option {
+                cfg["enable_new_channels"] = json!(on);
+            }
+            cfg
+        };
+        let m3u = |option: Option<bool>| {
+            let cfg = json!({ "url": format!("{}/list.m3u", provider.base_url()) });
+            IptvM3uPreset
+                .from_cfg(Uuid::new_v4(), &with_option(cfg, option), &config)
+                .unwrap()
+        };
+        let xtream = |option: Option<bool>| {
+            let cfg = json!({
+                "server_url": provider.base_url(),
+                "username": "user",
+                "password": "pass",
+            });
+            IptvXstreamPreset
+                .from_cfg(Uuid::new_v4(), &with_option(cfg, option), &config)
+                .unwrap()
+        };
+        let enabled = |caps: AddonCapabilities| async move {
+            caps.catalog
+                .unwrap()
+                .catalog_stream(ctx, "all")
+                .await
+                .unwrap()
+                .unwrap()
+                .map(|m| m.enabled)
+                .collect::<Vec<_>>()
+                .await
+        };
+
+        // Add-ons saved before the option existed have no key: still disabled.
+        assert_eq!(enabled(m3u(None)).await, vec![false]);
+        assert_eq!(enabled(xtream(None)).await, vec![false]);
+        assert_eq!(enabled(m3u(Some(false))).await, vec![false]);
+        assert_eq!(enabled(xtream(Some(false))).await, vec![false]);
+        assert_eq!(enabled(m3u(Some(true))).await, vec![true]);
+        assert_eq!(enabled(xtream(Some(true))).await, vec![true]);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_keeps_a_channel_the_admin_disabled() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let addon_id = Uuid::new_v4();
+        let source_id = addon_id
+            .simple()
+            .to_string();
+        let collection_id = Uuid::new_v5(&addon_id, b"all");
+        let catalog = crate::addons::ResolvedCatalog {
+            provider_catalog_id: "all".into(),
+            catalog_id: format!("addon:{addon_id}:all"),
+            collection_id,
+            name: "All Channels".into(),
+            media_kind: Some(db::MediaKind::TvChannel),
+            collection_media_kind: None,
+            enabled: true,
+            max_items: None,
+            tags: vec![],
+        };
+        db::Media {
+            id: collection_id,
+            kind: db::MediaKind::Collection,
+            title: "All Channels".into(),
+            ..Default::default()
+        }
+        .save(&ctx.db)
+        .await
+        .unwrap();
+        let progress = ProgressReporter::new(Default::default());
+        let url = |n: u32| format!("http://stream/{n}");
+        let id = |n: u32| Uuid::new_v5(&addon_id, url(n).as_bytes());
+        let import = |numbers: &[u32], enable_new_channels: bool| {
+            let items: Vec<db::Media> = numbers
+                .iter()
+                .map(|&n| {
+                    let ch = iptv::M3uChannel {
+                        name: format!("Channel {n}"),
+                        url: url(n),
+                        ..Default::default()
+                    };
+                    channel_to_media(&ch, addon_id, &source_id, enable_new_channels)
+                })
+                .collect();
+            let (catalog, progress) = (&catalog, &progress);
+            async move {
+                crate::tasks::catalog_import_shared::import_catalog_items(
+                    ctx,
+                    catalog,
+                    &catalog.catalog_id,
+                    100,
+                    crate::addons::CatalogStream::complete(futures::stream::iter(
+                        items,
+                    )),
+                    progress,
+                )
+                .await
+                .unwrap();
+            }
+        };
+        let enabled = |n: u32| async move {
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM media WHERE id = ?")
+                .bind(id(n))
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap()
+        };
+
+        import(&[1, 2], true).await;
+        assert!(enabled(1).await);
+        assert!(enabled(2).await);
+
+        // Turn channel 1 off, as PATCH /remux/iptv/channels/{id} does with `enabled`.
+        sqlx::query("UPDATE media SET enabled = 0 WHERE id = ?")
+            .bind(id(1))
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        import(&[1, 2], true).await;
+        assert!(
+            !enabled(1).await,
+            "a refresh turned a disabled channel back on"
+        );
+        assert!(enabled(2).await);
+
+        // With the option off, a new channel arrives disabled as before, and the
+        // stored channels keep their state.
+        import(&[1, 2, 3], false).await;
+        assert!(!enabled(3).await);
+        assert!(!enabled(1).await);
+        assert!(enabled(2).await);
+    }
+}
