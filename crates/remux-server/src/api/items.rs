@@ -2461,10 +2461,21 @@ async fn item_for_user(
         }
     }
 
-    // Jellyfin keeps every version as an item of its own: fetching one by its id
-    // returns that item, with its own source first. Clients rely on it (Android
-    // TV only plays a source whose id equals the item id). The rest of the item
-    // is the parent's, and `playable_item_id` folds watch state back onto it.
+    // A version fetched by its id (picked in a client's version list) must come
+    // back as a FULL item whose Id is that version's id and whose first source
+    // carries the same id. This is how Jellyfin does it: every version is an item
+    // of its own. Two clients depend on both halves, and each regressed when we
+    // answered differently:
+    //  - Android TV's external player only plays a source whose id equals the
+    //    item id, else it toasts "No playable items" (#661, #696). Returning the
+    //    parent item here (the #673 change) broke exactly this.
+    //  - jellyfin-web 12.x reloads the page from the picked version's item
+    //    (`refreshSelectedVersion`). A bare stream row loses the poster, Play
+    //    button and version list (#673), so it needs the parent's metadata.
+    // Hence: parent's metadata, version's id. Everything keyed by an item id
+    // (playback, reporting, watch state) maps it back to the owner: see
+    // `StreamService::version_target` and `MediaResolveService::playable_item_id`.
+    // Do not special-case a client here, and do not return the parent's id.
     let version = hoisted_group.or(requested_stream.filter(|sid| {
         media
             .sources
