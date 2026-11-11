@@ -400,6 +400,36 @@ impl StreamService {
         Ok(())
     }
 
+    /// A client that picked a version holds that version's id as the item id
+    /// (see `MediaResolveService::playable_item_id`). Playback is keyed by the
+    /// item the version belongs to plus the version as the requested source, so
+    /// swap them back: `(owner, Some(version))`. Any other id is returned as is.
+    pub(crate) async fn version_target(
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+        item_id: Uuid,
+        requested_id: Option<Uuid>,
+    ) -> (Uuid, Option<Uuid>) {
+        let owner = match db::Media::get_by_id(&ctx.db, &item_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(row) => match row.kind {
+                db::MediaKind::Stream => row.parent_id,
+                db::MediaKind::StreamGroup => user_id.and_then(|user_id| {
+                    Self::get_group_item(&ctx.store, user_id, row.id)
+                }),
+                _ => None,
+            },
+            None => None,
+        };
+        match owner {
+            Some(owner) => (owner, Some(requested_id.unwrap_or(item_id))),
+            None => (item_id, requested_id),
+        }
+    }
+
     /// One-shot lookup for handlers that only need a single resolved stream (subtitles, video).
     ///
     /// Handles StreamGroup → best candidate, device preference, and explicit stream UUID.
@@ -411,6 +441,8 @@ impl StreamService {
         device_key: Option<&str>,
         user_id: Option<Uuid>,
     ) -> anyhow::Result<db::Media> {
+        let (item_id, requested_id) =
+            Self::version_target(ctx, user_id, item_id, requested_id).await;
         let lookup_id = requested_id.unwrap_or(item_id);
         // Resolve the id the way PlaybackInfo does: `resolve_item` is
         // `get_by_id` plus the synthetic-id path (search/catalog ids that have
@@ -1677,6 +1709,75 @@ fn media_info_from_probe(
 mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
+
+    /// A client holding a picked version as its item id (Android TV, after
+    /// `GET /Items/{version}`) must play the owning item with that version as
+    /// the requested source, whether the version is a stream or a stream group.
+    #[tokio::test]
+    async fn a_version_held_as_the_item_plays_its_owner_with_that_source() {
+        let (_server, guard, _token) =
+            crate::integration_test::authenticated_server().await;
+        let ctx = &guard.0;
+        let user = Uuid::new_v4();
+        let mut movie = db::Media {
+            kind: db::MediaKind::Movie,
+            title: "Movie".into(),
+            external_ids: db::ExternalIds {
+                imdb: Some(
+                    db::NonEmptyString::try_new("tt1234567".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        movie
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut stream = db::Media {
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie.id),
+            ..Default::default()
+        };
+        stream
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let mut group = db::Media {
+            kind: db::MediaKind::StreamGroup,
+            ..Default::default()
+        };
+        group
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        StreamService::save_group_item(&ctx.store, user, group.id, movie.id);
+
+        let target = |item, requested| {
+            StreamService::version_target(ctx, Some(user), item, requested)
+        };
+        assert_eq!(
+            target(stream.id, Some(stream.id)).await,
+            (movie.id, Some(stream.id))
+        );
+        assert_eq!(target(stream.id, None).await, (movie.id, Some(stream.id)));
+        assert_eq!(
+            target(group.id, Some(group.id)).await,
+            (movie.id, Some(group.id))
+        );
+        // Anything else is left alone, including an item with a source named.
+        assert_eq!(target(movie.id, None).await, (movie.id, None));
+        assert_eq!(
+            target(movie.id, Some(stream.id)).await,
+            (movie.id, Some(stream.id))
+        );
+        // A group this user never browsed has no owner to go back to.
+        assert_eq!(
+            StreamService::version_target(ctx, Some(Uuid::new_v4()), group.id, None)
+                .await,
+            (group.id, None)
+        );
+    }
 
     #[test]
     fn subtitle_query_comes_from_the_streams_filename_and_size() {

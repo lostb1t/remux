@@ -226,6 +226,18 @@ async fn items_playbackinfo_inner(
     id: Uuid,
     mut q: api::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
+    let (id, media_source_id) = StreamService::version_target(
+        &state.ctx,
+        Some(
+            session
+                .user
+                .id,
+        ),
+        id,
+        q.media_source_id,
+    )
+    .await;
+    q.media_source_id = media_source_id;
     if let Some(running) = StreamService::running_release(
         &state.ctx,
         &session

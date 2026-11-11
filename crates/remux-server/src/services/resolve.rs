@@ -1260,6 +1260,61 @@ impl MediaResolveService {
         Box::pin(Self::persist_from_store(id, ctx)).await
     }
 
+    /// The item a version belongs to. A client that picked a version (Android TV
+    /// refetches the item by its source id and plays that) holds the version's
+    /// id as the item id, but watch state, favorites and ratings belong to the
+    /// episode or movie it plays. Any other id is returned as is.
+    pub(crate) async fn playable_item_id(
+        ctx: &AppContext,
+        user_id: Uuid,
+        id: Uuid,
+    ) -> Uuid {
+        match db::Media::get_by_id(&ctx.db, &id).await {
+            Ok(Some(media)) => Self::version_owner(ctx, user_id, &media)
+                .await
+                .map_or(id, |owner| owner.id),
+            _ => id,
+        }
+    }
+
+    /// [`Self::resolve_item`], but a version resolves to the item it plays (see
+    /// [`Self::playable_item_id`]).
+    pub(crate) async fn resolve_playable_item(
+        id: Uuid,
+        user_id: Uuid,
+        ctx: &AppContext,
+    ) -> anyhow::Result<Option<db::Media>> {
+        let Some(media) = Self::resolve_item(id, ctx).await? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            Self::version_owner(ctx, user_id, &media)
+                .await
+                .unwrap_or(media),
+        ))
+    }
+
+    /// The item a stream, or a stream group, is a version of.
+    async fn version_owner(
+        ctx: &AppContext,
+        user_id: Uuid,
+        media: &db::Media,
+    ) -> Option<db::Media> {
+        let owner_id = match media.kind {
+            db::MediaKind::Stream => media.parent_id,
+            db::MediaKind::StreamGroup => {
+                crate::services::StreamService::get_group_item(
+                    &ctx.store, user_id, media.id,
+                )
+            }
+            _ => None,
+        }?;
+        db::Media::get_by_id(&ctx.db, &owner_id)
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Resolves a batch of possibly-transient UUIDs to their stable persisted IDs.
     /// Uses `media.id` from the resolved item (not the input ID) since `persist_from_store`
     /// may recompute a stable UUID from external IDs. Unresolvable IDs are skipped.

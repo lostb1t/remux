@@ -163,8 +163,21 @@ pub async fn sessions_capabilities_by_id(
 pub async fn report_playback_start(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackInfo>,
+    Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    if !data
+        .item_id
+        .is_nil()
+    {
+        data.item_id = MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            data.item_id,
+        )
+        .await;
+    }
     state
         .ctx
         .sessions
@@ -218,8 +231,21 @@ pub async fn report_playback_start(
 pub async fn report_playback_progress(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackInfo>,
+    Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    if !data
+        .item_id
+        .is_nil()
+    {
+        data.item_id = MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            data.item_id,
+        )
+        .await;
+    }
     // Jellyfin clients keep reporting while paused, so the transition is what
     // marks a real pause; the position is read before the session is updated.
     let was_paused = state
@@ -362,8 +388,21 @@ pub async fn report_playback_progress(
 pub async fn report_playback_stopped(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackInfo>,
+    Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    if !data
+        .item_id
+        .is_nil()
+    {
+        data.item_id = MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            data.item_id,
+        )
+        .await;
+    }
     let effective_psid = data
         .play_session_id
         .clone()

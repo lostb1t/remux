@@ -2461,6 +2461,22 @@ async fn item_for_user(
         }
     }
 
+    // Jellyfin keeps every version as an item of its own: fetching one by its id
+    // returns that item, with its own source first. Clients rely on it (Android
+    // TV only plays a source whose id equals the item id). The rest of the item
+    // is the parent's, and `playable_item_id` folds watch state back onto it.
+    let version = hoisted_group.or(requested_stream.filter(|sid| {
+        media
+            .sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .map(|s| s.id)
+            == Some(*sid)
+    }));
+    if let Some(version) = version {
+        base_item.id = version;
+    }
+
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
     // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
     if media.kind == db::MediaKind::Track {
@@ -7337,11 +7353,177 @@ mod tests {
             body2["Id"]
                 .as_str()
                 .unwrap(),
-            movie
+            bluray_group
                 .id
                 .simple()
                 .to_string(),
-            "the item itself is still the parent movie"
+            "a picked version is an item of its own, as in Jellyfin"
+        );
+
+        // Playing the picked group as the item the client now holds still works,
+        // and the session is recorded against the movie.
+        let resp3 = server
+            .post(&format!(
+                "/items/{}/playbackinfo?mediaSourceId={}",
+                bluray_group.id,
+                bluray_group
+                    .id
+                    .simple()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({}))
+            .await;
+        resp3.assert_status_ok();
+        let info: serde_json::Value = resp3.json();
+        assert_eq!(
+            info["MediaSources"][0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · Blu-ray",
+            "PlaybackInfo for the picked group must offer that group"
+        );
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({
+                "ItemId": bluray_group.id.simple().to_string(),
+                "MediaSourceId": bluray_group.id.simple().to_string(),
+                "PlaySessionId": "picked-group-session",
+                "PositionTicks": 0,
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            ctx.sessions
+                .get("picked-group-session")
+                .map(|s| s.item_id),
+            Some(movie.id),
+            "playback of a picked group is reported against the movie"
+        );
+    }
+
+    /// As in Jellyfin, fetching a version by its id returns that version as the
+    /// item, with its own source first. Android TV refetches it when a version
+    /// is picked and only plays a source whose id equals the item id, otherwise
+    /// it toasts "No playable items". Watch state still belongs to the movie.
+    #[tokio::test]
+    async fn a_picked_version_comes_back_as_an_item_of_its_own() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+
+        let movie =
+            insert_media(&ctx.db, "Test Movie", db::MediaKind::Movie, "tt7777777")
+                .await;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        let mut streams = vec![];
+        for (idx, filename) in [
+            (0, "TestMovie.2026.1080p.WEB-DL.H264.mkv"),
+            (1, "TestMovie.2026.1080p.BluRay.x264.mkv"),
+        ] {
+            let mut stream = db::Media {
+                title: filename.to_string(),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie.id),
+                idx: Some(idx),
+                stream_info: Some(crate::stream::StreamInfo {
+                    descriptor: crate::stream::StreamDescriptor::Local(filename.into()),
+                    filename: Some(filename.to_string()),
+                    ..Default::default()
+                }),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            stream
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            streams.push(stream);
+        }
+        let as_client = |client: &str| {
+            auth.replace("Client=\"Test\"", &format!("Client=\"{client}\""))
+        };
+        let item = |id: uuid::Uuid, auth: String| {
+            let server = &server;
+            async move {
+                let resp = server
+                    .get(&format!("/items/{id}"))
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(&auth).unwrap(),
+                    )
+                    .await;
+                resp.assert_status_ok();
+                resp.json::<serde_json::Value>()
+            }
+        };
+        let simple = |id: uuid::Uuid| {
+            id.simple()
+                .to_string()
+        };
+        let sources_of = |body: &serde_json::Value| -> Vec<String> {
+            body["MediaSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    s["Id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        // Loading the item first, as the client does, is what lists the versions.
+        item(movie.id, auth.clone()).await;
+        let picked = streams[1].id;
+
+        let body = item(picked, auth.clone()).await;
+        assert_eq!(body["Id"], simple(picked));
+        assert!(
+            sources_of(&body).contains(&simple(picked)),
+            "a source must carry the item id, or the external player bails"
+        );
+        assert_eq!(sources_of(&body)[0], simple(picked), "the pick plays first");
+
+        // Marking the picked version watched marks the movie.
+        server
+            .post(&format!("/userplayeditems/{picked}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .assert_status_ok();
+        let played = |id: uuid::Uuid| {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT COALESCE(MAX(play_count), 0) > 0 FROM user_media_state WHERE media_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&ctx.db)
+        };
+        assert!(
+            played(movie.id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !played(picked)
+                .await
+                .unwrap()
         );
     }
 
