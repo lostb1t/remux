@@ -13,10 +13,6 @@ use std::{collections::HashMap, str::FromStr};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-fn ffprobe_bin() -> String {
-    std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
-}
-
 fn should_retry_with_relaxed_hls_extensions(stderr: &str) -> bool {
     stderr.contains("allowed_segment_extensions")
         || stderr.contains("mismatches allowed extensions")
@@ -639,7 +635,7 @@ fn run_ffprobe(
 ) -> Result<std::process::Output> {
     use std::{io::Read, process::Stdio};
 
-    let mut child = std::process::Command::new(ffprobe_bin())
+    let mut child = std::process::Command::new(crate::tools::ffprobe())
         .args(args)
         .hide_console()
         .stdin(Stdio::null())

@@ -16,10 +16,6 @@ use crate::{
     playback::engine::ffmpeg_http_input_args,
 };
 
-fn ffmpeg_bin() -> String {
-    std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
-}
-
 /// The cache storage codec for a requested text subtitle format: ASS/SSA requests
 /// get a native ASS cache (styled dialogue preserved), everything else the SRT
 /// cache that VTT/JSON conversions are built on.
@@ -397,7 +393,7 @@ async fn extract_subtitles_to_cache(
         media_source_id,
         streams,
     )?;
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
     cmd.hide_console();
     cmd.kill_on_drop(true);
     cmd.args(&args);
@@ -1161,7 +1157,7 @@ async fn subtitles_stream_inner(
 
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
-        let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
         cmd.hide_console();
         cmd.kill_on_drop(true);
         cmd.args(["-copyts"]);

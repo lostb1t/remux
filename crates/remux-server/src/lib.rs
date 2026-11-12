@@ -45,6 +45,7 @@ pub mod signals;
 pub mod stream;
 mod subtitle_selection;
 pub mod tasks;
+pub mod tools;
 mod torrent;
 mod web_client;
 mod web_patches;
@@ -71,22 +72,6 @@ impl Default for FilesystemPaths {
             dashboard_path: default_dashboard_path(),
             remux_web_path: default_remux_web_path(),
         }
-    }
-}
-
-impl FilesystemPaths {
-    pub fn load_from_env() -> Self {
-        let mut paths = Self::default();
-        if let Ok(v) = std::env::var("WEB_PATH") {
-            paths.web_path = v;
-        }
-        if let Ok(v) = std::env::var("DASHBOARD_PATH") {
-            paths.dashboard_path = v;
-        }
-        if let Ok(v) = std::env::var("REMUX_WEB_PATH") {
-            paths.remux_web_path = v;
-        }
-        paths
     }
 }
 
@@ -121,32 +106,13 @@ pub fn collect_routes() -> axum::Router<AppState> {
     router
 }
 
-pub async fn init_app_with_config(config: Config) -> Result<Router> {
-    let paths = FilesystemPaths::default();
-    let admin = admin_from_filesystem(
-        &paths
-            .dashboard_path
-            .clone(),
-    );
-    let web_path = paths
-        .web_path
+/// [`init_app`] with the web assets read from the filesystem paths in
+/// `config.paths`.
+async fn init_app_from_filesystem(config: Config) -> Result<(Router, AppContext)> {
+    let paths = config
+        .paths
         .clone();
-    let remux_web = RemuxWeb::from_filesystem(&paths.remux_web_path);
-    let (router, _ctx) =
-        init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
-            WebClientService::from_filesystem(&web_path, pool)
-        })
-        .await?;
-    Ok(router)
-}
-
-pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
-    let paths = FilesystemPaths::default();
-    let admin = admin_from_filesystem(
-        &paths
-            .dashboard_path
-            .clone(),
-    );
+    let admin = admin_from_filesystem(&paths.dashboard_path);
     let web_path = paths
         .web_path
         .clone();
@@ -157,24 +123,21 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
     .await
 }
 
+pub async fn init_app_with_config(config: Config) -> Result<Router> {
+    Ok(init_app_from_filesystem(config)
+        .await?
+        .0)
+}
+
+pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
+    init_app_from_filesystem(config).await
+}
+
 /// Start the HTTP server with web assets served from the filesystem.
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
-pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
-    let admin = admin_from_filesystem(
-        &paths
-            .dashboard_path
-            .clone(),
-    );
-    let web_path = paths
-        .web_path
-        .clone();
+pub async fn serve(config: Config) -> Result<()> {
     let addr = std::net::SocketAddr::new(config.host, config.port);
-    let remux_web = RemuxWeb::from_filesystem(&paths.remux_web_path);
-    let (router, _) =
-        init_app(config, Some(paths), admin, Some(remux_web), move |pool| {
-            WebClientService::from_filesystem(&web_path, pool)
-        })
-        .await?;
+    let (router, _) = init_app_from_filesystem(config).await?;
     bind_and_serve(router, addr).await
 }
 
@@ -618,6 +581,13 @@ pub struct Config {
     /// Path to the bgutil-pot binary used by yt-dlp for YouTube POT token generation.
     #[serde(default = "default_bgutil_script_path")]
     pub bgutil_script_path: std::path::PathBuf,
+    /// Extra arguments passed to every yt-dlp call (`YTDLP_EXTRA_ARGS`), split
+    /// on whitespace.
+    #[serde(default)]
+    pub ytdlp_extra_args: Option<String>,
+    /// Web asset locations (`WEB_PATH`, `DASHBOARD_PATH`, `REMUX_WEB_PATH`).
+    #[serde(flatten, default)]
+    pub paths: FilesystemPaths,
     /// Base URL for the TMDB API. Overridable for testing.
     #[serde(default = "default_tmdb_base_url")]
     pub tmdb_base_url: String,
@@ -776,6 +746,8 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ytdlp_extra_args: None,
+            paths: FilesystemPaths::default(),
             data_dir: default_data_dir(),
             database_url: None,
             torrent_data_dir: None,

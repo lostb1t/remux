@@ -5373,24 +5373,22 @@ mod tests {
     const PROBE_MOVIE: &str = "[imdbid-tt0133093] The Matrix (1999).mp4";
 
     fn make_probeable_mp4(path: &std::path::Path) -> bool {
-        std::process::Command::new(
-            std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into()),
-        )
-        .args([
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=duration=1:size=64x64:rate=5",
-            "-pix_fmt",
-            "yuv420p",
-            "-y",
-        ])
-        .arg(path)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        std::process::Command::new(crate::tools::ffmpeg())
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=64x64:rate=5",
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     async fn stored_probe(ctx: &AppContext, addon_id: Uuid) -> bool {

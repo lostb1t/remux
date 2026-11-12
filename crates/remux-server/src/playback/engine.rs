@@ -41,7 +41,7 @@ pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
         vaapi_device
     };
 
-    let result = tokio::process::Command::new(ffmpeg_bin())
+    let result = tokio::process::Command::new(crate::tools::ffmpeg())
         .args([
             "-v",
             "verbose",
@@ -85,7 +85,7 @@ pub async fn detect_opencl_tonemap(vaapi_device: &str, vaapi_driver: &str) -> bo
         format!(",driver={vaapi_driver}")
     };
 
-    let filters = match tokio::process::Command::new(ffmpeg_bin())
+    let filters = match tokio::process::Command::new(crate::tools::ffmpeg())
         .args(["-hide_banner", "-filters"])
         .hide_console()
         .output()
@@ -104,7 +104,7 @@ pub async fn detect_opencl_tonemap(vaapi_device: &str, vaapi_driver: &str) -> bo
         return false;
     }
 
-    match tokio::process::Command::new(ffmpeg_bin())
+    match tokio::process::Command::new(crate::tools::ffmpeg())
         .args([
             "-v",
             "error",
@@ -138,7 +138,7 @@ pub async fn detect_opencl_tonemap(vaapi_device: &str, vaapi_driver: &str) -> bo
 }
 
 async fn probe_hw_accel() -> HardwareAccelerationType {
-    let supported = match tokio::process::Command::new(ffmpeg_bin())
+    let supported = match tokio::process::Command::new(crate::tools::ffmpeg())
         .args(["-hide_banner", "-hwaccels"])
         .hide_console()
         .output()
@@ -210,10 +210,6 @@ const SEGMENT_KEEP_SECS: u32 = 30;
 /// How far back a live stream can be rewound or paused: the length of its
 /// sliding HLS playlist.
 const LIVE_REWIND_SECS: u32 = 30 * 60;
-
-fn ffmpeg_bin() -> String {
-    std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
-}
 
 /// Send SIGSTOP/SIGCONT to a process by PID on Unix.
 #[cfg(unix)]
@@ -1346,7 +1342,7 @@ async fn run_ffmpeg(
     Option<std::result::Result<std::process::ExitStatus, std::io::Error>>,
     String,
 ) {
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
     cmd.hide_console();
     cmd.args(&args)
         .stderr(Stdio::piped());
@@ -2104,7 +2100,7 @@ pub fn start_progressive_transcode(
     let env_overrides = params
         .accelerator
         .env_overrides();
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
     cmd.hide_console();
     cmd.args(&args)
         .stdout(Stdio::piped())

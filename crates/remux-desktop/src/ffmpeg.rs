@@ -165,10 +165,18 @@ fn system_ffmpeg() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn set_paths(ffmpeg: &Path, ffprobe: &Path) {
-    unsafe {
-        std::env::set_var("FFMPEG_PATH", ffmpeg);
-        std::env::set_var("FFPROBE_PATH", ffprobe);
-    }
+    remux_server::tools::set_paths(
+        Some(
+            ffmpeg
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        Some(
+            ffprobe
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
     tracing::info!(
         ffmpeg = %ffmpeg.display(),
         ffprobe = %ffprobe.display(),
