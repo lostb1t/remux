@@ -1293,7 +1293,7 @@ async fn run_ffmpeg(
         .unwrap_or(0);
     ffmpeg_pid_out.store(pid, Ordering::Relaxed);
     if pid > 0 {
-        let _ = std::fs::write(output_dir.join(".pid"), pid.to_string());
+        let _ = tokio::fs::write(output_dir.join(".pid"), pid.to_string()).await;
     }
     let stderr = child
         .stderr
@@ -1358,7 +1358,8 @@ pub async fn start_transcode(
             .send(TranscodeState::Running);
     }
 
-    std::fs::create_dir_all(&params.output_dir)
+    tokio::fs::create_dir_all(&params.output_dir)
+        .await
         .map_err(|e| anyhow!("Failed to create output dir: {}", e))?;
 
     let session_clone = session.clone();
@@ -1433,8 +1434,8 @@ pub async fn start_transcode(
                     "HW-accelerated transcode failed — retrying with software encoding"
                 );
                 // Clean partial output so the retry starts fresh.
-                let _ = std::fs::remove_dir_all(&params.output_dir);
-                let _ = std::fs::create_dir_all(&params.output_dir);
+                let _ = tokio::fs::remove_dir_all(&params.output_dir).await;
+                let _ = tokio::fs::create_dir_all(&params.output_dir).await;
                 params.accelerator = Box::new(NoAccel);
                 // VPP tonemap can't run without HW; preserve the user's intent by
                 // activating software tonemapping so HDR content isn't washed out.

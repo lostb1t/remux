@@ -1215,7 +1215,7 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
         let _ = kill_tx.send(());
         notification.await;
     }
-    let _ = std::fs::remove_dir_all(&output_dir);
+    let _ = tokio::fs::remove_dir_all(&output_dir).await;
 }
 
 /// Clamp a client-reported play method to what this user's permissions allow,

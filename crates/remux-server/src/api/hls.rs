@@ -363,7 +363,7 @@ async fn create_hls_session(
             .join(&play_session_id);
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
-        let _ = std::fs::remove_dir_all(&output_dir);
+        let _ = tokio::fs::remove_dir_all(&output_dir).await;
         // Use the URL-path item (`id`) to determine liveness so that a specific
         // stream source (MediaSourceId = stream child, kind = Stream) doesn't
         // incorrectly produce is_live = false for live-TV sessions.
@@ -1788,8 +1788,8 @@ async fn hls_segment_inner(
                             notification.await;
                         }
                     }
-                    let _ = std::fs::remove_dir_all(&output_dir);
-                    let _ = std::fs::create_dir_all(&output_dir);
+                    let _ = tokio::fs::remove_dir_all(&output_dir).await;
+                    let _ = tokio::fs::create_dir_all(&output_dir).await;
 
                     // Calculate the seek position from the runtimeTicks query param
                     // (cumulative ticks to start of this segment) provided by our
