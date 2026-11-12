@@ -11,9 +11,6 @@ pub mod lrclib;
 pub mod media_tracker;
 pub mod opendal;
 pub mod probe;
-// Not registered as a preset yet: kept until it's decided whether it ships.
-#[allow(dead_code)]
-pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;

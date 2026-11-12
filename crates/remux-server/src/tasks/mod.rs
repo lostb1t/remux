@@ -33,9 +33,6 @@ mod refresh_all_meta;
 mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
-// Not registered with the task service yet: kept until it's decided whether it ships.
-#[allow(dead_code)]
-mod series_sync;
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
@@ -313,7 +310,6 @@ impl TaskService {
         service
             .register_task(Arc::new(RefreshAllMetaTask))
             .await?;
-        // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service
             .register_task(Arc::new(PurgeMediaTask))
             .await?;
