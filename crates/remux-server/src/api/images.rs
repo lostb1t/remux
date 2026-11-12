@@ -106,6 +106,32 @@ async fn items_images_inner(
                     .to_string()
                     .parse()
                     .unwrap_or(ImageKind::Primary);
+                // A picked version comes back as an item with its own id but
+                // the owner's image tags (see `api/items.rs`), so a version
+                // without artwork of its own serves the owner's.
+                let media = match (
+                    media
+                        .kind
+                        .clone(),
+                    media.parent_id,
+                ) {
+                    (db::MediaKind::Stream, Some(parent))
+                        if media
+                            .images
+                            .get(kind)
+                            .is_none() =>
+                    {
+                        db::Media::get_by_id(
+                            &state
+                                .ctx
+                                .db,
+                            &parent,
+                        )
+                        .await?
+                        .unwrap_or(media)
+                    }
+                    _ => media,
+                };
                 let is_collection = matches!(media.kind, db::MediaKind::Collection);
                 // Thumb falls back to a synthesized Backdrop+Logo composite
                 // (below) when a Backdrop exists; only falls back to Primary

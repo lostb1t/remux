@@ -1419,15 +1419,19 @@ async fn videos_stream_inner(
     // ID, group ID, or original stream ID even after probe fallback;
     // resolving that ID directly would serve a different stream than the
     // one whose media info the client was given.
+    // A version held as the item id maps back to its owner first, so the saved
+    // selection is looked up under the same key PlaybackInfo stored it with.
+    let (id, media_source_id) =
+        StreamService::version_target(&state.ctx, user_id, id, q.media_source_id).await;
     let selected = StreamService::selected_stream_id(
         &state.ctx,
         device_id.as_deref(),
         id,
-        q.media_source_id,
+        media_source_id,
         q.play_session_id
             .as_deref(),
     );
-    let requested_id = selected.or(q.media_source_id);
+    let requested_id = selected.or(media_source_id);
     let media = StreamService::lookup(
         &state.ctx,
         id,

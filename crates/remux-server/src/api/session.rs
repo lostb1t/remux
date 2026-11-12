@@ -227,6 +227,47 @@ pub async fn report_playback_start(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// The item a progress/stop report is about. A version id maps back to its
+/// owner, but a stream group's owner is only the last item it was browsed under
+/// (`StreamService::get_group_item`), which another title sharing the group can
+/// overwrite mid-playback. The live session knows what it started, so it wins.
+async fn report_item_id(
+    state: &AppState,
+    session: &auth::AuthSession,
+    data: &api::PlaybackInfo,
+) -> Uuid {
+    let mapped = MediaResolveService::playable_item_id(
+        &state.ctx,
+        session
+            .user
+            .id,
+        data.item_id,
+    )
+    .await;
+    if mapped == data.item_id {
+        return mapped;
+    }
+    data.play_session_id
+        .as_deref()
+        .and_then(|psid| {
+            state
+                .ctx
+                .sessions
+                .get(psid)
+        })
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get_by_device(
+                    &session
+                        .device
+                        .id,
+                )
+        })
+        .map_or(mapped, |s| s.item_id)
+}
+
 #[post("/sessions/playing/progress")]
 pub async fn report_playback_progress(
     State(state): State<AppState>,
@@ -237,14 +278,7 @@ pub async fn report_playback_progress(
         .item_id
         .is_nil()
     {
-        data.item_id = MediaResolveService::playable_item_id(
-            &state.ctx,
-            session
-                .user
-                .id,
-            data.item_id,
-        )
-        .await;
+        data.item_id = report_item_id(&state, &session, &data).await;
     }
     // Jellyfin clients keep reporting while paused, so the transition is what
     // marks a real pause; the position is read before the session is updated.
@@ -394,14 +428,7 @@ pub async fn report_playback_stopped(
         .item_id
         .is_nil()
     {
-        data.item_id = MediaResolveService::playable_item_id(
-            &state.ctx,
-            session
-                .user
-                .id,
-            data.item_id,
-        )
-        .await;
+        data.item_id = report_item_id(&state, &session, &data).await;
     }
     let effective_psid = data
         .play_session_id
