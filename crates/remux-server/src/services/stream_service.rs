@@ -4,6 +4,7 @@ use crate::{
     db,
     db::PreProbeQualityExt,
     device_profile::SourceRankingContext,
+    ids::{ItemId, StreamGroupId, UserId},
     playback::probe::{ProbeOutcome, probe_stream, resolve_stream_root},
 };
 use remux_sdks::{remux::StreamFilter, remuxdb};
@@ -409,7 +410,7 @@ impl StreamService {
     /// [`VersionId`]: crate::services::VersionId
     pub(crate) async fn version_target(
         ctx: &AppContext,
-        user_id: Option<Uuid>,
+        user_id: Option<UserId>,
         item_id: Uuid,
         requested_id: Option<Uuid>,
     ) -> (Uuid, Option<Uuid>) {
@@ -439,8 +440,9 @@ impl StreamService {
                     .map(|owner| (owner, item_id)),
                 db::MediaKind::StreamGroup => user_id
                     .and_then(|user_id| {
-                        Self::get_group_item(&ctx.store, user_id, row.id)
+                        Self::get_group_item(&ctx.store, user_id, StreamGroupId(row.id))
                     })
+                    .map(ItemId::uuid)
                     .map(|owner| (owner, item_id)),
                 _ => None,
             },
@@ -473,7 +475,7 @@ impl StreamService {
         user_id: Option<Uuid>,
     ) -> anyhow::Result<db::Media> {
         let (item_id, requested_id) =
-            Self::version_target(ctx, user_id, item_id, requested_id).await;
+            Self::version_target(ctx, user_id.map(UserId), item_id, requested_id).await;
         let lookup_id = requested_id.unwrap_or(item_id);
         // Resolve the id the way PlaybackInfo does: `resolve_item` is
         // `get_by_id` plus the synthetic-id path (search/catalog ids that have
@@ -1470,9 +1472,9 @@ impl StreamService {
                 &self
                     .ctx
                     .store,
-                uid,
-                *gid,
-                self.item_id,
+                UserId(uid),
+                StreamGroupId(*gid),
+                ItemId(self.item_id),
             );
         }
     }
@@ -1484,9 +1486,9 @@ impl StreamService {
     /// TTL is 7 days — long enough to survive normal browsing sessions.
     pub fn save_group_item(
         store: &remux_utils::Store,
-        user_id: Uuid,
-        group_id: Uuid,
-        item_id: Uuid,
+        user_id: UserId,
+        group_id: StreamGroupId,
+        item_id: ItemId,
     ) {
         store.save(
             crate::store_keys::group_item(user_id, group_id),
@@ -1501,11 +1503,11 @@ impl StreamService {
     /// or the mapping has expired. Callers should surface a 404 in that case.
     pub fn get_group_item(
         store: &remux_utils::Store,
-        user_id: Uuid,
-        group_id: Uuid,
-    ) -> Option<Uuid> {
+        user_id: UserId,
+        group_id: StreamGroupId,
+    ) -> Option<ItemId> {
         store
-            .get::<Uuid>(crate::store_keys::group_item(user_id, group_id))
+            .get::<ItemId>(crate::store_keys::group_item(user_id, group_id))
             .map(|id| *id)
     }
 }
@@ -1764,10 +1766,15 @@ mod tests {
             .save(&ctx.db)
             .await
             .unwrap();
-        StreamService::save_group_item(&ctx.store, user, group.id, movie.id);
+        StreamService::save_group_item(
+            &ctx.store,
+            UserId(user),
+            StreamGroupId(group.id),
+            ItemId(movie.id),
+        );
 
         let target = |item, requested| {
-            StreamService::version_target(ctx, Some(user), item, requested)
+            StreamService::version_target(ctx, Some(UserId(user)), item, requested)
         };
         assert_eq!(
             target(stream.id, Some(stream.id)).await,
@@ -1781,7 +1788,12 @@ mod tests {
         // A group's version id names its title, whatever the shared group id
         // was last browsed under, also when sent as the source of the title.
         let version = crate::services::VersionId::new(movie.id, group.id).id();
-        StreamService::save_group_item(&ctx.store, user, group.id, Uuid::new_v4());
+        StreamService::save_group_item(
+            &ctx.store,
+            UserId(user),
+            StreamGroupId(group.id),
+            ItemId(Uuid::new_v4()),
+        );
         assert_eq!(
             target(version, Some(version)).await,
             (movie.id, Some(group.id))
@@ -1796,7 +1808,12 @@ mod tests {
             target(movie.id, Some(version)).await,
             (movie.id, Some(group.id))
         );
-        StreamService::save_group_item(&ctx.store, user, group.id, movie.id);
+        StreamService::save_group_item(
+            &ctx.store,
+            UserId(user),
+            StreamGroupId(group.id),
+            ItemId(movie.id),
+        );
         // Anything else is left alone, including an item with a source named.
         assert_eq!(target(movie.id, None).await, (movie.id, None));
         assert_eq!(
@@ -1805,8 +1822,13 @@ mod tests {
         );
         // A group this user never browsed has no owner to go back to.
         assert_eq!(
-            StreamService::version_target(ctx, Some(Uuid::new_v4()), group.id, None)
-                .await,
+            StreamService::version_target(
+                ctx,
+                Some(UserId(Uuid::new_v4())),
+                group.id,
+                None
+            )
+            .await,
             (group.id, None)
         );
     }

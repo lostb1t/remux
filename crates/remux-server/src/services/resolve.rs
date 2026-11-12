@@ -1,3 +1,4 @@
+use crate::ids::ItemId;
 use axum::{
     extract::{FromRequestParts, Path},
     http::request::Parts,
@@ -10,7 +11,11 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppContext, AppState, db, keyed_lock::KeyedLock, sdks, sdks::CachedEndpoint,
+    AppContext, AppState, db,
+    ids::{StreamGroupId, UserId},
+    keyed_lock::KeyedLock,
+    sdks,
+    sdks::CachedEndpoint,
 };
 
 /// A mapping that exists never changes, unlike the metadata the addon caches.
@@ -1266,7 +1271,7 @@ impl MediaResolveService {
     /// episode or movie it plays. Any other id is returned as is.
     pub(crate) async fn playable_item_id(
         ctx: &AppContext,
-        user_id: Uuid,
+        user_id: UserId,
         id: Uuid,
     ) -> Uuid {
         match db::Media::get_by_id(&ctx.db, &id).await {
@@ -1284,7 +1289,7 @@ impl MediaResolveService {
     /// [`Self::playable_item_id`]).
     pub(crate) async fn resolve_playable_item(
         id: Uuid,
-        user_id: Uuid,
+        user_id: UserId,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
         if db::Media::get_by_id(&ctx.db, &id)
@@ -1309,15 +1314,18 @@ impl MediaResolveService {
     /// The item a stream, or a stream group, is a version of.
     async fn version_owner(
         ctx: &AppContext,
-        user_id: Uuid,
+        user_id: UserId,
         media: &db::Media,
     ) -> Option<db::Media> {
         let owner_id = match media.kind {
             db::MediaKind::Stream => media.parent_id,
             db::MediaKind::StreamGroup => {
                 crate::services::StreamService::get_group_item(
-                    &ctx.store, user_id, media.id,
+                    &ctx.store,
+                    user_id,
+                    StreamGroupId(media.id),
                 )
+                .map(ItemId::uuid)
             }
             _ => None,
         }?;
@@ -1386,9 +1394,11 @@ impl FromRequestParts<AppState> for PlayableItemId {
             crate::db::auth::AuthSession::from_request_parts(parts, state).await?;
         let id = MediaResolveService::playable_item_id(
             &state.ctx,
-            session
-                .user
-                .id,
+            UserId(
+                session
+                    .user
+                    .id,
+            ),
             requested,
         )
         .await;

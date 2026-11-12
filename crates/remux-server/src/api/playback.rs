@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use anyhow::anyhow;
 use axum::Json;
 
@@ -215,11 +216,11 @@ async fn items_playbackinfo_inner(
 ) -> Result<impl IntoResponse> {
     let (id, media_source_id) = StreamService::version_target(
         &state.ctx,
-        Some(
+        Some(UserId(
             session
                 .user
                 .id,
-        ),
+        )),
         id,
         q.media_source_id,
     )
@@ -1378,8 +1379,13 @@ async fn videos_stream_inner(
     // one whose media info the client was given.
     // A version held as the item id maps back to its owner first, so the saved
     // selection is looked up under the same key PlaybackInfo stored it with.
-    let (id, media_source_id) =
-        StreamService::version_target(&state.ctx, user_id, id, q.media_source_id).await;
+    let (id, media_source_id) = StreamService::version_target(
+        &state.ctx,
+        user_id.map(UserId),
+        id,
+        q.media_source_id,
+    )
+    .await;
     let selected = StreamService::selected_stream_id(
         &state.ctx,
         device_id.as_deref(),

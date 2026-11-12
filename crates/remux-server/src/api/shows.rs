@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use std::collections::HashMap;
 
 use axum::{Json, extract::State, response::IntoResponse};
@@ -107,9 +108,11 @@ pub async fn shows_episodes(
         // picked version's id after a version pick: start at its episode.
         let start_id = crate::services::MediaResolveService::playable_item_id(
             &state.ctx,
-            session
-                .user
-                .id,
+            UserId(
+                session
+                    .user
+                    .id,
+            ),
             start_id,
         )
         .await;

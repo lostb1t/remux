@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use std::sync::Arc;
 
 use axum::{
@@ -60,10 +61,10 @@ async fn version_as_source(
 ) -> Uuid {
     let (id, media_source_id) = crate::services::StreamService::version_target(
         &state.ctx,
-        Some(
+        Some(UserId(
             auth.user
                 .id,
-        ),
+        )),
         id,
         q.media_source_id,
     )

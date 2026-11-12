@@ -1,5 +1,9 @@
-use crate::services::{
-    MediaResolveService, StreamService, image::ImageService, resolve::PlayableItemId,
+use crate::{
+    ids::{ItemId, StreamGroupId, UserId},
+    services::{
+        MediaResolveService, StreamService, image::ImageService,
+        resolve::PlayableItemId,
+    },
 };
 use axum::{
     Json,
@@ -1869,12 +1873,14 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    target_user_id.unwrap_or(
-                        session
-                            .user
-                            .id,
+                    UserId(
+                        target_user_id.unwrap_or(
+                            session
+                                .user
+                                .id,
+                        ),
                     ),
-                    m.id,
+                    StreamGroupId(m.id),
                 )
                 .context_not_found("stream group not yet associated with an item")?
             }
@@ -1884,12 +1890,15 @@ async fn item_for_user(
                         .is_some() =>
             {
                 requested_stream = Some(m.id);
-                m.parent_id
-                    .unwrap_or(m.id)
+                ItemId(
+                    m.parent_id
+                        .unwrap_or(m.id),
+                )
             }
-            Some(m) => m.id,
+            Some(m) => ItemId(m.id),
             None => return Ok(None),
         }
+        .uuid()
     };
     let mut media = db::Media::get_by_filter(
         &state
@@ -2115,11 +2124,13 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    session
-                        .user
-                        .id,
-                    gid,
-                    media.id,
+                    UserId(
+                        session
+                            .user
+                            .id,
+                    ),
+                    StreamGroupId(gid),
+                    ItemId(media.id),
                 );
             }
         }
@@ -2240,11 +2251,13 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    session
-                        .user
-                        .id,
-                    gid,
-                    media.id,
+                    UserId(
+                        session
+                            .user
+                            .id,
+                    ),
+                    StreamGroupId(gid),
+                    ItemId(media.id),
                 );
             }
         }
@@ -4246,6 +4259,7 @@ pub async fn media_segments(
 
 #[cfg(test)]
 mod tests {
+    use crate::ids::{ItemId, StreamGroupId, UserId};
     #[test]
     fn countdown_label_reads_naturally() {
         use super::countdown_label;
@@ -7422,9 +7436,9 @@ mod tests {
             .unwrap();
         crate::services::StreamService::save_group_item(
             &ctx.store,
-            user_id,
-            bluray_group.id,
-            other.id,
+            UserId(user_id),
+            StreamGroupId(bluray_group.id),
+            ItemId(other.id),
         );
         let request = |method: http::Method, path: String| {
             server

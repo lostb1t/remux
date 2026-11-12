@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use axum::{
     Json,
     extract::{Path, State},
@@ -170,9 +171,11 @@ pub async fn report_playback_start(
     {
         data.item_id = MediaResolveService::playable_item_id(
             &state.ctx,
-            session
-                .user
-                .id,
+            UserId(
+                session
+                    .user
+                    .id,
+            ),
             data.item_id,
         )
         .await;
@@ -320,9 +323,11 @@ async fn report_item_id(
     }
     MediaResolveService::playable_item_id(
         &state.ctx,
-        session
-            .user
-            .id,
+        UserId(
+            session
+                .user
+                .id,
+        ),
         data.item_id,
     )
     .await

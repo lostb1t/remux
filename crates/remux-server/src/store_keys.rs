@@ -4,6 +4,8 @@
 
 use uuid::Uuid;
 
+use crate::ids::{StreamGroupId, UserId};
+
 /// A Quick Connect request, by its secret.
 pub fn quick_connect(secret: &str) -> String {
     format!("qc:{secret}")
@@ -25,7 +27,7 @@ pub fn play_session_tracks(play_session_id: &str) -> String {
 }
 
 /// The item a user last saw a stream group under.
-pub fn group_item(user_id: Uuid, group_id: Uuid) -> String {
+pub fn group_item(user_id: UserId, group_id: StreamGroupId) -> String {
     format!("gitem:{user_id}:{group_id}")
 }
 
