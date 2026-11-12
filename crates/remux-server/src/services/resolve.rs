@@ -1260,6 +1260,61 @@ impl MediaResolveService {
         Box::pin(Self::persist_from_store(id, ctx)).await
     }
 
+    /// The item a version belongs to. A client that picked a version (Android TV
+    /// refetches the item by its source id and plays that) holds the version's
+    /// id as the item id, but watch state, favorites and ratings belong to the
+    /// episode or movie it plays. Any other id is returned as is.
+    pub(crate) async fn playable_item_id(
+        ctx: &AppContext,
+        user_id: Uuid,
+        id: Uuid,
+    ) -> Uuid {
+        match db::Media::get_by_id(&ctx.db, &id).await {
+            Ok(Some(media)) => Self::version_owner(ctx, user_id, &media)
+                .await
+                .map_or(id, |owner| owner.id),
+            _ => id,
+        }
+    }
+
+    /// [`Self::resolve_item`], but a version resolves to the item it plays (see
+    /// [`Self::playable_item_id`]).
+    pub(crate) async fn resolve_playable_item(
+        id: Uuid,
+        user_id: Uuid,
+        ctx: &AppContext,
+    ) -> anyhow::Result<Option<db::Media>> {
+        let Some(media) = Self::resolve_item(id, ctx).await? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            Self::version_owner(ctx, user_id, &media)
+                .await
+                .unwrap_or(media),
+        ))
+    }
+
+    /// The item a stream, or a stream group, is a version of.
+    async fn version_owner(
+        ctx: &AppContext,
+        user_id: Uuid,
+        media: &db::Media,
+    ) -> Option<db::Media> {
+        let owner_id = match media.kind {
+            db::MediaKind::Stream => media.parent_id,
+            db::MediaKind::StreamGroup => {
+                crate::services::StreamService::get_group_item(
+                    &ctx.store, user_id, media.id,
+                )
+            }
+            _ => None,
+        }?;
+        db::Media::get_by_id(&ctx.db, &owner_id)
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Resolves a batch of possibly-transient UUIDs to their stable persisted IDs.
     /// Uses `media.id` from the resolved item (not the input ID) since `persist_from_store`
     /// may recompute a stable UUID from external IDs. Unresolvable IDs are skipped.
@@ -1281,6 +1336,53 @@ impl MediaResolveService {
 }
 
 static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+
+/// Axum extractor for the `{id}` of a route that acts on an item: its id with a
+/// picked version mapped back to the item that version belongs to.
+///
+/// `GET /items/{version}` answers with the version as an item of its own (see
+/// `item_for_user`), so clients send that id back to every item route they
+/// call afterwards. Taking a plain `Path<Uuid>` there acts on the stream or
+/// stream group row instead of the movie or episode: no similar items, no
+/// media segments, metadata edits written to the stream. Use this instead of
+/// `Path<Uuid>` for any such route. Playback routes keep the version as the
+/// requested source instead, via `StreamService::version_target`.
+pub(crate) struct PlayableItemId {
+    /// The item to act on.
+    pub id: Uuid,
+    /// The id the client sent, for echoing back in the response.
+    pub requested: Uuid,
+}
+
+impl FromRequestParts<AppState> for PlayableItemId {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let Path(requested) = Path::<Uuid>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| {
+                ApiError::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .title("Bad Request")
+                    .detail("invalid item id")
+                    .build()
+            })?;
+        let session =
+            crate::db::auth::AuthSession::from_request_parts(parts, state).await?;
+        let id = MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            requested,
+        )
+        .await;
+        Ok(PlayableItemId { id, requested })
+    }
+}
 
 /// Axum extractor that resolves the `{id}` path parameter to a persisted `db::Media` row.
 ///

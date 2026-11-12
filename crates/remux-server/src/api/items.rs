@@ -1,4 +1,6 @@
-use crate::services::{MediaResolveService, StreamService, image::ImageService};
+use crate::services::{
+    MediaResolveService, StreamService, image::ImageService, resolve::PlayableItemId,
+};
 use anyhow::Context;
 use axum::{
     Json,
@@ -1124,7 +1126,7 @@ pub async fn items_root(
 pub async fn items_ancestors(
     State(state): State<AppState>,
     _session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
 ) -> Result<impl IntoResponse> {
     let ancestors = db::Media::get_ancestors(
         &state
@@ -1166,7 +1168,7 @@ pub async fn delete_item(
 pub async fn refresh_item(
     State(state): State<AppState>,
     _session: auth::AdminSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
     Query(q): Query<api::RefreshItemQuery>,
 ) -> Result<StatusCode> {
     let mut media = db::Media::get_by_id(
@@ -1533,7 +1535,7 @@ pub async fn items_theme_songs(
 pub async fn items_intros(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
 ) -> Result<impl IntoResponse> {
     crate::api::intro::get_intros_inner(state, session, id).await
 }
@@ -1557,7 +1559,7 @@ pub struct RemoteImagesQuery {
 pub async fn items_remote_images(
     State(state): State<AppState>,
     _session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
     Query(q): Query<RemoteImagesQuery>,
 ) -> Result<impl IntoResponse> {
     let media = match db::Media::get_by_id(
@@ -1832,9 +1834,9 @@ async fn item_for_user(
     // and then play MediaSources[0], so the requested group must end up first and
     // keep its own UUID instead of the item id stamped by `db_media_to_item`.
     let mut requested_group: Option<Uuid> = None;
-    // jellyfin-web 12.x refetches the item by the picked version's id, which is a
-    // plain stream when no group covers it. Answer with the parent item so the
-    // page stays put, with that stream first.
+    // Same for a plain stream picked as a version (no group covers it): the
+    // parent's metadata, with that stream first. The response keeps the
+    // stream's id as the item id, see the comment above `base_item.id = version`.
     let mut requested_stream: Option<Uuid> = None;
     let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
         Some(m) if m.kind == db::MediaKind::StreamGroup => {
@@ -2459,6 +2461,39 @@ async fn item_for_user(
                 source.e_tag = sid;
             }
         }
+    }
+
+    // A version fetched by its id (picked in a client's version list) must come
+    // back as a FULL item whose Id is that version's id and whose first source
+    // carries the same id. This is how Jellyfin does it: every version is an item
+    // of its own. Two clients depend on both halves, and each regressed when we
+    // answered differently:
+    //  - Android TV's external player only plays a source whose id equals the
+    //    item id, else it toasts "No playable items" (#661, #696). Returning the
+    //    parent item here (the #673 change) broke exactly this.
+    //  - jellyfin-web 12.x reloads the page from the picked version's item
+    //    (`refreshSelectedVersion`). A bare stream row loses the poster, Play
+    //    button and version list (#673), so it needs the parent's metadata.
+    // Hence: parent's metadata, version's id. Everything keyed by an item id
+    // (playback, reporting, watch state) maps it back to the owner: see
+    // `StreamService::version_target` and `MediaResolveService::playable_item_id`.
+    // Do not special-case a client here, and do not return the parent's id.
+    // Without MediaSources in `Fields` there is no source list to check, but the
+    // item is still that version.
+    let version = if needs_streams {
+        hoisted_group.or(requested_stream.filter(|sid| {
+            media
+                .sources
+                .as_ref()
+                .and_then(|s| s.first())
+                .map(|s| s.id)
+                == Some(*sid)
+        }))
+    } else {
+        requested_group.or(requested_stream)
+    };
+    if let Some(version) = version {
+        base_item.id = version;
     }
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
@@ -3326,7 +3361,7 @@ fn external_id_infos_for_kind(kind: db::MediaKind) -> Vec<api::ExternalIdInfo> {
 pub async fn items_metadata_editor(
     State(state): State<AppState>,
     _session: auth::AdminSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
 ) -> Result<impl IntoResponse> {
     let item = db::Media::get_by_id(
         &state
@@ -3428,7 +3463,7 @@ struct GetSimilarItemsQuery {
 pub async fn items_similar(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
     Query(q): Query<GetSimilarItemsQuery>,
 ) -> Result<impl IntoResponse> {
     let limit = q
@@ -3601,7 +3636,7 @@ struct UpdateItemRequest {
 pub async fn update_item(
     State(state): State<AppState>,
     _session: auth::AdminSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, .. }: PlayableItemId,
     Json(payload): Json<UpdateItemRequest>,
 ) -> Result<StatusCode> {
     let mut media = db::Media::get_by_id(
@@ -4127,7 +4162,7 @@ fn segments_to_dtos(
 #[get("/mediasegments/{id}")]
 pub async fn media_segments(
     _session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    PlayableItemId { id, requested }: PlayableItemId,
     Query(q): Query<SegmentQuery>,
     State(state): State<crate::AppState>,
 ) -> Result<impl IntoResponse> {
@@ -4165,7 +4200,7 @@ pub async fn media_segments(
         .addons
         .fetch_segments(&media, &state.ctx, false)
         .await;
-    let dtos = segments_to_dtos(id, id, &segs, filter_ref);
+    let dtos = segments_to_dtos(requested, requested, &segs, filter_ref);
 
     let count = dtos.len();
     Ok(Json(serde_json::json!({
@@ -7337,11 +7372,370 @@ mod tests {
             body2["Id"]
                 .as_str()
                 .unwrap(),
-            movie
+            bluray_group
                 .id
                 .simple()
                 .to_string(),
-            "the item itself is still the parent movie"
+            "a picked version is an item of its own, as in Jellyfin"
+        );
+
+        // Playing the picked group as the item the client now holds still works,
+        // and the session is recorded against the movie.
+        let resp3 = server
+            .post(&format!(
+                "/items/{}/playbackinfo?mediaSourceId={}",
+                bluray_group.id,
+                bluray_group
+                    .id
+                    .simple()
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({}))
+            .await;
+        resp3.assert_status_ok();
+        let info: serde_json::Value = resp3.json();
+        assert_eq!(
+            info["MediaSources"][0]["Name"]
+                .as_str()
+                .unwrap(),
+            "1080p · Blu-ray",
+            "PlaybackInfo for the picked group must offer that group"
+        );
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({
+                "ItemId": bluray_group.id.simple().to_string(),
+                "MediaSourceId": bluray_group.id.simple().to_string(),
+                "PlaySessionId": "picked-group-session",
+                "PositionTicks": 0,
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            ctx.sessions
+                .get("picked-group-session")
+                .map(|s| s.item_id),
+            Some(movie.id),
+            "playback of a picked group is reported against the movie"
+        );
+
+        // Groups are shared between titles: opening another title that has
+        // this group remaps it mid-playback. The live session still knows it
+        // is playing the movie.
+        let other =
+            insert_media(&ctx.db, "Other Movie", db::MediaKind::Movie, "tt7777779")
+                .await;
+        crate::services::StreamService::save_group_item(
+            &ctx.store,
+            ctx.sessions
+                .get("picked-group-session")
+                .unwrap()
+                .user_id,
+            bluray_group.id,
+            other.id,
+        );
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({
+                "ItemId": bluray_group.id.simple().to_string(),
+                "MediaSourceId": bluray_group.id.simple().to_string(),
+                "PlaySessionId": "picked-group-session",
+                "PositionTicks": 600_000_000i64,
+            }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        let position = |id: uuid::Uuid| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MAX(playback_position), 0) FROM user_media_state WHERE media_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&ctx.db)
+        };
+        assert!(
+            position(movie.id)
+                .await
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            position(other.id)
+                .await
+                .unwrap(),
+            0
+        );
+
+        // A group's poster is found by its tag: the group itself is shared and
+        // has no artwork.
+        let dir = tempfile::tempdir().unwrap();
+        let poster = dir
+            .path()
+            .join("poster.png");
+        image::RgbImage::new(1, 1)
+            .save(&poster)
+            .unwrap();
+        db::MediaImage::save(
+            &ctx.db,
+            movie.id,
+            db::ImageKind::Primary,
+            poster
+                .to_str()
+                .unwrap(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let tag = db::MediaImage::get_for_media(&ctx.db, &movie.id)
+            .await
+            .unwrap()
+            .get(db::ImageKind::Primary)
+            .unwrap()
+            .id;
+        server
+            .get(&format!(
+                "/items/{}/images/primary?tag={tag}",
+                bluray_group.id
+            ))
+            .await
+            .assert_status_ok();
+    }
+
+    /// As in Jellyfin, fetching a version by its id returns that version as the
+    /// item, with its own source first. Android TV refetches it when a version
+    /// is picked and only plays a source whose id equals the item id, otherwise
+    /// it toasts "No playable items". Watch state still belongs to the movie.
+    #[tokio::test]
+    async fn a_picked_version_comes_back_as_an_item_of_its_own() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = Utc::now().naive_utc();
+
+        let movie =
+            insert_media(&ctx.db, "Test Movie", db::MediaKind::Movie, "tt7777777")
+                .await;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        let mut streams = vec![];
+        for (idx, filename) in [
+            (0, "TestMovie.2026.1080p.WEB-DL.H264.mkv"),
+            (1, "TestMovie.2026.1080p.BluRay.x264.mkv"),
+        ] {
+            let mut stream = db::Media {
+                title: filename.to_string(),
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie.id),
+                idx: Some(idx),
+                stream_info: Some(crate::stream::StreamInfo {
+                    descriptor: crate::stream::StreamDescriptor::Local(filename.into()),
+                    filename: Some(filename.to_string()),
+                    ..Default::default()
+                }),
+                created_at: now,
+                updated_at: now,
+                ..Default::default()
+            };
+            stream
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            streams.push(stream);
+        }
+        let item = |id: uuid::Uuid, auth: String| {
+            let server = &server;
+            async move {
+                let resp = server
+                    .get(&format!("/items/{id}"))
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(&auth).unwrap(),
+                    )
+                    .await;
+                resp.assert_status_ok();
+                resp.json::<serde_json::Value>()
+            }
+        };
+        let simple = |id: uuid::Uuid| {
+            id.simple()
+                .to_string()
+        };
+        let sources_of = |body: &serde_json::Value| -> Vec<String> {
+            body["MediaSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    s["Id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        // Loading the item first, as the client does, is what lists the versions.
+        item(movie.id, auth.clone()).await;
+        let picked = streams[1].id;
+
+        let body = item(picked, auth.clone()).await;
+        assert_eq!(body["Id"], simple(picked));
+        assert!(
+            sources_of(&body).contains(&simple(picked)),
+            "a source must carry the item id, or the external player bails"
+        );
+        assert_eq!(sources_of(&body)[0], simple(picked), "the pick plays first");
+
+        // Marking the picked version watched marks the movie.
+        server
+            .post(&format!("/userplayeditems/{picked}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .assert_status_ok();
+        let played = |id: uuid::Uuid| {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT COALESCE(MAX(play_count), 0) > 0 FROM user_media_state WHERE media_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&ctx.db)
+        };
+        assert!(
+            played(movie.id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !played(picked)
+                .await
+                .unwrap()
+        );
+
+        // The version carries the movie's image tags; its poster must load.
+        let dir = tempfile::tempdir().unwrap();
+        let poster = dir
+            .path()
+            .join("poster.png");
+        image::RgbImage::new(1, 1)
+            .save(&poster)
+            .unwrap();
+        db::MediaImage::save(
+            &ctx.db,
+            movie.id,
+            db::ImageKind::Primary,
+            poster
+                .to_str()
+                .unwrap(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let tag = item(picked, auth.clone()).await["ImageTags"]["Primary"]
+            .as_str()
+            .expect("the version shows the movie's poster")
+            .to_string();
+        server
+            .get(&format!("/items/{picked}/images/primary?tag={tag}"))
+            .await
+            .assert_status_ok();
+
+        // Item routes act on the movie: its ancestors don't include itself, a
+        // stream's do.
+        let resp = server
+            .get(&format!("/items/{picked}/ancestors"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let ancestors: Vec<String> = resp
+            .json::<serde_json::Value>()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                a["Id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert!(!ancestors.contains(&simple(movie.id)));
+
+        // Android TV's external player only sends a stop, without a
+        // PlaySessionId. A session of another title on the device must not
+        // take the position.
+        let other =
+            insert_media(&ctx.db, "Other Movie", db::MediaKind::Movie, "tt7777778")
+                .await;
+        let report = |path: &'static str, body: serde_json::Value| {
+            let server = &server;
+            let auth = auth.clone();
+            async move {
+                server
+                    .post(path)
+                    .add_header(
+                        http::header::AUTHORIZATION,
+                        HeaderValue::from_str(&auth).unwrap(),
+                    )
+                    .json(&body)
+                    .await
+                    .assert_status(http::StatusCode::NO_CONTENT);
+            }
+        };
+        report(
+            "/sessions/playing",
+            serde_json::json!({
+                "ItemId": simple(other.id),
+                "PlaySessionId": "other-title",
+                "PositionTicks": 0,
+            }),
+        )
+        .await;
+        report(
+            "/sessions/playing/stopped",
+            serde_json::json!({
+                "ItemId": simple(picked),
+                "MediaSourceId": simple(picked),
+                "PositionTicks": 600_000_000i64,
+            }),
+        )
+        .await;
+        let position = |id: uuid::Uuid| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MAX(playback_position), 0) FROM user_media_state WHERE media_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&ctx.db)
+        };
+        assert_eq!(
+            position(other.id)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            position(movie.id)
+                .await
+                .unwrap()
+                > 0
         );
     }
 

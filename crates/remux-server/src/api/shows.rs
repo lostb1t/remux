@@ -103,6 +103,16 @@ pub async fn shows_episodes(
         .start_item_id
         .take()
     {
+        // Android TV queues the episodes from the one it holds, which is the
+        // picked version's id after a version pick: start at its episode.
+        let start_id = crate::services::MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            start_id,
+        )
+        .await;
         if q.start_index
             .is_none()
         {
@@ -1158,6 +1168,65 @@ pub(crate) mod test {
             active_series_ids(&db, user.id, Some("2026-06-18")).await,
             vec![legacy_series.id],
         );
+    }
+
+    /// Android TV queues episodes with `startItemId` set to the item it holds,
+    /// which is the picked version's id after a version pick. The queue must
+    /// start at that version's episode, not at the first episode.
+    #[tokio::test]
+    async fn episodes_start_at_the_episode_of_a_picked_version() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+        let (series, eps) = insert_series_with_episodes(
+            db,
+            "Series Version Queue",
+            &["Ep 1", "Ep 2", "Ep 3"],
+        )
+        .await;
+        let mut version = db::Media {
+            title: "Ep2.1080p.mkv".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(eps[1].id),
+            ..Default::default()
+        };
+        version
+            .save(db)
+            .await
+            .unwrap();
+
+        let resp = server
+            .get(&format!(
+                "/shows/{}/episodes?startItemId={}",
+                series.id, version.id
+            ))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let ids: Vec<&str> = body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                i["Id"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect();
+        let simple = |m: &db::Media| {
+            m.id.simple()
+                .to_string()
+        };
+        assert_eq!(ids, vec![simple(&eps[1]), simple(&eps[2])]);
     }
 
     #[tokio::test]

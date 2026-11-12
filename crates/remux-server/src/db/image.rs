@@ -53,6 +53,20 @@ impl MediaImage {
         Ok(MediaImages::from(rows))
     }
 
+    /// The image with this id, which is also its tag in item responses.
+    pub async fn get_by_id(
+        db: &SqlitePool,
+        id: &Uuid,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            "SELECT id, media_id, image_type, image_index, path, width, height \
+             FROM media_images WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await
+    }
+
     /// Batch-load images for a set of media IDs.
     pub async fn get_for_media_ids(
         db: &SqlitePool,

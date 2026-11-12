@@ -50,6 +50,28 @@ fn is_seek(requested_start_secs: u32, is_live: bool, running_start_secs: u32) ->
     !is_live && requested_start_secs != running_start_secs
 }
 
+/// A picked version held as the item id plays its owner with that version as
+/// the source, same as PlaybackInfo and the static stream.
+async fn version_as_source(
+    state: &AppState,
+    auth: &auth::AuthSession,
+    id: Uuid,
+    q: &mut api::HlsVideoQuery,
+) -> Uuid {
+    let (id, media_source_id) = crate::services::StreamService::version_target(
+        &state.ctx,
+        Some(
+            auth.user
+                .id,
+        ),
+        id,
+        q.media_source_id,
+    )
+    .await;
+    q.media_source_id = media_source_id;
+    id
+}
+
 async fn create_hls_session(
     state: &AppState,
     auth: &auth::AuthSession,
@@ -844,9 +866,10 @@ pub async fn master_hls_video(
     State(state): State<AppState>,
     auth: auth::AuthSession,
     Path(id): Path<Uuid>,
-    Query(q): Query<api::HlsVideoQuery>,
+    Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
+    let id = version_as_source(&state, &auth, id, &mut q).await;
     let session = match create_hls_session(&state, &auth, id, &q).await {
         Ok(HlsSessionResult::Transcode(session, _)) => session,
         Ok(HlsSessionResult::Forbidden(detail)) => {
@@ -881,6 +904,7 @@ pub async fn live_hls_video(
     Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     debug!("live_hls_video: item_id={}, q={:?}", id, q);
+    let id = version_as_source(&state, &auth, id, &mut q).await;
     let play_session_id = match create_hls_session(&state, &auth, id, &q).await? {
         HlsSessionResult::Transcode(_, play_session_id) => play_session_id,
         HlsSessionResult::Forbidden(detail) => {
@@ -896,7 +920,7 @@ pub async fn live_hls_video(
 pub async fn variant_hls_video_alt(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Query(q): Query<api::HlsVideoQuery>,
+    Query(mut q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     variant_hls_video_inner(state, q).await
 }

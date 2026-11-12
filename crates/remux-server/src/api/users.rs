@@ -463,7 +463,7 @@ pub async fn mark_favorite(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context("not found")?;
     let ms = media
@@ -491,7 +491,7 @@ pub async fn unmark_favorite(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context("not found")?;
     let ms = media
@@ -517,7 +517,7 @@ async fn unmark_favorite_inner(
     user: db::User,
     id: Uuid,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context("not found")?;
     let ms = media
@@ -565,7 +565,7 @@ pub async fn mark_favorite_modern(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("Item not found")?;
     let s = media
@@ -593,7 +593,7 @@ pub async fn unmark_favorite_modern(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("Item not found")?;
     let s = media
@@ -624,7 +624,7 @@ async fn set_user_flag(
     flag: db::UserFlag,
     on: bool,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("Item not found")?;
     let ms = media
@@ -703,7 +703,7 @@ pub(crate) async fn set_played(
     id: Uuid,
     played: bool,
 ) -> Result<axum::response::Response> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     let (ms, event) = if played {
@@ -824,7 +824,7 @@ pub async fn update_item_rating(
     Path(id): Path<Uuid>,
     Query(q): Query<RatingQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     let rating = q.parse()?;
@@ -855,7 +855,7 @@ pub async fn delete_item_rating(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     let ms = db::UserMediaState::set_rating(
@@ -886,7 +886,7 @@ pub async fn update_item_rating_legacy(
     Path((_, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<RatingQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     let rating = q.parse()?;
@@ -917,7 +917,7 @@ pub async fn delete_item_rating_legacy(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     let ms = db::UserMediaState::set_rating(
@@ -976,7 +976,7 @@ async fn handle_update_item_user_data(
     id: Uuid,
     update: api::UpdateUserItemDataDto,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_item(id, &state.ctx)
+    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
         .await?
         .context_not_found("not found")?;
     if let Some(rating) = update.rating {
