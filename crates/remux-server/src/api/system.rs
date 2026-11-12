@@ -477,12 +477,16 @@ pub async fn quickconnect_initiate(
     state
         .ctx
         .store
-        .save(format!("qc:{secret}"), entry, Duration::from_secs(600));
+        .save(
+            crate::store_keys::quick_connect(&secret),
+            entry,
+            Duration::from_secs(600),
+        );
     state
         .ctx
         .store
         .save(
-            format!("qc:code:{code}"),
+            crate::store_keys::quick_connect_code(&code),
             secret.clone(),
             Duration::from_secs(600),
         );
@@ -518,7 +522,7 @@ pub async fn quickconnect_connect(
     let entry = state
         .ctx
         .store
-        .get::<QuickConnectEntry>(format!("qc:{}", q.secret))
+        .get::<QuickConnectEntry>(crate::store_keys::quick_connect(&q.secret))
         .context_not_found("QuickConnect request not found or expired")?;
 
     Ok(Json(api::QuickConnectResult {
@@ -573,20 +577,20 @@ pub async fn quickconnect_authorize(
     let secret = state
         .ctx
         .store
-        .get::<String>(format!("qc:code:{}", q.code))
+        .get::<String>(crate::store_keys::quick_connect_code(&q.code))
         .context_not_found("QuickConnect code not found or expired")?;
 
     let entry = state
         .ctx
         .store
-        .get::<QuickConnectEntry>(format!("qc:{secret}"))
+        .get::<QuickConnectEntry>(crate::store_keys::quick_connect(&secret))
         .context_not_found("QuickConnect request not found or expired")?;
 
     state
         .ctx
         .store
         .save(
-            format!("qc:{secret}"),
+            crate::store_keys::quick_connect(&secret),
             QuickConnectEntry {
                 authenticated: true,
                 user_id: Some(approved_user_id),

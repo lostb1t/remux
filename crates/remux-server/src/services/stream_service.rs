@@ -542,7 +542,7 @@ impl StreamService {
                 } else if let Some(key) = device_key {
                     let saved = ctx
                         .store
-                        .get::<Uuid>(&format!("pstream:{}:{}", item_id, key));
+                        .get::<Uuid>(crate::store_keys::device_stream(item_id, key));
                     let by_pref = saved.and_then(|sid| {
                         sources
                             .iter()
@@ -1122,7 +1122,7 @@ impl StreamService {
         self.ctx
             .store
             .save(
-                Self::selected_stream_key(play_session_id, source_id),
+                crate::store_keys::session_selected_stream(play_session_id, source_id),
                 effective_stream_id,
                 std::time::Duration::from_secs(24 * 3600),
             );
@@ -1137,7 +1137,10 @@ impl StreamService {
             self.ctx
                 .store
                 .save(
-                    Self::selected_stream_key(play_session_id, self.item_id),
+                    crate::store_keys::session_selected_stream(
+                        play_session_id,
+                        self.item_id,
+                    ),
                     effective_stream_id,
                     std::time::Duration::from_secs(24 * 3600),
                 );
@@ -1175,7 +1178,9 @@ impl StreamService {
     ) {
         ctx.store
             .save(
-                Self::device_selected_stream_key(device_id, item_id, source_id),
+                crate::store_keys::device_selected_stream(
+                    device_id, item_id, source_id,
+                ),
                 effective_stream_id,
                 std::time::Duration::from_secs(24 * 3600),
             );
@@ -1189,7 +1194,10 @@ impl StreamService {
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::selected_stream_key(play_session_id, source_id))
+            .get::<Uuid>(crate::store_keys::session_selected_stream(
+                play_session_id,
+                source_id,
+            ))
             .map(|id| *id)
     }
 
@@ -1205,7 +1213,7 @@ impl StreamService {
         source_id: Uuid,
     ) -> Option<Uuid> {
         ctx.store
-            .get::<Uuid>(Self::device_selected_stream_key(
+            .get::<Uuid>(crate::store_keys::device_selected_stream(
                 device_id, item_id, source_id,
             ))
             .map(|id| *id)
@@ -1348,7 +1356,7 @@ impl StreamService {
             .collect();
         ctx.store
             .save(
-                format!("ptracks:{play_session_id}"),
+                crate::store_keys::play_session_tracks(play_session_id),
                 tracks,
                 std::time::Duration::from_secs(24 * 3600),
             );
@@ -1367,7 +1375,9 @@ impl StreamService {
         let index = i64::from(index);
         if let Some(tracks) = ctx
             .store
-            .get::<Vec<AdvertisedTrack>>(format!("ptracks:{play_session_id}"))
+            .get::<Vec<AdvertisedTrack>>(crate::store_keys::play_session_tracks(
+                play_session_id,
+            ))
         {
             return tracks
                 .iter()
@@ -1439,18 +1449,6 @@ impl StreamService {
         Self::selected_stream_for(ctx, &running.play_session_id, item_id)
     }
 
-    fn device_selected_stream_key(
-        device_id: &str,
-        item_id: Uuid,
-        source_id: Uuid,
-    ) -> String {
-        format!("pstream:device:{device_id}:{item_id}:{source_id}")
-    }
-
-    fn selected_stream_key(play_session_id: &str, source_id: Uuid) -> String {
-        format!("pstream:psid:{play_session_id}:{source_id}")
-    }
-
     /// Persist the resolved stream UUID in the device-preference store (24 h TTL).
     /// Also records the group→item association so /Items/{group_uuid} can redirect
     /// to the correct content item without a DB scan.
@@ -1462,7 +1460,7 @@ impl StreamService {
         self.ctx
             .store
             .save(
-                format!("pstream:{}:{}", self.item_id, device_key),
+                crate::store_keys::device_stream(self.item_id, device_key),
                 self.candidate()
                     .id,
                 std::time::Duration::from_secs(24 * 3600),
@@ -1491,7 +1489,7 @@ impl StreamService {
         item_id: Uuid,
     ) {
         store.save(
-            format!("gitem:{}:{}", user_id, group_id),
+            crate::store_keys::group_item(user_id, group_id),
             item_id,
             std::time::Duration::from_secs(7 * 24 * 3600),
         );
@@ -1507,7 +1505,7 @@ impl StreamService {
         group_id: Uuid,
     ) -> Option<Uuid> {
         store
-            .get::<Uuid>(format!("gitem:{}:{}", user_id, group_id))
+            .get::<Uuid>(crate::store_keys::group_item(user_id, group_id))
             .map(|id| *id)
     }
 }

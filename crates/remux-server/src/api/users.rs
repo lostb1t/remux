@@ -336,7 +336,7 @@ pub async fn authenticate_with_quickconnect(
     let entry = state
         .ctx
         .store
-        .get::<QuickConnectEntry>(format!("qc:{}", body.secret))
+        .get::<QuickConnectEntry>(crate::store_keys::quick_connect(&body.secret))
         .context_unauthorized("QuickConnect request not found or expired")?;
 
     if !entry.authenticated {
@@ -393,11 +393,11 @@ pub async fn authenticate_with_quickconnect(
     state
         .ctx
         .store
-        .delete(format!("qc:{}", body.secret));
+        .delete(crate::store_keys::quick_connect(&body.secret));
     state
         .ctx
         .store
-        .delete(format!("qc:code:{}", entry.code));
+        .delete(crate::store_keys::quick_connect_code(&entry.code));
 
     build_auth_response(&state, device, user).await
 }

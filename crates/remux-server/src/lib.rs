@@ -42,6 +42,7 @@ pub mod playback;
 pub mod playback_session;
 pub mod services;
 pub mod signals;
+pub mod store_keys;
 pub mod stream;
 mod subtitle_selection;
 pub mod tasks;
