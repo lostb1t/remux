@@ -633,7 +633,7 @@ async fn upload_item_image_inner(
 #[post("/items/{id}/images/{image_type}")]
 pub async fn upload_item_image(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    _session: auth::AdminSession,
     Path((id, image_type)): Path<(Uuid, String)>,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -643,7 +643,7 @@ pub async fn upload_item_image(
 #[post("/items/{id}/images/{image_type}/{index}")]
 pub async fn upload_item_image_indexed(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    _session: auth::AdminSession,
     Path((id, image_type, _index)): Path<(Uuid, String, usize)>,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -711,7 +711,7 @@ async fn delete_item_image_inner(
 #[delete("/items/{id}/images/{image_type}")]
 pub async fn delete_item_image(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    _session: auth::AdminSession,
     Path((id, image_type)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
     delete_item_image_inner(state, id, parse_image_kind(&image_type)).await
@@ -720,7 +720,7 @@ pub async fn delete_item_image(
 #[delete("/items/{id}/images/{image_type}/{index}")]
 pub async fn delete_item_image_indexed(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    _session: auth::AdminSession,
     Path((id, image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
     delete_item_image_inner(state, id, parse_image_kind(&image_type)).await
@@ -774,4 +774,96 @@ fn parse_image_kind(s: &str) -> ImageKind {
                 .unwrap_or(ImageKind::Primary)
         })
         .unwrap_or(ImageKind::Primary)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        db,
+        integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server},
+    };
+    use axum::http::{HeaderValue, StatusCode, header::AUTHORIZATION};
+    use serde_json::json;
+
+    /// As in Jellyfin (`RequiresElevation`), only admins change an item's
+    /// artwork; any user could replace or delete posters before.
+    #[tokio::test]
+    async fn only_admins_change_item_artwork() {
+        let (server, guard, admin_token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let admin = auth_header_with_token(&admin_token);
+        let mut movie = db::Media {
+            title: "Movie".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: Some(
+                    db::NonEmptyString::try_new("tt0000001".to_string()).unwrap(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        movie
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        db::MediaImage::save(
+            &ctx.db,
+            movie.id,
+            db::ImageKind::Primary,
+            "/poster.png",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        server
+            .post("/users/new")
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&admin).unwrap())
+            .json(&json!({"Name": "viewer", "Password": "viewer"}))
+            .await
+            .assert_status_ok();
+        let viewer: remux_sdks::remux::AuthenticationInfo = server
+            .post("/users/authenticatebyname")
+            .add_header(AUTHORIZATION, HeaderValue::from_static(AUTH_HEADER))
+            .json(&json!({"Username": "viewer", "Pw": "viewer"}))
+            .await
+            .json();
+        let viewer = auth_header_with_token(
+            viewer
+                .access_token
+                .as_deref()
+                .unwrap(),
+        );
+
+        let path = format!("/items/{}/images/primary", movie.id);
+        server
+            .delete(&path)
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&viewer).unwrap())
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        server
+            .post(&path)
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&viewer).unwrap())
+            .text("aGVsbG8=")
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        assert!(
+            db::MediaImage::get_for_media(&ctx.db, &movie.id)
+                .await
+                .unwrap()
+                .get(db::ImageKind::Primary)
+                .is_some(),
+            "the poster is untouched"
+        );
+
+        server
+            .delete(&path)
+            .add_header(AUTHORIZATION, HeaderValue::from_str(&admin).unwrap())
+            .await
+            .assert_status_success();
+    }
 }
