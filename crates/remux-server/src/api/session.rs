@@ -228,44 +228,66 @@ pub async fn report_playback_start(
 }
 
 /// The item a progress/stop report is about. A version id maps back to its
-/// owner, but a stream group's owner is only the last item it was browsed under
-/// (`StreamService::get_group_item`), which another title sharing the group can
-/// overwrite mid-playback. The live session knows what it started, so it wins.
+/// owner. A stream's owner is its parent, but a stream group's owner is only the
+/// last item it was browsed under (`StreamService::get_group_item`), which
+/// another title sharing the group can overwrite mid-playback. For a group, the
+/// live session playing that group knows what it started, so it wins. Only a
+/// session playing that same group counts: Android TV's external player sends
+/// a bare stop without a PlaySessionId, and the device's latest session may be
+/// another title.
 async fn report_item_id(
     state: &AppState,
     session: &auth::AuthSession,
     data: &api::PlaybackInfo,
 ) -> Uuid {
-    let mapped = MediaResolveService::playable_item_id(
+    let is_group = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &data.item_id,
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_some_and(|m| m.kind == db::MediaKind::StreamGroup);
+    if is_group {
+        let live = data
+            .play_session_id
+            .as_deref()
+            .and_then(|psid| {
+                state
+                    .ctx
+                    .sessions
+                    .get(psid)
+            })
+            .or_else(|| {
+                state
+                    .ctx
+                    .sessions
+                    .get_by_device(
+                        &session
+                            .device
+                            .id,
+                    )
+            })
+            .filter(|s| {
+                s.media_source_id
+                    .as_deref()
+                    .and_then(|sid| Uuid::parse_str(sid).ok())
+                    == Some(data.item_id)
+            });
+        if let Some(live) = live {
+            return live.item_id;
+        }
+    }
+    MediaResolveService::playable_item_id(
         &state.ctx,
         session
             .user
             .id,
         data.item_id,
     )
-    .await;
-    if mapped == data.item_id {
-        return mapped;
-    }
-    data.play_session_id
-        .as_deref()
-        .and_then(|psid| {
-            state
-                .ctx
-                .sessions
-                .get(psid)
-        })
-        .or_else(|| {
-            state
-                .ctx
-                .sessions
-                .get_by_device(
-                    &session
-                        .device
-                        .id,
-                )
-        })
-        .map_or(mapped, |s| s.item_id)
+    .await
 }
 
 #[post("/sessions/playing/progress")]

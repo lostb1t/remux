@@ -1337,6 +1337,53 @@ impl MediaResolveService {
 
 static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
+/// Axum extractor for the `{id}` of a route that acts on an item: its id with a
+/// picked version mapped back to the item that version belongs to.
+///
+/// `GET /items/{version}` answers with the version as an item of its own (see
+/// `item_for_user`), so clients send that id back to every item route they
+/// call afterwards. Taking a plain `Path<Uuid>` there acts on the stream or
+/// stream group row instead of the movie or episode: no similar items, no
+/// media segments, metadata edits written to the stream. Use this instead of
+/// `Path<Uuid>` for any such route. Playback routes keep the version as the
+/// requested source instead, via `StreamService::version_target`.
+pub(crate) struct PlayableItemId {
+    /// The item to act on.
+    pub id: Uuid,
+    /// The id the client sent, for echoing back in the response.
+    pub requested: Uuid,
+}
+
+impl FromRequestParts<AppState> for PlayableItemId {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let Path(requested) = Path::<Uuid>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| {
+                ApiError::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .title("Bad Request")
+                    .detail("invalid item id")
+                    .build()
+            })?;
+        let session =
+            crate::db::auth::AuthSession::from_request_parts(parts, state).await?;
+        let id = MediaResolveService::playable_item_id(
+            &state.ctx,
+            session
+                .user
+                .id,
+            requested,
+        )
+        .await;
+        Ok(PlayableItemId { id, requested })
+    }
+}
+
 /// Axum extractor that resolves the `{id}` path parameter to a persisted `db::Media` row.
 ///
 /// Returns 404 if the ID cannot be resolved even after attempting addon persistence.
