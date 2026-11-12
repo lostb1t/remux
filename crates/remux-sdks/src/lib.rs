@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 extern crate self as remux_sdks;
 
 pub mod deezer;
@@ -27,7 +25,7 @@ use reqwest_retry::{
     default_on_request_failure, default_on_request_success,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
-use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
+use std::{fmt, iter, ops, sync::Arc, time::Duration};
 #[cfg(not(target_arch = "wasm32"))]
 use {md5, remux_utils::Store};
 

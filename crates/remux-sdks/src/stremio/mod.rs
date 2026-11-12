@@ -1,5 +1,4 @@
-use crate::{CachedEndpoint, ClientError, Endpoint, RestClient};
-use http::Method;
+use crate::{CachedEndpoint, Endpoint, RestClient};
 
 use anyhow::Result;
 //use chrono::{DateTime, Utc};
@@ -187,16 +186,7 @@ pub struct Catalog {
     pub extra: Vec<ExtraProp>,
 }
 
-impl Catalog {
-    fn has_search(&self) -> bool {
-        for extra in &self.extra {
-            if extra.name == "search".to_string() {
-                return true;
-            }
-        }
-        false
-    }
-}
+impl Catalog {}
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]

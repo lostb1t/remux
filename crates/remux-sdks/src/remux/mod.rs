@@ -35,19 +35,11 @@ use crate::{Auth, Body, Endpoint, RestClient, stremio};
 #[strum(serialize_all = "PascalCase")]
 pub enum WebhookEvent {
     #[serde(alias = "PlaybackStarted")]
-    #[strum(
-        to_string = "PlaybackStart",
-        serialize = "PlaybackStart",
-        serialize = "PlaybackStarted"
-    )]
+    #[strum(to_string = "PlaybackStart", serialize = "PlaybackStarted")]
     PlaybackStart,
     PlaybackProgress,
     #[serde(alias = "PlaybackStopped")]
-    #[strum(
-        to_string = "PlaybackStop",
-        serialize = "PlaybackStop",
-        serialize = "PlaybackStopped"
-    )]
+    #[strum(to_string = "PlaybackStop", serialize = "PlaybackStopped")]
     PlaybackStop,
     UserDataSaved,
     UserUpdated,
@@ -1930,10 +1922,6 @@ impl GetItemsQuery {
     }
 }
 
-fn bool_true() -> bool {
-    true
-}
-
 pub fn deserialize_query_bool_from_anything<'de, D>(d: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
@@ -3136,7 +3124,6 @@ impl MediaSourceInfo {
                             })
                         {
                             self.default_audio_stream_index = Some(stream.index);
-                            audio_decided = true;
                         }
                     }
                 }
@@ -3157,7 +3144,6 @@ impl MediaSourceInfo {
                             })
                         {
                             self.default_audio_stream_index = Some(stream.index);
-                            audio_decided = true;
                         }
                     }
                 }
