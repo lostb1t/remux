@@ -25,6 +25,39 @@ use crate::{
 // Shared option helper
 // ---------------------------------------------------------------------------
 
+/// What an Opendal library holds (its `media_kind` option), and the kind of
+/// each file in `opendal_files.media_kind` (where subtitles are listed too).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    strum_macros::AsRefStr,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum OpendalKind {
+    Movie,
+    Episode,
+    Track,
+    Subtitle,
+}
+
+impl OpendalKind {
+    /// From an addon's config: `media_kind`, a movie library by default.
+    fn from_cfg(cfg: &serde_json::Value) -> Self {
+        cfg["media_kind"]
+            .as_str()
+            .and_then(|kind| {
+                kind.parse()
+                    .ok()
+            })
+            .unwrap_or(Self::Movie)
+    }
+}
+
 fn media_kind_option() -> AddonOption {
     AddonOption {
         id: "media_kind".to_string(),
@@ -148,10 +181,7 @@ impl AddonPreset for OpendalLocalPreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        let media_kind = cfg["media_kind"]
-            .as_str()
-            .unwrap_or("movie")
-            .to_string();
+        let media_kind = OpendalKind::from_cfg(cfg);
         let paths = cfg_paths_local(cfg)?;
         let first = paths
             .first()
@@ -278,10 +308,7 @@ impl AddonPreset for OpendalWebdavPreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<AddonCapabilities> {
-        let media_kind = cfg["media_kind"]
-            .as_str()
-            .unwrap_or("movie")
-            .to_string();
+        let media_kind = OpendalKind::from_cfg(cfg);
         let endpoint = cfg["endpoint"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -335,7 +362,7 @@ pub struct OpendalAddon {
     #[allow(dead_code)] // kept for debugging/logging the source root
     root: String,
     backend: String,
-    media_kind: String,
+    media_kind: OpendalKind,
 }
 
 #[derive(sqlx::FromRow)]
@@ -393,12 +420,9 @@ impl AddonKind for OpendalAddon {
         &self,
     ) -> Result<Option<(Vec<remux_sdks::stremio::ResourceRef>, Vec<StremioMediaType>)>>
     {
-        let media_type = match self
-            .media_kind
-            .as_str()
-        {
-            "episode" => StremioMediaType::Series,
-            "track" => StremioMediaType::Track,
+        let media_type = match self.media_kind {
+            OpendalKind::Episode => StremioMediaType::Series,
+            OpendalKind::Track => StremioMediaType::Track,
             _ => StremioMediaType::Movie,
         };
         let make_ref = |name| remux_sdks::stremio::ResourceRef {
@@ -426,16 +450,14 @@ impl CatalogAddon for OpendalAddon {
             default_max_items: Some(999999999),
             collection_media_kind: Some(
                 self.media_kind
-                    .as_str()
+                    .as_ref()
                     .into(),
             ),
-            media_kind: match self
-                .media_kind
-                .as_str()
-            {
+            media_kind: match self.media_kind {
                 // episode files are grouped into Series catalog items
-                "episode" => Some(db::MediaKind::Series),
+                OpendalKind::Episode => Some(db::MediaKind::Series),
                 other => other
+                    .as_ref()
                     .parse()
                     .ok(),
             },
@@ -451,8 +473,8 @@ impl CatalogAddon for OpendalAddon {
             return Ok(None);
         }
 
-        let items: Vec<db::Media> = match self.media_kind.as_str() {
-            "episode" => {
+        let items: Vec<db::Media> = match self.media_kind {
+            OpendalKind::Episode => {
                 sqlx::query_as::<_, (String, Option<String>)>(
                     "SELECT DISTINCT imdb_id, title FROM opendal_files \
                      WHERE addon_id = ? AND media_kind = 'episode' AND imdb_id IS NOT NULL",
@@ -473,7 +495,7 @@ impl CatalogAddon for OpendalAddon {
                 })
                 .collect()
             }
-            "track" => {
+            OpendalKind::Track => {
                 #[derive(sqlx::FromRow)]
                 struct FileRow {
                     path: String,
@@ -650,18 +672,15 @@ impl IndexAddon for OpendalAddon {
 #[async_trait]
 impl SubtitleAddon for OpendalAddon {
     fn supports(&self, media: &db::Media) -> bool {
-        match self
-            .media_kind
-            .as_str()
-        {
-            "movie" => {
+        match self.media_kind {
+            OpendalKind::Movie => {
                 media.kind == db::MediaKind::Movie
                     && media
                         .external_ids
                         .imdb
                         .is_some()
             }
-            "episode" => {
+            OpendalKind::Episode => {
                 media.kind == db::MediaKind::Episode
                     && media
                         .grandparent
@@ -682,7 +701,7 @@ impl SubtitleAddon for OpendalAddon {
         _query: &SubtitleQuery,
         db: &sqlx::SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
-        let files: Vec<OpendalFile> = if self.media_kind == "episode" {
+        let files: Vec<OpendalFile> = if self.media_kind == OpendalKind::Episode {
             let Some(imdb_id) = media
                 .grandparent
                 .as_deref()
@@ -756,18 +775,15 @@ impl SubtitleAddon for OpendalAddon {
 #[async_trait]
 impl StreamAddon for OpendalAddon {
     fn supports(&self, media: &db::Media) -> bool {
-        match self
-            .media_kind
-            .as_str()
-        {
-            "movie" => {
+        match self.media_kind {
+            OpendalKind::Movie => {
                 media.kind == db::MediaKind::Movie
                     && media
                         .external_ids
                         .imdb
                         .is_some()
             }
-            "episode" => {
+            OpendalKind::Episode => {
                 media.kind == db::MediaKind::Episode
                     && media
                         .grandparent
@@ -778,7 +794,7 @@ impl StreamAddon for OpendalAddon {
                                 .is_some()
                         })
             }
-            "track" => media.kind == db::MediaKind::Track,
+            OpendalKind::Track => media.kind == db::MediaKind::Track,
             _ => false,
         }
     }
@@ -789,7 +805,7 @@ impl StreamAddon for OpendalAddon {
         ctx: &AppContext,
         _id_prefixes: Option<&[String]>,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        let files: Vec<OpendalFile> = if self.media_kind == "track" {
+        let files: Vec<OpendalFile> = if self.media_kind == OpendalKind::Track {
             // Local tracks carry their own descriptor (path) on the media row;
             // fall back to a title+artist+album match for legacy rows.
             // Only reuse it when the file is one this addon indexed: every music
@@ -832,7 +848,7 @@ impl StreamAddon for OpendalAddon {
             .fetch_all(&ctx.db)
             .await?
         } else {
-            let imdb_id = if self.media_kind == "episode" {
+            let imdb_id = if self.media_kind == OpendalKind::Episode {
                 media
                     .grandparent
                     .as_deref()
@@ -857,7 +873,7 @@ impl StreamAddon for OpendalAddon {
                  WHERE addon_id = ? AND media_kind = ? AND imdb_id = ?",
             )
             .bind(self.addon_id)
-            .bind(&self.media_kind)
+            .bind(self.media_kind.as_ref())
             .bind(imdb_id)
             .fetch_all(&ctx.db)
             .await?
@@ -998,7 +1014,7 @@ impl StreamAddon for OpendalAddon {
 #[async_trait]
 impl TreeAddon for OpendalAddon {
     fn supports(&self, root: &db::Media) -> bool {
-        self.media_kind == "episode"
+        self.media_kind == OpendalKind::Episode
             && matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
     }
 
@@ -1007,7 +1023,7 @@ impl TreeAddon for OpendalAddon {
         root: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if self.media_kind != "episode" {
+        if self.media_kind != OpendalKind::Episode {
             return Ok(None);
         }
 
@@ -1351,18 +1367,15 @@ async fn scan_addon(
         .preset
         .config
         .expose();
-    let media_kind = cfg["media_kind"]
-        .as_str()
-        .unwrap_or("movie")
-        .to_string();
+    let media_kind = OpendalKind::from_cfg(cfg);
     let is_local = addon
         .preset
         .kind
         == "opendal-local";
 
-    info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
+    info!(addon = %addon.name, kind = %addon.preset.kind, media_kind = %media_kind, "opendal: scanning");
 
-    let is_media_ext: fn(&str) -> bool = if media_kind == "track" {
+    let is_media_ext: fn(&str) -> bool = if media_kind == OpendalKind::Track {
         |ext| {
             ext == "strm"
                 || remux_sdks::remux::AudioContainer::parse_known(ext).is_some()
@@ -1400,7 +1413,7 @@ async fn scan_addon(
     let mut seen_ids: Vec<Uuid> = Vec::new();
     let mut upserted = 0usize;
 
-    let probe_on_scan = addon.probe_on_scan && media_kind != "track";
+    let probe_on_scan = addon.probe_on_scan && media_kind != OpendalKind::Track;
     // With probing off, existing probe data is kept, but it must still be dropped
     // when its file changes, so changes are tracked while any probe data remains.
     let track_probes = probe_on_scan
@@ -1625,9 +1638,8 @@ async fn scan_addon(
             let jellyfin_ids = db::ExternalIds::from_path(&path);
 
             let (title, season, episode, track_number, year, imdb_id) = match media_kind
-                .as_str()
             {
-                "track" => {
+                OpendalKind::Track => {
                     let track_number = track_num_re
                         .captures(&stem)
                         .and_then(|c| c.get(1))
@@ -1650,7 +1662,7 @@ async fn scan_addon(
                         .to_string();
                     (Some(title), None, None, track_number, None, None)
                 }
-                "episode" => {
+                OpendalKind::Episode => {
                     let parsed = hunch::hunch(&stem);
                     let season = parsed
                         .season()
@@ -1802,7 +1814,7 @@ async fn scan_addon(
 
             // Jellyfin music layout, see `music_layout`. Without embedded tags the
             // folder names are the source of truth for artist/album.
-            let (artist, album, disc_number) = if media_kind == "track" {
+            let (artist, album, disc_number) = if media_kind == OpendalKind::Track {
                 music_layout(&entry_rel, &list_from)
             } else {
                 (None, None, None)
@@ -1856,7 +1868,7 @@ async fn scan_addon(
             )
             .bind(row_id)
             .bind(addon.id)
-            .bind(&media_kind)
+            .bind(media_kind.as_ref())
             .bind(&stored_path)
             .bind(&name)
             .bind(title.as_deref())
@@ -1966,8 +1978,8 @@ async fn scan_addon(
                     .unwrap_or_else(|| base_stem.clone()),
             )
         } else {
-            match media_kind.as_str() {
-                "episode" => {
+            match media_kind {
+                OpendalKind::Episode => {
                     let season = parsed
                         .season()
                         .map(|s| s as i64);
@@ -2402,7 +2414,7 @@ impl IncrementalIndex {
             oldest = Some(oldest.map_or(at, |o| o.min(at)));
             // Files that cannot be resolved are normally not stored at all, so a
             // row with no id is the only trace of a failed resolution there can be.
-            let unresolved = media_kind != "track"
+            let unresolved = media_kind != OpendalKind::Track.as_ref()
                 && imdb_id
                     .as_deref()
                     .is_none_or(str::is_empty);
@@ -2717,7 +2729,7 @@ mod tests {
             ),
             root: String::new(),
             backend: backend.to_string(),
-            media_kind: "movie".to_string(),
+            media_kind: OpendalKind::Movie,
         };
         let url = "https://user:pass@host/strm/e/token";
         for backend in ["webdav", "local"] {
@@ -2930,7 +2942,7 @@ mod tests {
             ),
             root: base,
             backend: "webdav".to_string(),
-            media_kind: "movie".to_string(),
+            media_kind: OpendalKind::Movie,
         };
         let descriptor = crate::stream::StreamDescriptor::Opendal {
             addon_id: addon.addon_id,
@@ -3146,7 +3158,9 @@ mod tests {
             operator: Arc::new(operator),
             root,
             backend: "local".to_string(),
-            media_kind: media_kind.to_string(),
+            media_kind: media_kind
+                .parse()
+                .unwrap(),
         };
 
         (addon_kind, db_addon)
