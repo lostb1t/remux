@@ -6,10 +6,7 @@ use crate::{
     device_profile::SourceRankingContext,
     playback::probe::{ProbeOutcome, probe_stream, resolve_stream_root},
 };
-use remux_sdks::{
-    remux::{MediaStreamType, StreamFilter, VideoRangeType},
-    remuxdb,
-};
+use remux_sdks::{remux::StreamFilter, remuxdb};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -293,7 +290,8 @@ impl StreamService {
             )
             .await
             {
-                self.ctx
+                let _ = self
+                    .ctx
                     .addons
                     .refresh_streams(&mut parent, &self.ctx, self.user_id)
                     .await
@@ -313,7 +311,8 @@ impl StreamService {
         )
         .await;
 
-        self.ctx
+        let _ = self
+            .ctx
             .addons
             .refresh_streams(&mut root, &self.ctx, self.user_id)
             .await
@@ -604,7 +603,7 @@ impl StreamService {
         let gtitle = media
             .title
             .clone();
-        let mut candidates = db::StreamGroup::streams_for(
+        let candidates = db::StreamGroup::streams_for(
             &self
                 .ctx
                 .db,
@@ -646,23 +645,6 @@ impl StreamService {
         self.stream
             .as_ref()
             .expect("StreamService::load() must be called first")
-    }
-
-    /// The StreamGroup context, if the request was for a group.
-    pub fn group(&self) -> Option<&(Uuid, String, Vec<db::Media>)> {
-        self.group
-            .as_ref()
-    }
-
-    /// UUID the client should see in `MediaSources[0].Id` and `TranscodingUrl MediaSourceId`.
-    pub fn client_facing_id(&self) -> Uuid {
-        self.group
-            .as_ref()
-            .map(|(gid, _, _)| *gid)
-            .unwrap_or_else(|| {
-                self.candidate()
-                    .id
-            })
     }
 
     /// UUID for `MediaSources[idx].Id`, using the probe-fallback effective stream.
@@ -1741,6 +1723,7 @@ fn media_info_from_probe(
 mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
+    use remux_sdks::remux::MediaStreamType;
 
     /// A client holding a picked version as its item id (Android TV, after
     /// `GET /Items/{version}`) must play the owning item with that version as

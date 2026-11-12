@@ -115,6 +115,8 @@ sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chron
 argon2 = { version = "0.5.3", default-features = true}
 # argo depends on 0,8
 rand = { version = "0.8", features = ["getrandom"] }
+hmac = "0.12"
+sha2 = "0.10"
 #md5 = "0.8.0"
 #cron_tab = { version = "0.2", features = ["sync", "async"] }
 tokio-cron-scheduler = "*"

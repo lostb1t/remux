@@ -6,7 +6,6 @@ use anyhow::{Error, Result};
 use async_trait::async_trait;
 use chrono::Datelike;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::{
     AppContext,
@@ -269,7 +268,7 @@ mod tests {
     use super::*;
     use crate::{
         addons::{
-            Addon, AddonCapabilities, AddonKind, AddonPresetRef, AddonRuntime,
+            AddonKind,
             media_tracker::{
                 MediaTrackerAddon, MediaTrackerCapabilities, MediaTrackerCredentials,
                 MediaTrackerEventKind, MediaTrackerResult,
@@ -280,7 +279,8 @@ mod tests {
         signals::MarkPlayedInfo,
     };
     use async_trait::async_trait;
-    use chrono::Utc;
+    use uuid::Uuid;
+
     use std::sync::Arc;
 
     struct StubMediaTracker(Vec<MediaTrackerEventKind>);

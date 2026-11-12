@@ -2,7 +2,7 @@ use axum::{
     extract::{FromRequestParts, Path},
     http::request::Parts,
 };
-use axum_anyhow::{ApiError, ApiResult as Result};
+use axum_anyhow::ApiError;
 use http::StatusCode;
 use remux_sdks::{BearerAuth, RestClient, deezer as dz};
 use std::time::Duration;
@@ -1359,7 +1359,7 @@ static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 /// media segments, metadata edits written to the stream. Use this instead of
 /// `Path<Uuid>` for any such route. Playback routes keep the version as the
 /// requested source instead, via `StreamService::version_target`.
-pub(crate) struct PlayableItemId {
+pub struct PlayableItemId {
     /// The item to act on.
     pub id: Uuid,
     /// The id the client sent, for echoing back in the response.
@@ -1399,7 +1399,7 @@ impl FromRequestParts<AppState> for PlayableItemId {
 /// Axum extractor that resolves the `{id}` path parameter to a persisted `db::Media` row.
 ///
 /// Returns 404 if the ID cannot be resolved even after attempting addon persistence.
-pub(crate) struct ResolvedItem(pub db::Media);
+pub struct ResolvedItem(pub db::Media);
 
 impl FromRequestParts<AppState> for ResolvedItem {
     type Rejection = ApiError;

@@ -8,9 +8,34 @@ use syn::{
 
 struct MultiPath(Vec<LitStr>);
 
+/// Route paths must be lowercase outside their `{params}`: the request path
+/// normaliser lowercases plain segments before routing, so a route with an
+/// uppercase letter would never match (it silently 404s).
+fn lowercase_route(path: LitStr) -> syn::Result<LitStr> {
+    let mut in_param = false;
+    for c in path
+        .value()
+        .chars()
+    {
+        match c {
+            '{' => in_param = true,
+            '}' => in_param = false,
+            c if !in_param && c.is_ascii_uppercase() => {
+                return Err(syn::Error::new_spanned(
+                    &path,
+                    "route paths must be lowercase: requests are lowercased before \
+                     routing, so this route would never match",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(path)
+}
+
 impl syn::parse::Parse for MultiPath {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut paths = vec![input.parse::<LitStr>()?];
+        let mut paths = vec![lowercase_route(input.parse::<LitStr>()?)?];
         while input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;
             if input.is_empty() {
@@ -20,7 +45,7 @@ impl syn::parse::Parse for MultiPath {
             if input.peek(syn::Ident) {
                 break;
             }
-            paths.push(input.parse::<LitStr>()?);
+            paths.push(lowercase_route(input.parse::<LitStr>()?)?);
         }
         Ok(MultiPath(paths))
     }
@@ -169,7 +194,7 @@ struct RouteArgs {
 
 impl syn::parse::Parse for RouteArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let path: LitStr = input.parse()?;
+        let path: LitStr = lowercase_route(input.parse()?)?;
         let mut methods = Vec::new();
 
         while input.peek(syn::Token![,]) {

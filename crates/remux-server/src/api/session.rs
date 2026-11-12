@@ -8,22 +8,19 @@ use axum_extra::extract::Query;
 use chrono::Utc;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
-use serde::Deserialize;
-use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
 use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common,
+    AppState, IntoApiError, OptionExt, ResultExt, api,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    playback::session::TranscodeSession,
     playback_session,
     playback_session::ServedPlayback,
-    services::{self, MediaResolveService},
+    services::MediaResolveService,
     signals::{
         Event, PlaybackContext, PlaybackPosition, RemoteCommandInfo, RemotePlayInfo,
         RemotePlaystateInfo,
@@ -689,7 +686,7 @@ pub async fn sessions_capabilities_full_by_id(
 #[serde_as]
 #[query]
 #[derive(Default)]
-struct SessionsQuery {
+pub struct SessionsQuery {
     #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
     #[serde_as(as = "Option<DurationSeconds<u64>>")]
     active_within: Option<Duration>,
@@ -1207,7 +1204,7 @@ pub async fn get_sessions(
 #[post("/userplayeditems/{id}")]
 pub async fn user_mark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -1217,7 +1214,7 @@ pub async fn user_mark_played(
 #[delete("/userplayeditems/{id}")]
 pub async fn user_unmark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -1229,7 +1226,7 @@ pub async fn user_unmark_played(
 
 #[query]
 #[derive(Default)]
-struct RemotePlayQuery {
+pub struct RemotePlayQuery {
     item_ids: remux_sdks::CommaSeparatedList<Uuid>,
     play_command: Option<String>,
     start_position_ticks: Option<i64>,
@@ -1241,7 +1238,7 @@ struct RemotePlayQuery {
 
 #[query]
 #[derive(Default)]
-struct RemotePlaystateQuery {
+pub struct RemotePlaystateQuery {
     seek_position_ticks: Option<i64>,
     controlling_user_id: Option<String>,
 }
@@ -1264,7 +1261,7 @@ enum PlaystateCommand {
 
 #[query]
 #[derive(Default)]
-struct RemoteViewingQuery {
+pub struct RemoteViewingQuery {
     item_type: Option<String>,
     item_id: Option<String>,
     item_name: Option<String>,
@@ -1272,7 +1269,7 @@ struct RemoteViewingQuery {
 
 #[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-struct RemoteFullCommand {
+pub struct RemoteFullCommand {
     name: Option<String>,
     controlling_user_id: Option<String>,
     arguments: Option<std::collections::HashMap<String, String>>,
@@ -1280,7 +1277,7 @@ struct RemoteFullCommand {
 
 #[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-struct RemoteMessageBody {
+pub struct RemoteMessageBody {
     header: Option<String>,
     text: Option<String>,
     timeout_ms: Option<i64>,

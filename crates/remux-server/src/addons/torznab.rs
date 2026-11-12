@@ -421,6 +421,7 @@ impl TorznabAddon {
 #[derive(Debug, Clone)]
 struct MediaSearch {
     title: String,
+    #[allow(dead_code)] // only the tokens are matched on
     extra: Option<String>,
     title_tokens: Vec<String>,
     extra_tokens: Vec<String>,
@@ -728,15 +729,6 @@ enum AudioFormatHint {
 }
 
 impl AudioFormatHint {
-    fn mime_type(self) -> &'static str {
-        match self {
-            Self::Flac => "audio/flac",
-            Self::Mp3 => "audio/mpeg",
-            Self::Aac => "audio/mp4",
-            Self::Opus | Self::Vorbis => "audio/webm",
-        }
-    }
-
     fn codec(self) -> &'static str {
         match self {
             Self::Flac => "flac",

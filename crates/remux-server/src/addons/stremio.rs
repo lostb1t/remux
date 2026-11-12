@@ -1,16 +1,10 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::{Stream, StreamExt};
 use nutype::nutype;
 
-use serde::{Deserialize, Deserializer};
 use sqlx::SqlitePool;
-use std::{
-    pin::Pin,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{pin::Pin, sync::Arc, time::Instant};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -18,11 +12,11 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, CatalogStream,
     MediaKind, MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon,
-    SubtitleInfo, SubtitleQuery, TreeAddon, addon,
+    SubtitleInfo, SubtitleQuery, TreeAddon,
 };
 use crate::{
     AppContext, common, db, sdks,
-    sdks::{CachedEndpoint, ClientError},
+    sdks::ClientError,
     services::{MediaResolveService, stremio as stremio_service},
 };
 
@@ -206,19 +200,10 @@ pub(super) fn parse_manifest_info(
 )]
 pub struct StremioManifestUrl(String);
 
-fn deserialize_option_aio_url<'de, D>(
-    de: D,
-) -> Result<Option<StremioManifestUrl>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw: Option<String> = Option::deserialize(de)?;
-    Ok(raw.and_then(|s| StremioManifestUrl::try_new(s).ok()))
-}
-
 pub struct StremioAddon {
     addon_id: Uuid,
     manifest_url: StremioManifestUrl,
+    #[allow(dead_code)] // the service builds its own client
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
     /// Shared between the tree-children path and `stremio_meta_fetch` so the API is

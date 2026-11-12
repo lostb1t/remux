@@ -3,16 +3,14 @@ use std::collections::HashMap;
 use anyhow::Context;
 use axum::{
     Json,
-    body::Bytes,
     extract::{Path, State},
     http::header,
-    response::{IntoResponse, Redirect},
+    response::IntoResponse,
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
@@ -33,7 +31,7 @@ use remux_sdks::remux::Username;
 use super::{
     items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
     mock_items,
-    shows::{livetv_view_id, livetv_view_item, next_up_candidates},
+    shows::{livetv_view_item, next_up_candidates},
 };
 
 #[post("/users/{user_id}/configuration")]
@@ -99,7 +97,7 @@ pub async fn user_configuration_legacy(
 }
 
 #[derive(Deserialize)]
-struct DisplayPrefQuery {
+pub struct DisplayPrefQuery {
     user_id: Option<Uuid>,
     client: String,
 }
@@ -407,7 +405,7 @@ pub async fn authenticate_with_quickconnect(
 #[get("/users")]
 pub async fn users(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let users = db::User::get_by_filter(
         &state
@@ -754,7 +752,7 @@ pub(crate) async fn set_played(
 #[post("/users/{user_id}/playeditems/{id}")]
 pub async fn mark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -764,7 +762,7 @@ pub async fn mark_played(
 #[delete("/users/{user_id}/playeditems/{id}")]
 pub async fn unmark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -819,7 +817,7 @@ impl RatingQuery {
 #[post("/useritems/{id}/rating")]
 pub async fn update_item_rating(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
     Query(q): Query<RatingQuery>,
@@ -851,7 +849,7 @@ pub async fn update_item_rating(
 #[delete("/useritems/{id}/rating")]
 pub async fn delete_item_rating(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -881,7 +879,7 @@ pub async fn delete_item_rating(
 #[post("/users/{user_id}/items/{id}/rating")]
 pub async fn update_item_rating_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<RatingQuery>,
@@ -913,7 +911,7 @@ pub async fn update_item_rating_legacy(
 #[delete("/users/{user_id}/items/{id}/rating")]
 pub async fn delete_item_rating_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -950,7 +948,7 @@ pub async fn delete_item_rating_legacy(
 #[post("/useritems/{id}/userdata")]
 pub async fn update_item_user_data(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
     Json(update): Json<api::UpdateUserItemDataDto>,
@@ -961,7 +959,7 @@ pub async fn update_item_user_data(
 #[post("/users/{user_id}/items/{id}/userdata")]
 pub async fn update_item_user_data_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
     Json(update): Json<api::UpdateUserItemDataDto>,
@@ -1066,7 +1064,7 @@ async fn handle_update_item_user_data(
 
 #[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<api::SpecialViewOptionDto>>(vec![]))
@@ -1075,7 +1073,7 @@ pub async fn users_groupingoptions(
 #[post("/users/new")]
 pub async fn create_user(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Json(payload): Json<api::CreateUserByName>,
 ) -> Result<impl IntoResponse> {
     let password = payload
@@ -1252,7 +1250,7 @@ pub async fn change_password(
 #[post("/users/{user_id}/policy")]
 pub async fn update_user_policy(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Path(user_id): Path<Uuid>,
     Json(policy): Json<api::UserPolicy>,
 ) -> Result<impl IntoResponse> {
@@ -1400,7 +1398,7 @@ pub async fn users_get_by_id(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(
@@ -1436,7 +1434,7 @@ pub async fn users_items_latest(
 }
 
 #[query]
-pub(crate) struct UserViewsQuery {
+pub struct UserViewsQuery {
     pub(crate) include_hidden: Option<bool>,
 }
 
@@ -1975,8 +1973,8 @@ pub async fn users_items_similar(
 
 #[get("/users/{user_id}/intros")]
 pub async fn users_intros(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
+    State(_state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
@@ -2069,7 +2067,7 @@ async fn serve_avatar_for(
 // --- GET (no auth required — matches Jellyfin behaviour) ---
 
 #[derive(Deserialize)]
-struct UserImageQuery {
+pub struct UserImageQuery {
     #[serde(rename = "userId", alias = "user_id")]
     user_id: Option<Uuid>,
     tag: Option<String>,
@@ -2157,7 +2155,7 @@ pub async fn upload_user_image(
 #[post("/users/{user_id}/images/{image_type}")]
 pub async fn upload_user_image_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -2177,7 +2175,7 @@ pub async fn upload_user_image_legacy(
 #[post("/users/{user_id}/images/{image_type}/{index}")]
 pub async fn upload_user_image_indexed(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -2218,7 +2216,7 @@ pub async fn delete_user_image(
 #[delete("/users/{user_id}/images/{image_type}")]
 pub async fn delete_user_image_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(
@@ -2236,7 +2234,7 @@ pub async fn delete_user_image_legacy(
 #[delete("/users/{user_id}/images/{image_type}/{index}")]
 pub async fn delete_user_image_indexed(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(

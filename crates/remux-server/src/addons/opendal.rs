@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::TryStreamExt;
@@ -18,8 +18,7 @@ use super::{
     SubtitleInfo, SubtitleQuery, TreeAddon,
 };
 use crate::{
-    AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint,
-    services::MediaResolveService,
+    AppContext, addons::Addon, common, db, sdks, services::MediaResolveService,
 };
 
 // ---------------------------------------------------------------------------
@@ -333,6 +332,7 @@ inventory::submit! {
 pub struct OpendalAddon {
     addon_id: Uuid,
     operator: Arc<opendal::Operator>,
+    #[allow(dead_code)] // kept for debugging/logging the source root
     root: String,
     backend: String,
     media_kind: String,
@@ -342,12 +342,17 @@ pub struct OpendalAddon {
 pub struct OpendalFile {
     pub path: String,
     pub name: String,
+    #[allow(dead_code)] // selected by `SELECT *`; not read yet
     pub title: Option<String>,
+    #[allow(dead_code)] // selected by `SELECT *`; not read yet
     pub imdb_id: Option<String>,
     pub season: Option<i64>,
     pub episode: Option<i64>,
+    #[allow(dead_code)] // selected by `SELECT *`; not read yet
     pub track_number: Option<i64>,
+    #[allow(dead_code)] // selected by `SELECT *`; not read yet
     pub year: Option<i64>,
+    #[allow(dead_code)] // selected by `SELECT *`; not read yet
     pub size: Option<i64>,
     #[sqlx(default)]
     pub probe_data: Option<sqlx::types::Json<crate::api::MediaSourceInfo>>,
@@ -906,7 +911,6 @@ impl StreamAddon for OpendalAddon {
         descriptor: &crate::stream::StreamDescriptor,
         headers: &axum::http::HeaderMap,
     ) -> axum_anyhow::ApiResult<axum::response::Response> {
-        use crate::ResultExt;
         use axum::body::Body;
         use futures_util::TryStreamExt;
         use std::io;
@@ -2747,7 +2751,6 @@ mod tests {
     use crate::{
         Config,
         addons::{Addon, AddonPresetRef},
-        api,
         common::{self, ProgressReporter},
         db,
         integration_test::{new_test_server, new_test_server_with_config},

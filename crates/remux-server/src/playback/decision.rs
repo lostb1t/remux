@@ -1,8 +1,6 @@
 use crate::{
     api, db,
-    device_profile::{
-        DeviceProfileExt, SubtitleCodec, VideoCodec, subtitle_codec_matches_profile,
-    },
+    device_profile::{DeviceProfileExt, SubtitleCodec, VideoCodec},
 };
 use remux_sdks::remux::{
     DlnaProfileType, EmbeddedSubtitleHandling, EncodingOptions, PlayMethod,

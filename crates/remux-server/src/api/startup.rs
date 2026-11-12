@@ -2,7 +2,7 @@ use axum::{Json, extract::State, response::IntoResponse};
 use http::StatusCode;
 use remux_macros::{get, post};
 
-use crate::{AppState, IntoApiError, ResultExt, api};
+use crate::{AppState, IntoApiError, api};
 use axum_anyhow::ApiResult as Result;
 
 async fn require_wizard_incomplete(state: &AppState) -> Result<()> {

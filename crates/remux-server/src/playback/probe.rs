@@ -1,5 +1,5 @@
 use crate::{
-    IntoApiError, ResultExt, api,
+    ResultExt, api,
     common::{HideConsole, TickUnit, ToRunTimeTicks},
     conversions::apply_filename_guess,
     db,
@@ -788,8 +788,6 @@ pub fn probe_media_with(
 
     let mut streams: Vec<api::MediaStream> = Vec::new();
     let mut video_idx: i64 = 0;
-    let mut audio_idx: i64 = 0;
-    let mut sub_idx: i64 = 0;
 
     for s in &probe.streams {
         let codec_type = s
@@ -1046,7 +1044,6 @@ pub fn probe_media_with(
                     title: None,
                     ..Default::default()
                 });
-                audio_idx += 1;
             }
             "subtitle" => {
                 let raw_codec = s
@@ -1126,7 +1123,6 @@ pub fn probe_media_with(
                 };
                 stream.is_text_subtitle_stream = stream.is_text_subtitle_stream();
                 streams.push(stream);
-                sub_idx += 1;
             }
             _ => {}
         }

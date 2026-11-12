@@ -11,7 +11,7 @@ use crate::{AppState, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 #[query]
-struct DeleteDeviceQuery {
+pub struct DeleteDeviceQuery {
     id: Option<String>,
     #[serde(rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
@@ -232,9 +232,7 @@ pub async fn get_devices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server,
-    };
+    use crate::integration_test::{auth_header_with_token, authenticated_server};
     use http::header::HeaderValue;
     use serde_json::json;
 

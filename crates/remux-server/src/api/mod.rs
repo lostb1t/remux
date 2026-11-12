@@ -45,11 +45,11 @@ use serde_json::json;
 use crate::{AppState, api};
 use axum_anyhow::ApiResult as Result;
 
-pub async fn stub(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn stub(State(_state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-pub async fn stub_json(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn stub_json(State(_state): State<AppState>) -> Result<impl IntoResponse> {
     //let user: UserDtoDummy = Faker.fake();
     //Ok(Json().into_response())
     Ok(Json(json!({
@@ -81,7 +81,7 @@ pub async fn stub_json(State(state): State<AppState>) -> Result<impl IntoRespons
     // }
 }
 
-pub async fn mock_items(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn mock_items(State(_state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult {
         ..Default::default()
     }))

@@ -1,7 +1,6 @@
 use crate::services::{
     MediaResolveService, StreamService, image::ImageService, resolve::PlayableItemId,
 };
-use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State},
@@ -9,24 +8,23 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
-use itertools::Itertools;
 use remux_macros::{delete, get, patch, post, query};
 use remux_utils::merge_option;
 use serde::Deserialize;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, warn};
 use uuid::{Uuid, uuid};
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api,
-    common::{IntoVec, TickUnit, ToRunTimeTicks},
+    AppState, OptionExt, ResultExt, api,
+    common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    device_profile::{DeviceProfileExt, SourceRankingContext},
+    device_profile::SourceRankingContext,
     errors::LogErr,
     sdks,
 };
 use axum_anyhow::ApiResult as Result;
-use chrono::{Datelike, Utc};
+use chrono::Utc;
 use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
@@ -355,7 +353,7 @@ pub async fn get_items(
             .db,
     )
     .await;
-    let show_ungrouped = server_config
+    let _show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
 
@@ -1678,7 +1676,7 @@ pub async fn items_remote_images_providers(
 #[get("/items/counts")]
 pub async fn items_counts(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let (
         movie_count,
@@ -2021,7 +2019,8 @@ async fn item_for_user(
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
             warm_providers_cache(&state.ctx, &media);
         }
-        state
+        // Already logged; the item is served with whatever sources it has.
+        let _ = state
             .ctx
             .addons
             .refresh_streams(
@@ -2547,7 +2546,7 @@ async fn item_for_user(
             .sources
             .as_deref()
             .unwrap_or(&[]);
-        let mut media_streams: Vec<api::MediaStream> = sources
+        let media_streams: Vec<api::MediaStream> = sources
             .first()
             .and_then(|s| {
                 s.probe_data
@@ -2704,7 +2703,7 @@ pub async fn items_get(
 
 #[get("/items/suggestions")]
 pub async fn items_suggestions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     //let b = state.tmdb.movie_popular_list().send().await.unwrap()
@@ -2786,7 +2785,7 @@ pub async fn items_filters(
 #[get("/library/mediafolders")]
 pub async fn library_mediafolders(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let items = db::Media::get_by_filter(
         &state
@@ -2860,7 +2859,7 @@ fn media_to_virtual_folder(m: db::Media) -> api::VirtualFolderInfo {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct VirtualFolderRequest {
+pub struct VirtualFolderRequest {
     name: String,
     collection_type: Option<String>,
     collection_kind: Option<String>,
@@ -2871,7 +2870,7 @@ struct VirtualFolderRequest {
 #[post("/library/virtualfolders")]
 pub async fn create_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Json(payload): Json<VirtualFolderRequest>,
 ) -> Result<Json<api::VirtualFolderInfo>> {
     let collection_media_kind = payload
@@ -2914,7 +2913,7 @@ pub async fn create_virtual_folder(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct UpdateVirtualFolderRequest {
+pub struct UpdateVirtualFolderRequest {
     id: uuid::Uuid,
     name: String,
     collection_type: Option<String>,
@@ -2924,10 +2923,10 @@ struct UpdateVirtualFolderRequest {
     sort_order: Option<i64>,
 }
 
-#[post("/library/virtualfolders/LibraryOptions")]
+#[post("/library/virtualfolders/libraryoptions")]
 pub async fn update_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Json(payload): Json<UpdateVirtualFolderRequest>,
 ) -> Result<StatusCode> {
     let media = db::Media::get_by_id(
@@ -2980,14 +2979,14 @@ pub async fn update_virtual_folder(
 
 #[query]
 #[derive(Debug)]
-struct DeleteVirtualFolderQuery {
+pub struct DeleteVirtualFolderQuery {
     name: String,
 }
 
 #[delete("/library/virtualfolders")]
 pub async fn delete_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Query(q): Query<DeleteVirtualFolderQuery>,
 ) -> Result<StatusCode> {
     let result = db::Media::get_by_filter(
@@ -3487,7 +3486,7 @@ pub async fn items_metadata_editor(
 
 #[query]
 #[derive(Debug, Default)]
-struct GetSimilarItemsQuery {
+pub struct GetSimilarItemsQuery {
     pub user_id: Option<Uuid>,
     pub limit: Option<u32>,
     pub start_index: Option<u32>,
@@ -3640,7 +3639,7 @@ struct UpdateItemPerson {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct UpdateItemRequest {
+pub struct UpdateItemRequest {
     name: Option<String>,
     overview: Option<String>,
     premiere_date: Option<chrono::DateTime<chrono::Utc>>,
@@ -3938,7 +3937,7 @@ pub async fn update_item(
 
 #[query]
 #[derive(Debug, Default)]
-struct ContentTypeQuery {
+pub struct ContentTypeQuery {
     content_type: Option<String>,
 }
 
@@ -3974,7 +3973,7 @@ pub async fn update_item_content_type(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct PatchItemRequest {
+pub struct PatchItemRequest {
     name: Option<String>,
     collection_type: Option<String>,
     collection_kind: Option<String>,
@@ -3993,7 +3992,7 @@ struct PatchItemRequest {
 #[patch("/items/{id}")]
 pub async fn patch_item(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Path(id): Path<Uuid>,
     Json(payload): Json<PatchItemRequest>,
 ) -> Result<StatusCode> {
@@ -6576,8 +6575,6 @@ mod tests {
     // before the fix.
     #[tokio::test]
     async fn items_latest_alias_applies_collection_filters() {
-        use crate::db::auth;
-
         let (server, guard, token) = authenticated_server().await;
         let auth_hdr = auth_header_with_token(&token);
         let db = &guard
@@ -7226,7 +7223,7 @@ mod tests {
         let ctx = &guard.0;
         let now = Utc::now().naive_utc();
 
-        let web_group = db::StreamGroup::create(
+        let _web_group = db::StreamGroup::create(
             &ctx.db,
             "1080p · WEB",
             StreamFilter {
@@ -8450,7 +8447,7 @@ mod tests {
         )
         .await;
 
-        let user_id = get_user_id(&server, &auth).await;
+        let _user_id = get_user_id(&server, &auth).await;
         let resp = server
             .get("/items")
             .add_header(

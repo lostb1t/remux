@@ -1,50 +1,24 @@
 use super::{FilterResult, QueryBuilderExt, Settings};
 use crate::{
-    IntoApiError, OptionExt, ResultExt,
+    IntoApiError, OptionExt,
     api::{ScrollDirection, SortOrder, UpdateUserItemDataDto},
     common::get_uuid,
-    sdks,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use argon2::{
     Argon2,
     password_hash::{
         PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
     },
 };
-use async_trait::async_trait;
-use axum::{
-    Json, Router, ServiceExt,
-    body::Body,
-    extract::{FromRequestParts, Request},
-    http::{StatusCode, request::Parts},
-    middleware,
-    middleware::Next,
-    response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
-};
-use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
-use chrono::{Duration, Utc, prelude::*};
-use config::{self, Config};
+use axum::{extract::FromRequestParts, http::request::Parts};
+use axum_anyhow::ApiError;
+use chrono::prelude::*;
 use default2;
-use futures::future::BoxFuture;
-use futures_util::StreamExt;
-use http::Uri;
-use reqwest::{self, header::LOCATION};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::{Row, SqlitePool};
-use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
-use timed;
-use tower::{Layer, util::MapRequestLayer};
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-};
-use tracing::{self, debug, instrument, warn};
-use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
-use url::Url;
+use std::{self, collections::HashMap};
+use tracing::{self, debug, warn};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -193,7 +167,7 @@ impl User {
     }
 
     pub fn new_with_password(
-        key: String,
+        _key: String,
         username: String,
         password: &str,
         aio_url: Option<String>,
@@ -1438,8 +1412,12 @@ impl UserMediaState {
             if let Some(media_ids) = &filter.media_id {
                 qb.push_in("media_id", &media_ids);
             }
-            if let Some(played) = &filter.played {
-                qb.push(" AND play_count > 0");
+            if let Some(played) = filter.played {
+                qb.push(if played {
+                    " AND play_count > 0"
+                } else {
+                    " AND play_count = 0"
+                });
             }
             if let Some(favorite) = &filter.favorite {
                 qb.push(" AND favorite = ")
@@ -2332,7 +2310,7 @@ mod identity_reattach_tests {
             season: None,
             episode: None,
         };
-        let mut pre_existing = UserMediaState {
+        let pre_existing = UserMediaState {
             user_id: user.id,
             media_id: Uuid::new_v4(),
             media_raw: partial_raw.identity_key(),

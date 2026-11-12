@@ -1,5 +1,4 @@
 use axum::{Json, extract::State, response::IntoResponse};
-use isolang::Language;
 use remux_macros::get;
 
 use crate::{AppState, api};
@@ -8,7 +7,7 @@ use axum_anyhow::ApiResult as Result;
 /// Get localization options
 #[get("/localization/options")]
 pub async fn get_localization_options(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     // Return common localization options
     // In a real implementation, this would come from a localization service
@@ -113,7 +112,7 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
     Ok(Json(cultures))
 }
 
-#[get("/localization/parentalratings", "/Localization/ParentalRatings")]
+#[get("/localization/parentalratings")]
 pub async fn get_parental_ratings(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {

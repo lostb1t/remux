@@ -16,11 +16,10 @@ use uuid::Uuid;
 use remux_sdks::remux::{AudioCodec, HardwareAccelerationType};
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common,
+    AppState, IntoApiError, OptionExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    device_profile::DeviceProfileExt,
     playback::{
         decision::{PlaybackPermissions, audio_is_passthrough, selected_audio_stream},
         hw_accel,
@@ -679,7 +678,7 @@ async fn create_hls_session(
             .attach_transcode(&play_session_id, session.clone());
 
         // Start transcoding in background
-        let session_clone = session.clone();
+        let _session_clone = session.clone();
         let encoding_opts = encoding_opts_hls.clone();
         let params = crate::playback::engine::TranscodeParams {
             input_url,
@@ -919,8 +918,8 @@ pub async fn live_hls_video(
 #[get("/videos/{id}/main.m3u8")]
 pub async fn variant_hls_video_alt(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Query(mut q): Query<api::HlsVideoQuery>,
+    Path(_id): Path<Uuid>,
+    Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     variant_hls_video_inner(state, q).await
 }
@@ -929,7 +928,7 @@ pub async fn variant_hls_video_alt(
 #[get("/videos/{id}/main/stream.m3u8")]
 pub async fn variant_hls_video(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(_id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     variant_hls_video_inner(state, q).await
@@ -1395,7 +1394,7 @@ async fn variant_hls_video_inner(
 #[get("/videos/{id}/main/{segment_file}")]
 pub async fn hls_segment(
     State(state): State<AppState>,
-    Path((id, segment_file)): Path<(Uuid, String)>,
+    Path((_id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
@@ -1408,7 +1407,7 @@ pub async fn hls_segment(
 #[get("/videos/{id}/{segment_file}")]
 pub async fn hls_segment_flat(
     State(state): State<AppState>,
-    Path((id, segment_file)): Path<(Uuid, String)>,
+    Path((_id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<api::HlsVideoQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {
@@ -1439,7 +1438,7 @@ pub async fn hls_session_segment(
 #[get("/videos/{id}/hls1/{playlist_id}/{segment_file}")]
 pub async fn hls1_segment(
     State(state): State<AppState>,
-    Path((id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Path((_id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
     Query(q): Query<api::HlsVideoQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse> {

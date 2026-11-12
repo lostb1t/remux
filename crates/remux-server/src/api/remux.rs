@@ -8,7 +8,6 @@ use axum::{
 use chrono::{DateTime, Duration, Utc};
 use remux_macros::{delete, get, post, query};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -94,12 +93,6 @@ fn parse_cache_storage_key(storage_key: &str) -> Option<(String, String)> {
     let rest = &storage_key[CACHE_KEY_PREFIX.len()..];
     let (ns_enc, key_enc) = rest.split_once(':')?;
     Some((decode_component(ns_enc), decode_component(key_enc)))
-}
-
-fn normalize_registration_id(id: &str) -> String {
-    id.strip_prefix("request-")
-        .unwrap_or(id)
-        .to_string()
 }
 
 fn compute_expiration(ttl_seconds: i64) -> Option<DateTime<Utc>> {

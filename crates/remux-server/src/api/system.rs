@@ -6,14 +6,13 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use remux_macros::{get, post, query, route};
-use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api,
+    AppState, OptionExt, ResultExt, api,
     common::{self, get_uuid, server_id},
     db::{self, auth},
     intro,
@@ -116,7 +115,7 @@ pub async fn system_info_public(
 }
 
 #[get("/system/ping")]
-pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn system_ping(State(_state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(json!("Remux Server")))
 }
 
@@ -149,7 +148,7 @@ pub async fn web_manifest() -> impl IntoResponse {
 /// Get storage information
 #[get("/system/info/storage")]
 pub async fn system_info_storage(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     // Create storage information following the Jellyfin SystemStorageInfo structure
@@ -382,7 +381,7 @@ pub async fn update_intro_configuration(
 
 #[get("/system/endpoint")]
 pub async fn system_endpoint(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     Ok(Json(json!({
         "IsLocal": false,
@@ -565,7 +564,7 @@ pub async fn quickconnect_connect(
 #[post("/quickconnect/authorize")]
 pub async fn quickconnect_authorize(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(target): auth::TargetUser,
     Query(q): Query<QuickConnectCodeQuery>,
 ) -> Result<impl IntoResponse> {
@@ -695,7 +694,7 @@ pub async fn get_branding_css_dotcss(
 
 #[query]
 #[derive(Default)]
-struct ActivityLogQuery {
+pub struct ActivityLogQuery {
     #[serde(rename = "startIndex", alias = "StartIndex")]
     start_index: Option<i64>,
     #[serde(alias = "Limit")]
@@ -820,7 +819,7 @@ async fn restart_server() -> Result<()> {
     }
 
     // Start the new process
-    let mut child = command.spawn()?;
+    let child = command.spawn()?;
 
     info!("New server process started with PID: {}", child.id());
 
@@ -901,7 +900,7 @@ pub async fn system_info(
 mod test {
     use super::*;
     use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server,
+        auth_header_with_token, authenticated_server, new_test_server,
     };
     use axum_test::expect_json;
     use http::header::HeaderValue;

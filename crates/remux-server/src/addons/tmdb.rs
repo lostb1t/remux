@@ -2,7 +2,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use std::{pin::Pin, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -826,75 +825,12 @@ fn rating_age(label: &str, country: &str) -> Option<i32> {
         .or_else(|| crate::localization::ratings::resolve_rating_age(Some(label), None))
 }
 
-fn build_crew_relations(
-    left_media_id: uuid::Uuid,
-    credits: &sdks::tmdb::Credits,
-) -> Vec<(db::MediaRelation, db::Media)> {
-    let mut relations = Vec::new();
-    for (i, member) in credits
-        .crew
-        .iter()
-        .enumerate()
-    {
-        let role = match member
-            .job
-            .as_str()
-        {
-            "Director" => Some(db::RelationRole::Director),
-            "Writer" | "Screenplay" | "Author" => Some(db::RelationRole::Writer),
-            "Producer" | "Executive Producer" | "Co-Producer" => {
-                Some(db::RelationRole::Producer)
-            }
-            _ => None,
-        };
-        if let Some(role) = role {
-            let person_id = common::stable_media_uuid(
-                &db::MediaKind::Person,
-                &member
-                    .id
-                    .to_string(),
-            );
-            let mut person = db::Media {
-                id: person_id,
-                title: member
-                    .name
-                    .clone(),
-                kind: db::MediaKind::Person,
-                external_ids: db::ExternalIds {
-                    tmdb: Some(member.id),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            if let Some(url) = tmdb_image(
-                member
-                    .profile_path
-                    .as_deref(),
-                db::ImageKind::Primary,
-            ) {
-                person.set_image(db::ImageKind::Primary, url);
-            }
-            relations.push((
-                db::MediaRelation {
-                    left_media_id,
-                    right_media_id: person_id,
-                    weight: Some(i as i64),
-                    role: Some(role),
-                    ..Default::default()
-                },
-                person,
-            ));
-        }
-    }
-    relations
-}
-
 fn build_person_relations(
     left_media_id: uuid::Uuid,
     credits: &sdks::tmdb::Credits,
 ) -> Vec<(db::MediaRelation, db::Media)> {
     let mut relations = Vec::new();
-    for (i, member) in credits
+    for (_i, member) in credits
         .cast
         .iter()
         .enumerate()

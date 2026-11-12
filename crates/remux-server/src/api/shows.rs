@@ -6,7 +6,7 @@ use remux_macros::{get, query};
 use uuid::Uuid;
 
 use crate::{
-    AppState, OptionExt, api, db,
+    AppState, api, db,
     db::{auth, media::push_release_date_filter},
     services::resolve::ResolvedItem,
 };

@@ -511,7 +511,7 @@ mod tests {
     use chrono::NaiveDate;
     use remux_sdks::remux::{GetLogs, LogsResult};
     use serde_json::json;
-    use std::{fs, path::Path};
+    use std::fs;
 
     #[test]
     fn parses_timestamp_date_padding_and_target() {

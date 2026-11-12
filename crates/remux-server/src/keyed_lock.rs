@@ -37,6 +37,7 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static> KeyedLock<K> {
         KeyedLockGuard { map, key, _guard }
     }
 
+    #[cfg(test)]
     pub fn contains_key(&self, key: &K) -> bool {
         self.map
             .get()

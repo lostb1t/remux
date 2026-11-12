@@ -1688,8 +1688,8 @@ mod tests {
         CodecProfileExt, DeviceProfileExt, FourKFit, MediaSourceCapabilityExt,
         MediaSourceRank, MediaSourceSortKey, SourceRankingContext, SubtitleCodec,
         explicit_4k_resolution_support, failed_condition_reason, four_k_fit,
-        keeps_embedded_subtitle, playback_decision_label, primary_video_stream,
-        subtitle_burn_reason, subtitle_codec_deliverable, transcode_cost_tier,
+        keeps_embedded_subtitle, subtitle_burn_reason, subtitle_codec_deliverable,
+        transcode_cost_tier,
     };
     use remux_sdks::remux::{
         AudioCodec, CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,

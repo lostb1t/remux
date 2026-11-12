@@ -43,6 +43,12 @@ pub async fn new_test_server_with_config(
     config: Config,
 ) -> Result<(TestServer, TestGuard)> {
     let (app, ctx) = init_app_with_ctx(config).await?;
+    // Route through the same request URI normaliser as the real server
+    // (`bind_and_serve`), so tests see the paths production routing sees.
+    let app = axum::Router::new().fallback_service(tower::Layer::layer(
+        &tower::util::MapRequestLayer::new(crate::rewrite_request_uri),
+        app,
+    ));
 
     let server = TestServer::builder()
         .save_cookies()
@@ -439,7 +445,7 @@ pub async fn seed_probe_fallback(
 
     let owner = seed_movie(ctx).await;
     let dir = tempfile::tempdir().unwrap();
-    let mut local_source = async |name: &str| {
+    let local_source = async |name: &str| {
         let path = dir
             .path()
             .join(format!("{name}.mkv"));

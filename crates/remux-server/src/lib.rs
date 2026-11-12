@@ -1,47 +1,23 @@
-#![allow(warnings)]
-
-use axum::response::Html;
-use reqwest;
-
-use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
-use axum::{
-    Json, Router, ServiceExt,
-    body::Body,
-    extract::{FromRequestParts, Request},
-    http::{StatusCode, request::Parts},
-    middleware,
-    middleware::Next,
-    response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
-};
-use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
+use anyhow::Result;
+use axum::{Router, ServiceExt, routing::get};
+use axum_anyhow::on_error;
 pub mod result_ext;
-use chrono::{Duration, Utc, prelude::*};
+use chrono::Utc;
 use config;
-use futures::future::BoxFuture;
-use futures_util::StreamExt;
-use http::Uri;
-use itertools::Itertools;
 use remux_utils::Store;
-use reqwest::header::LOCATION;
 pub use result_ext::{IntoApiError, OptionExt, ResultExt};
-use serde::{Deserialize, Serialize, Serializer};
-use serde_json::json;
-use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
-use timed;
+use serde::{Deserialize, Serialize};
+use std::{self, env, sync::Arc};
 use tower::{Layer, util::MapRequestLayer};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
 };
-use tracing::{self, debug, error, info, instrument, warn};
+use tracing::{self, debug, error, info, warn};
 use tracing_subscriber::{
     EnvFilter, Layer as TracingLayer, fmt, layer::SubscriberExt,
     util::SubscriberInitExt,
 };
-use url::Url;
-use uuid::Uuid;
 
 mod conversions;
 pub mod device_profile;
@@ -1037,11 +1013,6 @@ pub fn setup_logging(
         .ok(); // try_init + ok() so tests don't panic on repeated calls
 }
 
-async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
-    debug!("404 - Not Found: {}", logging::loggable_uri(&uri));
-    (StatusCode::NOT_FOUND, "Not Found")
-}
-
 fn log_api_error(err: &axum_anyhow::ApiError) {
     let status = err.status();
     let is_server_error = status.is_server_error();
@@ -1078,16 +1049,6 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
             "api error"
         );
     }
-}
-
-async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
-    debug!(
-        "Static 404 Not Found: {} {}",
-        req.method(),
-        req.uri()
-            .path()
-    );
-    Ok((StatusCode::NOT_FOUND, "404 - File not found"))
 }
 
 #[cfg(test)]

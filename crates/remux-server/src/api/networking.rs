@@ -3,7 +3,7 @@ use http::StatusCode;
 use remux_macros::{get, post};
 
 use crate::{AppState, api, db::auth};
-use axum_anyhow::{ApiResult as Result, IntoApiError};
+use axum_anyhow::ApiResult as Result;
 
 const NETWORK_CONFIG_KEY: &str = "network_configuration";
 
@@ -36,7 +36,7 @@ fn default_network_configuration() -> api::NetworkConfiguration {
 #[get("/system/configuration/network")]
 pub async fn get_network_configuration(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     let config = match crate::db::Settings::get(
         &state
@@ -56,7 +56,7 @@ pub async fn get_network_configuration(
 #[post("/system/configuration/network")]
 pub async fn update_network_configuration(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Json(config): Json<api::NetworkConfiguration>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;

@@ -201,32 +201,6 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
-    let config = Settings::get_config_or_default(pool).await;
-    let rows = sqlx::query_as::<_, (uuid::Uuid, String)>(
-        "SELECT id, certification FROM media WHERE certification IS NOT NULL AND certification_age IS NULL",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for (id, certification) in rows {
-        if let Some(age) = crate::localization::ratings::resolve_rating_age(
-            Some(&certification),
-            config
-                .metadata_country_code
-                .as_deref(),
-        ) {
-            sqlx::query("UPDATE media SET certification_age = ?1 WHERE id = ?2")
-                .bind(age)
-                .bind(id)
-                .execute(pool)
-                .await?;
-        }
-    }
-
-    Ok(())
-}
-
 /// Populate `user_media_state.media_raw` for rows written before it existed,
 /// and rebuild rows still holding the old full-JSON format (starts with `{`)
 /// into the compact `identity_key()` format matching now expects — see
@@ -470,9 +444,12 @@ pub async fn migrate_channel_ids(pool: &SqlitePool) -> Result<()> {
 }
 
 pub async fn checkpoint_db(pool: &SqlitePool) {
-    sqlx::query("PRAGMA wal_checkpoint(FULL)")
+    if let Err(e) = sqlx::query("PRAGMA wal_checkpoint(FULL)")
         .execute(pool)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %e, "WAL checkpoint failed");
+    }
 }
 
 #[derive(

@@ -12,8 +12,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
-    db::auth, playback::engine::ffmpeg_http_input_args,
+    AppState, OptionExt, api, common::HideConsole, db, db::auth,
+    playback::engine::ffmpeg_http_input_args,
 };
 
 fn ffmpeg_bin() -> String {

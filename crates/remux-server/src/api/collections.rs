@@ -116,7 +116,7 @@ pub async fn get_collection_items(
     Path(id): Path<Uuid>,
     Query(q): Query<CollectionItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let collection = db::Media::get_by_id(
+    let _collection = db::Media::get_by_id(
         &state
             .ctx
             .db,

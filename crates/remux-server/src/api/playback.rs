@@ -13,26 +13,16 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::Query;
-use chrono::Utc;
-use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
-use remux_macros::{delete, get, post, query};
-use remux_sdks::remux::{PlayMethod, VideoContainer};
-use remux_utils::Store;
-use serde::Deserialize;
-use serde_json::json;
-use serde_with::{DurationSeconds, serde_as};
-use std::{io, time::Duration};
-use tokio_util::io::ReaderStream;
+use remux_macros::{get, post, query};
+use remux_sdks::remux::VideoContainer;
+use std::io;
 use tracing::{debug, error, info, trace, warn};
-use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    AppState, api,
-    api::MediaSourceInfoExt,
-    common,
+    AppState, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
@@ -41,8 +31,8 @@ use crate::{
 };
 
 use crate::{
-    IntoApiError, OptionExt, ResultExt,
-    device_profile::{DeviceProfileExt, SourceRankingContext, SubtitleCodec},
+    IntoApiError, OptionExt,
+    device_profile::SourceRankingContext,
     errors::LogErr,
     playback::{
         decision::{
@@ -51,11 +41,8 @@ use crate::{
             selected_audio_stream,
         },
         engine::ProgressiveFormat,
-        session::{TranscodeSession, TranscodeState},
     },
-    sdks,
     services::{MediaResolveService, ProbeResult, StreamService, StreamServiceConfig},
-    torrent,
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -1090,7 +1077,7 @@ async fn items_playbackinfo_inner(
         }
     }
 
-    let error_code = if media_sources.is_empty() {
+    let _error_code = if media_sources.is_empty() {
         media_sources.push(api::MediaSourceInfo {
             id,
             e_tag: id,
@@ -1332,36 +1319,6 @@ pub async fn videos_stream_by_container(
     }
     let (user_id, device_id) = best_effort_caller(&state, &jfauth).await;
     videos_stream_inner(headers, state, user_id, device_id, id, q).await
-}
-
-fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
-    match descriptor {
-        crate::stream::StreamDescriptor::Local(path) => path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("mkv")
-            .to_string(),
-        crate::stream::StreamDescriptor::Http { url, .. }
-        | crate::stream::StreamDescriptor::Rtsp { url } => url
-            .split('?')
-            .next()
-            .unwrap_or(url.as_str())
-            .rsplit('.')
-            .next()
-            .filter(|e| !e.is_empty() && e.len() <= 5)
-            .unwrap_or("mkv")
-            .to_string(),
-        crate::stream::StreamDescriptor::Torrent { file_hint, .. } => file_hint
-            .as_deref()
-            .and_then(|h| {
-                std::path::Path::new(h)
-                    .extension()
-                    .and_then(|e| e.to_str())
-            })
-            .unwrap_or("mkv")
-            .to_string(),
-        _ => "mkv".to_string(),
-    }
 }
 
 /// A Matroska source can be served unchanged when the requested output is
@@ -1874,9 +1831,9 @@ async fn videos_stream_inner(
 /// Returns additional parts for a multi-file video item.
 #[get("/videos/{id}/additionalparts")]
 pub async fn video_additional_parts(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
-    Path(id): Path<Uuid>,
+    Path(_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
@@ -1897,7 +1854,7 @@ pub async fn audio_universal(
     .await?
     .context_not_found("track not found")?;
 
-    state
+    let _ = state
         .ctx
         .addons
         .refresh_streams(
@@ -2086,8 +2043,8 @@ mod tests {
     use serde_json::json;
 
     use crate::integration_test::{
-        AUTH_HEADER, assert_api_keys_are_real, auth_header_with_token,
-        authenticated_server, insert_test_source, insert_test_source_of_kind,
+        assert_api_keys_are_real, auth_header_with_token, authenticated_server,
+        insert_test_source, insert_test_source_of_kind,
         insert_test_source_with_external_subtitle, new_test_server,
     };
 
@@ -3717,7 +3674,7 @@ mod tests {
         let now = chrono::Utc::now().naive_utc();
 
         // One movie with a single release, audio tracks in the given order.
-        let mut movie_with = async |title: &str, imdb: &str, languages: [&str; 2]| {
+        let movie_with = async |title: &str, imdb: &str, languages: [&str; 2]| {
             let mut movie = crate::db::Media {
                 title: title.to_string(),
                 external_ids: crate::db::ExternalIds {
@@ -5495,7 +5452,7 @@ mod tests {
         let now = chrono::Utc::now().naive_utc();
 
         // Groups: WEB (priority 0) and Blu-ray (priority 1)
-        let web_group = crate::db::StreamGroup::create(
+        let _web_group = crate::db::StreamGroup::create(
             &ctx.db,
             "1080p · WEB",
             StreamFilter {

@@ -232,9 +232,13 @@ struct XtreamVodStream {
     pub name: Option<String>,
     pub stream_id: Option<serde_json::Value>,
     pub stream_icon: Option<String>,
+    #[allow(dead_code)]
+    // parsed from the provider; category → kind not wired up for VOD yet
     pub category_id: Option<serde_json::Value>,
     pub category_name: Option<String>,
     pub plot: Option<String>,
+    #[allow(dead_code)]
+    // parsed from the provider; category → kind not wired up for VOD yet
     pub genre: Option<String>,
     pub releasedate: Option<String>,
     pub rating: Option<serde_json::Value>,
@@ -374,7 +378,7 @@ fn vod_to_media(
     password: &str,
     addon_id: Uuid,
     source_id: &str,
-    category_kinds: &HashMap<String, ProgramKind>,
+    _category_kinds: &HashMap<String, ProgramKind>,
 ) -> Option<db::Media> {
     let name = v
         .name
@@ -438,9 +442,13 @@ struct XtreamSeriesItem {
     pub name: Option<String>,
     pub series_id: Option<serde_json::Value>,
     pub cover: Option<String>,
+    #[allow(dead_code)]
+    // parsed from the provider; category → kind not wired up for series yet
     pub category_id: Option<serde_json::Value>,
     pub category_name: Option<String>,
     pub plot: Option<String>,
+    #[allow(dead_code)]
+    // parsed from the provider; category → kind not wired up for series yet
     pub genre: Option<String>,
     pub releasedate: Option<String>,
     pub rating: Option<serde_json::Value>,
@@ -566,7 +574,7 @@ fn series_to_media(
     s: XtreamSeriesItem,
     addon_id: Uuid,
     source_id: &str,
-    category_kinds: &HashMap<String, ProgramKind>,
+    _category_kinds: &HashMap<String, ProgramKind>,
 ) -> Option<db::Media> {
     let name = s
         .name

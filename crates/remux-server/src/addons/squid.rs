@@ -2,15 +2,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
-use sqlx::types::Json;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
 use uuid::Uuid;
 
 use super::{
-    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    MediaKind, ResourceType, StreamAddon,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, MediaKind, ResourceType,
+    StreamAddon,
 };
 use crate::{
     AppContext, api,
