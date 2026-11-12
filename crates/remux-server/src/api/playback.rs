@@ -26,7 +26,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    playback::hw_accel,
+    playback::{codec::CodecTarget, hw_accel},
     playback_session::{FfmpegTrack, ServedPlayback},
 };
 
@@ -1619,7 +1619,7 @@ async fn videos_stream_inner(
     let video_codec = resolved_codecs.video;
     let audio_codec = resolved_codecs.audio;
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
-    let is_copy_video = video_codec == "copy";
+    let is_copy_video = video_codec.is_copy();
 
     info!(
         "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?}, video_transcoding={})",
@@ -1652,17 +1652,15 @@ async fn videos_stream_inner(
     });
     // Copying audio the output container can't carry makes ffmpeg fail
     // mid-stream. Encode it instead, or refuse if audio transcoding is off.
-    let format = ProgressiveFormat::for_request(&container, &video_codec);
-    let audio_codec = if audio_codec == "copy"
+    let format = ProgressiveFormat::for_request(&container, video_codec.is_copy());
+    let audio_codec = if audio_codec.is_copy()
         && !format.can_copy_audio(source_audio_codec.as_deref())
     {
         if !permissions.audio_transcoding {
             return Err(anyhow!("Forbidden")
                 .context_forbidden("Progressive playback requires audio transcoding"));
         }
-        format
-            .fallback_audio_codec()
-            .to_string()
+        CodecTarget::from(format.fallback_audio_codec())
     } else {
         audio_codec
     };
@@ -1724,15 +1722,15 @@ async fn videos_stream_inner(
     }
 
     record_served(ServedPlayback::Ffmpeg {
-        video: FfmpegTrack::new(&video_codec, source_video_codec.as_deref()),
-        audio: FfmpegTrack::new(&audio_codec, source_audio_codec.as_deref()),
+        video: FfmpegTrack::new(&video_codec.clone(), source_video_codec.as_deref()),
+        audio: FfmpegTrack::new(&audio_codec.clone(), source_audio_codec.as_deref()),
     });
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
-        video_codec,
-        audio_codec,
+        video_codec: video_codec.clone(),
+        audio_codec: audio_codec.clone(),
         start_time_ticks: q.start_time_ticks,
         max_width: q
             .max_width
@@ -1795,9 +1793,6 @@ async fn videos_stream_inner(
         h264_crf: encoding_opts
             .h264_crf
             .unwrap_or(23),
-        h265_crf: encoding_opts
-            .h265_crf
-            .unwrap_or(28),
         normalize_audio_loudness: encoding_opts
             .normalize_audio_loudness
             .unwrap_or(false),
@@ -3203,11 +3198,11 @@ mod tests {
                 play_session_id,
                 crate::playback_session::ServedPlayback::Ffmpeg {
                     video: crate::playback_session::FfmpegTrack::new(
-                        "h264",
+                        &"h264".into(),
                         Some("hevc"),
                     ),
                     audio: crate::playback_session::FfmpegTrack::new(
-                        "copy",
+                        &"copy".into(),
                         Some("aac"),
                     ),
                 },

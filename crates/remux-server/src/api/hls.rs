@@ -21,6 +21,7 @@ use crate::{
     db,
     db::auth,
     playback::{
+        codec::CodecTarget,
         decision::{PlaybackPermissions, audio_is_passthrough, selected_audio_stream},
         hw_accel,
         session::{SegmentContainer, TranscodeSession, TranscodeState},
@@ -128,7 +129,7 @@ async fn create_hls_session(
             "HLS playback requires remuxing",
         ));
     }
-    let video_codec = resolved_codecs.video;
+    let video_codec = crate::playback::codec::CodecTarget::from(resolved_codecs.video);
     let audio_codec = resolved_codecs.audio;
     let burn_subtitle = resolved_codecs.burn_subtitle;
     let segment_length = q
@@ -414,7 +415,7 @@ async fn create_hls_session(
             .as_ref()
             .is_some_and(client_wants_hevc_in_ts);
         let segment_container = SegmentContainer::for_codecs(
-            &video_codec,
+            video_codec.is_copy(),
             source_video_codec.as_deref(),
             hevc_in_ts,
         );
@@ -529,7 +530,7 @@ async fn create_hls_session(
         let audio_channels = hls_audio_channels(
             &audio_codec,
             source_audio.and_then(|s| s.channels),
-            channel_cap(&audio_codec),
+            channel_cap(&audio_codec.to_string()),
         );
 
         // Live streams have no fixed duration — skip all runtime lookups.
@@ -601,7 +602,7 @@ async fn create_hls_session(
             source_frame_rate,
             "source video codec for HLS session"
         );
-        let session_video_bitrate = if video_codec == "copy" {
+        let session_video_bitrate = if video_codec.is_copy() {
             None
         } else {
             resolved_media
@@ -617,7 +618,7 @@ async fn create_hls_session(
                         .map_or(target, |c| target.min(c as u32))
                 })
         };
-        let session_hw_accel = if video_codec == "copy" {
+        let session_hw_accel = if video_codec.is_copy() {
             None
         } else {
             match encoding_opts_hls
@@ -767,9 +768,6 @@ async fn create_hls_session(
             h264_crf: encoding_opts
                 .h264_crf
                 .unwrap_or(23),
-            h265_crf: encoding_opts
-                .h265_crf
-                .unwrap_or(28),
             is_live,
             normalize_audio_loudness: encoding_opts
                 .normalize_audio_loudness
@@ -968,21 +966,21 @@ fn resolve_hls_audio_codec(
     input_container: Option<&remux_sdks::remux::VideoContainer>,
     source_audio_codec: Option<&str>,
     segment_container: SegmentContainer,
-    requested: &str,
+    requested: &CodecTarget,
     client_audio_codecs: Option<&[AudioCodec]>,
     copy_exceeds_channel_limit: bool,
-) -> String {
+) -> CodecTarget {
     let input_is_hls = input_container.is_some_and(|c| c.is_hls_input());
-    if requested == "copy"
+    if requested.is_copy()
         && (is_live
             || input_is_hls
             || !segment_container.can_copy_audio(source_audio_codec)
             || !client_accepts_audio(source_audio_codec, client_audio_codecs)
             || copy_exceeds_channel_limit)
     {
-        "aac".to_string()
+        CodecTarget::Transcode("aac".into())
     } else {
-        requested.to_string()
+        requested.clone()
     }
 }
 
@@ -1159,11 +1157,11 @@ fn hls_channel_cap(client_max_channels: Option<i64>) -> i64 {
 /// Keeps the source layout up to the cap and never upmixes. When the source
 /// layout is unknown it is stereo, or the cap if that is lower.
 fn hls_audio_channels(
-    audio_codec: &str,
+    audio_codec: &CodecTarget,
     source_channels: Option<i64>,
     client_max_channels: Option<i64>,
 ) -> Option<u32> {
-    if audio_codec == "copy" {
+    if audio_codec.is_copy() {
         return None;
     }
     let cap = hls_channel_cap(client_max_channels);
@@ -1815,7 +1813,7 @@ async fn hls_segment_inner(
                         input_url,
                         output_dir: output_dir.clone(),
                         video_codec,
-                        audio_codec: audio_codec.clone(),
+                        audio_codec,
                         segment_length,
                         start_time_ticks: Some(start_time_ticks),
                         max_width: q
@@ -1889,9 +1887,6 @@ async fn hls_segment_inner(
                         h264_crf: encoding_opts
                             .h264_crf
                             .unwrap_or(23),
-                        h265_crf: encoding_opts
-                            .h265_crf
-                            .unwrap_or(28),
                         is_live: false,
                         normalize_audio_loudness: encoding_opts
                             .normalize_audio_loudness
@@ -1976,6 +1971,7 @@ async fn hls_segment_inner(
 #[cfg(test)]
 mod tests {
     use super::SegmentContainer::{Fmp4, Ts};
+    use crate::playback::codec::CodecTarget;
     use remux_sdks::remux::VideoContainer;
 
     #[test]
@@ -2020,11 +2016,11 @@ mod tests {
                 Some(&hls),
                 Some("aac"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
         let hls_upper = VideoContainer::Other("HLS".to_string());
         assert_eq!(
@@ -2033,11 +2029,11 @@ mod tests {
                 Some(&hls_upper),
                 Some("aac"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
     }
 
@@ -2049,11 +2045,11 @@ mod tests {
                 Some(&VideoContainer::Mp4),
                 Some("aac"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "copy"
+            CodecTarget::from("copy")
         );
         assert_eq!(
             super::resolve_hls_audio_codec(
@@ -2061,11 +2057,11 @@ mod tests {
                 None,
                 Some("ac3"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "copy"
+            CodecTarget::from("copy")
         );
         let hls = VideoContainer::Other("hls".to_string());
         assert_eq!(
@@ -2074,11 +2070,11 @@ mod tests {
                 Some(&hls),
                 Some("aac"),
                 Ts,
-                "ac3",
+                &"ac3".into(),
                 None,
                 false
             ),
-            "ac3"
+            CodecTarget::from("ac3")
         );
     }
 
@@ -2091,11 +2087,11 @@ mod tests {
                     None,
                     Some(codec),
                     Ts,
-                    "copy",
+                    &"copy".into(),
                     None,
                     false
                 ),
-                "aac"
+                CodecTarget::from("aac")
             );
         }
     }
@@ -2108,11 +2104,11 @@ mod tests {
                 None,
                 Some("flac"),
                 Fmp4,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "copy"
+            CodecTarget::from("copy")
         );
         for codec in ["truehd", "pcm_s16le"] {
             assert_eq!(
@@ -2121,11 +2117,11 @@ mod tests {
                     None,
                     Some(codec),
                     Fmp4,
-                    "copy",
+                    &"copy".into(),
                     None,
                     false
                 ),
-                "aac"
+                CodecTarget::from("aac")
             );
         }
     }
@@ -2138,11 +2134,11 @@ mod tests {
                 None,
                 Some("aac"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
         assert_eq!(
             super::resolve_hls_audio_codec(
@@ -2150,11 +2146,11 @@ mod tests {
                 None,
                 Some("aac"),
                 Ts,
-                "aac",
+                &"aac".into(),
                 None,
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
         assert_eq!(
             super::resolve_hls_audio_codec(
@@ -2162,11 +2158,11 @@ mod tests {
                 None,
                 Some("aac"),
                 Ts,
-                "ac3",
+                &"ac3".into(),
                 None,
                 false
             ),
-            "ac3"
+            CodecTarget::from("ac3")
         );
     }
 
@@ -2252,11 +2248,11 @@ mod tests {
                 None,
                 Some("dts"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 Some(&accepted),
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
         // AC3 is listed: still copied.
         assert_eq!(
@@ -2265,11 +2261,11 @@ mod tests {
                 None,
                 Some("ac3"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 Some(&accepted),
                 false
             ),
-            "copy"
+            CodecTarget::from("copy")
         );
         // No declared restriction (no profile, or an empty list), or no known
         // source codec: unchanged.
@@ -2280,11 +2276,11 @@ mod tests {
                     None,
                     Some("dts"),
                     Ts,
-                    "copy",
+                    &"copy".into(),
                     accepted,
                     false
                 ),
-                "copy"
+                CodecTarget::from("copy")
             );
         }
         assert_eq!(
@@ -2293,11 +2289,11 @@ mod tests {
                 None,
                 None,
                 Ts,
-                "copy",
+                &"copy".into(),
                 Some(&accepted),
                 false
             ),
-            "copy"
+            CodecTarget::from("copy")
         );
         // A codec the client doesn't list is re-encoded, even an unusual one.
         assert_eq!(
@@ -2306,11 +2302,11 @@ mod tests {
                 None,
                 Some("wmapro"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 Some(&accepted),
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
         // An explicit transcode request is never turned back into a copy.
         assert_eq!(
@@ -2319,11 +2315,11 @@ mod tests {
                 None,
                 Some("dts"),
                 Ts,
-                "aac",
+                &"aac".into(),
                 Some(&accepted),
                 false
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
     }
 
@@ -2601,11 +2597,11 @@ mod tests {
                 None,
                 Some("aac"),
                 Ts,
-                "copy",
+                &"copy".into(),
                 None,
                 true
             ),
-            "aac"
+            CodecTarget::from("aac")
         );
     }
 
@@ -2680,19 +2676,46 @@ mod tests {
     #[test]
     fn transcoded_audio_keeps_the_source_layout_up_to_the_client_cap() {
         // Copy has no channel count.
-        assert_eq!(super::hls_audio_channels("copy", Some(6), Some(6)), None);
+        assert_eq!(
+            super::hls_audio_channels(&"copy".into(), Some(6), Some(6)),
+            None
+        );
         // No declared cap or unknown source: stereo, as before.
-        assert_eq!(super::hls_audio_channels("aac", Some(6), None), Some(2));
-        assert_eq!(super::hls_audio_channels("aac", None, Some(6)), Some(2));
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(6), None),
+            Some(2)
+        );
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), None, Some(6)),
+            Some(2)
+        );
         // An unknown source layout still respects a mono-only client.
-        assert_eq!(super::hls_audio_channels("aac", None, Some(1)), Some(1));
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), None, Some(1)),
+            Some(1)
+        );
         // 5.1 DTS for a client that takes 6 channels stays 5.1.
-        assert_eq!(super::hls_audio_channels("aac", Some(6), Some(6)), Some(6));
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(6), Some(6)),
+            Some(6)
+        );
         // Never upmixes, never exceeds the cap or 6.
-        assert_eq!(super::hls_audio_channels("aac", Some(2), Some(6)), Some(2));
-        assert_eq!(super::hls_audio_channels("aac", Some(8), Some(6)), Some(6));
-        assert_eq!(super::hls_audio_channels("aac", Some(8), Some(8)), Some(6));
-        assert_eq!(super::hls_audio_channels("aac", Some(6), Some(2)), Some(2));
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(2), Some(6)),
+            Some(2)
+        );
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(8), Some(6)),
+            Some(6)
+        );
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(8), Some(8)),
+            Some(6)
+        );
+        assert_eq!(
+            super::hls_audio_channels(&"aac".into(), Some(6), Some(2)),
+            Some(2)
+        );
     }
 
     #[test]

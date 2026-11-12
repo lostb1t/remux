@@ -118,18 +118,20 @@ pub struct FfmpegTrack {
 }
 
 impl FfmpegTrack {
-    /// `output` is FFmpeg's codec argument: `copy` or an encoder target.
-    pub fn new(output: &str, source_codec: Option<&str>) -> Self {
-        if output.eq_ignore_ascii_case("copy") {
-            Self {
+    /// What FFmpeg does with the stream: copy it, or encode to a codec.
+    pub fn new(
+        output: &crate::playback::codec::CodecTarget,
+        source_codec: Option<&str>,
+    ) -> Self {
+        match output {
+            crate::playback::codec::CodecTarget::Copy => Self {
                 codec: source_codec.map(str::to_string),
                 copied: true,
-            }
-        } else {
-            Self {
-                codec: Some(output.to_string()),
+            },
+            crate::playback::codec::CodecTarget::Transcode(codec) => Self {
+                codec: Some(codec.clone()),
                 copied: false,
-            }
+            },
         }
     }
 }
@@ -1240,14 +1242,14 @@ mod tests {
     #[test]
     fn ffmpeg_track_names_the_codec_the_client_receives() {
         assert_eq!(
-            FfmpegTrack::new("copy", Some("hevc")),
+            FfmpegTrack::new(&"copy".into(), Some("hevc")),
             FfmpegTrack {
                 codec: Some("hevc".to_string()),
                 copied: true,
             }
         );
         assert_eq!(
-            FfmpegTrack::new("h264", Some("hevc")),
+            FfmpegTrack::new(&"h264".into(), Some("hevc")),
             FfmpegTrack {
                 codec: Some("h264".to_string()),
                 copied: false,
@@ -1255,7 +1257,7 @@ mod tests {
         );
         // No source video: nothing to name, so clients see audio-only output.
         assert_eq!(
-            FfmpegTrack::new("copy", None),
+            FfmpegTrack::new(&"copy".into(), None),
             FfmpegTrack {
                 codec: None,
                 copied: true,
@@ -1263,8 +1265,8 @@ mod tests {
         );
         // A remux is still FFmpeg output, but its video is the source's.
         let remux = ServedPlayback::Ffmpeg {
-            video: FfmpegTrack::new("copy", Some("hevc")),
-            audio: FfmpegTrack::new("copy", Some("eac3")),
+            video: FfmpegTrack::new(&"copy".into(), Some("hevc")),
+            audio: FfmpegTrack::new(&"copy".into(), Some("eac3")),
         };
         assert_eq!(remux.play_method(), PlayMethod::Transcode);
         assert!(remux.video_copied());
@@ -1272,8 +1274,8 @@ mod tests {
 
     fn transcoded() -> ServedPlayback {
         ServedPlayback::Ffmpeg {
-            video: FfmpegTrack::new("h264", Some("hevc")),
-            audio: FfmpegTrack::new("aac", Some("dts")),
+            video: FfmpegTrack::new(&"h264".into(), Some("hevc")),
+            audio: FfmpegTrack::new(&"aac".into(), Some("dts")),
         }
     }
 

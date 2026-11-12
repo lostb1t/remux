@@ -18,6 +18,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    playback::codec::CodecTarget,
     playback_session,
     playback_session::ServedPlayback,
     services::MediaResolveService,
@@ -938,30 +939,24 @@ pub(crate) async fn build_session_list(
                 // Use the actual source codec name when ffmpeg is copying the
                 // stream (remux). Clients use VideoCodec/AudioCodec to display
                 // the stream format, so "copy" is meaningless to them.
-                let video_codec_name = if ts.video_codec == "copy" {
-                    ts.source_video_codec
+                let video_codec_name = match &ts.video_codec {
+                    CodecTarget::Copy => ts
+                        .source_video_codec
                         .clone()
-                        .unwrap_or_else(|| {
-                            ts.video_codec
-                                .clone()
-                        })
-                } else {
-                    ts.video_codec
-                        .clone()
+                        .unwrap_or_else(|| "copy".to_string()),
+                    CodecTarget::Transcode(codec) => codec.clone(),
                 };
-                let audio_codec_name = if ts.audio_codec == "copy" {
-                    ts.source_audio_codec
+                let audio_codec_name = match &ts.audio_codec {
+                    CodecTarget::Copy => ts
+                        .source_audio_codec
                         .clone()
-                        .unwrap_or_else(|| {
-                            ts.audio_codec
-                                .clone()
-                        })
-                } else {
-                    ts.audio_codec
-                        .clone()
+                        .unwrap_or_else(|| "copy".to_string()),
+                    CodecTarget::Transcode(codec) => codec.clone(),
                 };
 
-                let is_video_direct = ts.video_codec == "copy";
+                let is_video_direct = ts
+                    .video_codec
+                    .is_copy();
                 let container = if ts.use_fmp4() { "fmp4" } else { "ts" };
                 let bitrate = if is_video_direct {
                     probe_data.and_then(|p| p.bitrate)
@@ -974,7 +969,9 @@ pub(crate) async fn build_session_list(
                     video_codec: Some(video_codec_name),
                     container: Some(container.to_string()),
                     is_video_direct,
-                    is_audio_direct: ts.audio_codec == "copy",
+                    is_audio_direct: ts
+                        .audio_codec
+                        .is_copy(),
                     bitrate,
                     framerate: ts.source_frame_rate,
                     width,
