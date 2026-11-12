@@ -1082,15 +1082,25 @@ impl PlaybackSessionManager {
     }
 
     /// Path where a given HLS segment lives on disk (used for disk-based recovery).
-    pub fn segment_path(&self, play_session_id: &str, segment_id: &str) -> PathBuf {
+    pub async fn segment_path(
+        &self,
+        play_session_id: &str,
+        segment_id: &str,
+    ) -> PathBuf {
         let session_dir = self
             .base_dir
             .join(play_session_id);
 
-        if let Ok(entries) = std::fs::read_dir(&session_dir) {
+        if let Ok(mut entries) = tokio::fs::read_dir(&session_dir).await {
             let mut latest_dir: Option<(PathBuf, std::time::SystemTime)> = None;
-            for entry in entries.flatten() {
-                if let Ok(metadata) = entry.metadata() {
+            while let Ok(Some(entry)) = entries
+                .next_entry()
+                .await
+            {
+                if let Ok(metadata) = entry
+                    .metadata()
+                    .await
+                {
                     if metadata.is_dir() {
                         let modified = metadata
                             .modified()

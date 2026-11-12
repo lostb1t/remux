@@ -1453,10 +1453,15 @@ fn strip_segment_extension(filename: &str) -> String {
 }
 
 /// Find the highest segment index currently on disk in `dir`.
-fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
-    let entries = std::fs::read_dir(dir).ok()?;
+async fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .ok()?;
     let mut max_idx: Option<u32> = None;
-    for entry in entries.flatten() {
+    while let Ok(Some(entry)) = entries
+        .next_entry()
+        .await
+    {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         // Accept both MPEG-TS (.ts) and fMP4 (.m4s) segment files.
@@ -1624,6 +1629,7 @@ async fn hls_segment_inner(
                 .ctx
                 .sessions
                 .segment_path(&play_session_id, "init.mp4")
+                .await
                 .with_extension("mp4"),
         };
         // Wait for ffmpeg to write the init segment. Merely checking existence
@@ -1659,10 +1665,13 @@ async fn hls_segment_inner(
             .read()
             .await
             .segment_path(&segment_id),
-        None => state
-            .ctx
-            .sessions
-            .segment_path(&play_session_id, &segment_id),
+        None => {
+            state
+                .ctx
+                .sessions
+                .segment_path(&play_session_id, &segment_id)
+                .await
+        }
     };
 
     // Parse the requested segment index from the filename.
@@ -1702,7 +1711,7 @@ async fn hls_segment_inner(
                 .output_dir
                 .clone();
             let segment_length = s.segment_length;
-            let current_idx = get_current_transcoding_index(&output_dir);
+            let current_idx = get_current_transcoding_index(&output_dir).await;
             let segment_gap_threshold = 24 / segment_length;
 
             // A live segment older than the newest has left the sliding
