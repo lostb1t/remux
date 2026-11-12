@@ -403,29 +403,61 @@ impl StreamService {
     /// A client that picked a version holds that version's id as the item id
     /// (see `MediaResolveService::playable_item_id`). Playback is keyed by the
     /// item the version belongs to plus the version as the requested source, so
-    /// swap them back: `(owner, Some(version))`. Any other id is returned as is.
+    /// swap them back: `(owner, Some(version))`. A group's [`VersionId`] comes
+    /// back as its title and the plain group id, also when it is sent as the
+    /// source. Any other id is returned as is.
+    ///
+    /// [`VersionId`]: crate::services::VersionId
     pub(crate) async fn version_target(
         ctx: &AppContext,
         user_id: Option<Uuid>,
         item_id: Uuid,
         requested_id: Option<Uuid>,
     ) -> (Uuid, Option<Uuid>) {
+        let requested_id = match requested_id {
+            Some(requested) if requested != item_id => Some(
+                match db::Media::get_by_id(&ctx.db, &requested)
+                    .await
+                    .ok()
+                    .flatten()
+                {
+                    Some(_) => requested,
+                    None => crate::services::VersionId::decode(&ctx.db, requested)
+                        .await
+                        .map_or(requested, |v| v.group),
+                },
+            ),
+            requested => requested,
+        };
         let owner = match db::Media::get_by_id(&ctx.db, &item_id)
             .await
             .ok()
             .flatten()
         {
             Some(row) => match row.kind {
-                db::MediaKind::Stream => row.parent_id,
-                db::MediaKind::StreamGroup => user_id.and_then(|user_id| {
-                    Self::get_group_item(&ctx.store, user_id, row.id)
-                }),
+                db::MediaKind::Stream => row
+                    .parent_id
+                    .map(|owner| (owner, item_id)),
+                db::MediaKind::StreamGroup => user_id
+                    .and_then(|user_id| {
+                        Self::get_group_item(&ctx.store, user_id, row.id)
+                    })
+                    .map(|owner| (owner, item_id)),
                 _ => None,
             },
-            None => None,
+            None => crate::services::VersionId::decode(&ctx.db, item_id)
+                .await
+                .map(|v| (v.owner, v.group)),
         };
         match owner {
-            Some(owner) => (owner, Some(requested_id.unwrap_or(item_id))),
+            Some((owner, version)) => (
+                owner,
+                Some(
+                    requested_id
+                        .filter(|r| *r != item_id)
+                        .unwrap_or(version),
+                ),
+            ),
             None => (item_id, requested_id),
         }
     }
@@ -1765,6 +1797,25 @@ mod tests {
             target(group.id, Some(group.id)).await,
             (movie.id, Some(group.id))
         );
+        // A group's version id names its title, whatever the shared group id
+        // was last browsed under, also when sent as the source of the title.
+        let version = crate::services::VersionId::new(movie.id, group.id).id();
+        StreamService::save_group_item(&ctx.store, user, group.id, Uuid::new_v4());
+        assert_eq!(
+            target(version, Some(version)).await,
+            (movie.id, Some(group.id))
+        );
+        assert_eq!(target(version, None).await, (movie.id, Some(group.id)));
+        assert_eq!(
+            StreamService::version_target(ctx, None, version, None).await,
+            (movie.id, Some(group.id)),
+            "no user is needed"
+        );
+        assert_eq!(
+            target(movie.id, Some(version)).await,
+            (movie.id, Some(group.id))
+        );
+        StreamService::save_group_item(&ctx.store, user, group.id, movie.id);
         // Anything else is left alone, including an item with a source named.
         assert_eq!(target(movie.id, None).await, (movie.id, None));
         assert_eq!(

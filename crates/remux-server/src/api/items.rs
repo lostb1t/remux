@@ -1838,35 +1838,60 @@ async fn item_for_user(
     // parent's metadata, with that stream first. The response keeps the
     // stream's id as the item id, see the comment above `base_item.id = version`.
     let mut requested_stream: Option<Uuid> = None;
-    let resolved_id = match MediaResolveService::resolve_item(id, &state.ctx).await? {
-        Some(m) if m.kind == db::MediaKind::StreamGroup => {
-            requested_group = Some(m.id);
-            // Stream groups have no parent_id on the row (they're global). Look up the
-            // group→item mapping written by the items pipeline and PlaybackInfo.
-            StreamService::get_group_item(
+    // A group picked as a version of one title (see `VersionId`).
+    let picked_version = match db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    {
+        Some(_) => None,
+        None => {
+            crate::services::VersionId::decode(
                 &state
                     .ctx
-                    .store,
-                target_user_id.unwrap_or(
-                    session
-                        .user
-                        .id,
-                ),
-                m.id,
+                    .db,
+                id,
             )
-            .context_not_found("stream group not yet associated with an item")?
+            .await
         }
-        Some(m)
-            if m.kind == db::MediaKind::Stream
-                && m.parent_id
-                    .is_some() =>
-        {
-            requested_stream = Some(m.id);
-            m.parent_id
-                .unwrap_or(m.id)
+    };
+    let resolved_id = if let Some(version) = picked_version {
+        requested_group = Some(version.group);
+        version.owner
+    } else {
+        match MediaResolveService::resolve_item(id, &state.ctx).await? {
+            Some(m) if m.kind == db::MediaKind::StreamGroup => {
+                requested_group = Some(m.id);
+                // Stream groups have no parent_id on the row (they're global). Look up the
+                // group→item mapping written by the items pipeline and PlaybackInfo.
+                StreamService::get_group_item(
+                    &state
+                        .ctx
+                        .store,
+                    target_user_id.unwrap_or(
+                        session
+                            .user
+                            .id,
+                    ),
+                    m.id,
+                )
+                .context_not_found("stream group not yet associated with an item")?
+            }
+            Some(m)
+                if m.kind == db::MediaKind::Stream
+                    && m.parent_id
+                        .is_some() =>
+            {
+                requested_stream = Some(m.id);
+                m.parent_id
+                    .unwrap_or(m.id)
+            }
+            Some(m) => m.id,
+            None => return Ok(None),
         }
-        Some(m) => m.id,
-        None => return Ok(None),
     };
     let mut media = db::Media::get_by_filter(
         &state
@@ -2432,14 +2457,18 @@ async fn item_for_user(
             .and_then(|s| s.group_id)
             == Some(*gid)
     });
-    if let Some(gid) = hoisted_group {
+    // The source carries the group's version id for this title rather than the
+    // shared group id, see `VersionId`.
+    let hoisted_group =
+        hoisted_group.map(|gid| crate::services::VersionId::new(media.id, gid).id());
+    if let Some(version) = hoisted_group {
         if let Some(source) = base_item
             .media_sources
             .as_mut()
             .and_then(|s| s.first_mut())
         {
-            source.id = gid;
-            source.e_tag = gid;
+            source.id = version;
+            source.e_tag = version;
         }
     }
 
@@ -2474,7 +2503,11 @@ async fn item_for_user(
     //  - jellyfin-web 12.x reloads the page from the picked version's item
     //    (`refreshSelectedVersion`). A bare stream row loses the poster, Play
     //    button and version list (#673), so it needs the parent's metadata.
-    // Hence: parent's metadata, version's id. Everything keyed by an item id
+    // Hence: parent's metadata, version's id. A picked stream group gets a
+    // version id of its own per title (`VersionId`), never the shared group id:
+    // the group is the same row for every title, so its id can't say which
+    // title is meant once another title with that group is opened (#697).
+    // Everything keyed by an item id
     // (playback, reporting, watch state) maps it back to the owner: see
     // `StreamService::version_target` and `MediaResolveService::playable_item_id`.
     // Do not special-case a client here, and do not return the parent's id.
@@ -2490,7 +2523,9 @@ async fn item_for_user(
                 == Some(*sid)
         }))
     } else {
-        requested_group.or(requested_stream)
+        requested_group
+            .map(|gid| crate::services::VersionId::new(media.id, gid).id())
+            .or(requested_stream)
     };
     if let Some(version) = version {
         base_item.id = version;
@@ -7357,44 +7392,67 @@ mod tests {
             "1080p · Blu-ray",
             "the requested group must be MediaSources[0] — Android TV plays get(0)"
         );
+        // A picked group comes back under its version id for this movie, not the
+        // shared group id: the group is the same row for every title.
+        let version = crate::services::VersionId::new(movie.id, bluray_group.id).id();
+        let simple = |id: uuid::Uuid| {
+            id.simple()
+                .to_string()
+        };
         assert_eq!(
             sources2[0]["Id"]
                 .as_str()
                 .unwrap(),
-            bluray_group
-                .id
-                .simple()
-                .to_string(),
-            "the hoisted source must keep its group UUID, not the item id, so the \
-             client sends the group back on PlaybackInfo"
+            simple(version),
+            "the hoisted source carries the version id, so the client sends it back"
         );
         assert_eq!(
             body2["Id"]
                 .as_str()
                 .unwrap(),
-            bluray_group
-                .id
-                .simple()
-                .to_string(),
+            simple(version),
             "a picked version is an item of its own, as in Jellyfin"
         );
 
-        // Playing the picked group as the item the client now holds still works,
-        // and the session is recorded against the movie.
-        let resp3 = server
-            .post(&format!(
-                "/items/{}/playbackinfo?mediaSourceId={}",
-                bluray_group.id,
-                bluray_group
-                    .id
-                    .simple()
-            ))
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .json(&serde_json::json!({}))
-            .await;
+        // Opening another title with the same group repoints the shared group id.
+        // The version id the client holds must still mean this movie.
+        let other =
+            insert_media(&ctx.db, "Other Movie", db::MediaKind::Movie, "tt7777779")
+                .await;
+        let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+        crate::services::StreamService::save_group_item(
+            &ctx.store,
+            user_id,
+            bluray_group.id,
+            other.id,
+        );
+        let request = |method: http::Method, path: String| {
+            server
+                .method(method, &path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+        let again: serde_json::Value =
+            request(http::Method::GET, format!("/items/{version}"))
+                .await
+                .json();
+        assert_eq!(again["Name"], "Test Movie");
+        assert_eq!(again["Id"], simple(version));
+
+        let resp3 = request(
+            http::Method::POST,
+            format!(
+                "/items/{version}/playbackinfo?mediaSourceId={}",
+                simple(version)
+            ),
+        )
+        .json(&serde_json::json!({}))
+        .await;
         resp3.assert_status_ok();
         let info: serde_json::Value = resp3.json();
         assert_eq!(
@@ -7402,55 +7460,38 @@ mod tests {
                 .as_str()
                 .unwrap(),
             "1080p · Blu-ray",
-            "PlaybackInfo for the picked group must offer that group"
+            "PlaybackInfo for the picked version must offer that group"
         );
-        server
-            .post("/sessions/playing")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
+
+        request(http::Method::POST, "/sessions/playing".to_string())
             .json(&serde_json::json!({
-                "ItemId": bluray_group.id.simple().to_string(),
-                "MediaSourceId": bluray_group.id.simple().to_string(),
+                "ItemId": simple(version),
+                "MediaSourceId": simple(version),
                 "PlaySessionId": "picked-group-session",
                 "PositionTicks": 0,
             }))
             .await
             .assert_status(http::StatusCode::NO_CONTENT);
+        let live = ctx
+            .sessions
+            .get("picked-group-session")
+            .unwrap();
         assert_eq!(
-            ctx.sessions
-                .get("picked-group-session")
-                .map(|s| s.item_id),
-            Some(movie.id),
-            "playback of a picked group is reported against the movie"
+            live.item_id, movie.id,
+            "playback is recorded against the movie"
+        );
+        assert_eq!(
+            live.media_source_id
+                .as_deref(),
+            Some(simple(bluray_group.id).as_str()),
+            "the session knows the plain group as its source"
         );
 
-        // Groups are shared between titles: opening another title that has
-        // this group remaps it mid-playback. The live session still knows it
-        // is playing the movie.
-        let other =
-            insert_media(&ctx.db, "Other Movie", db::MediaKind::Movie, "tt7777779")
-                .await;
-        crate::services::StreamService::save_group_item(
-            &ctx.store,
-            ctx.sessions
-                .get("picked-group-session")
-                .unwrap()
-                .user_id,
-            bluray_group.id,
-            other.id,
-        );
-        server
-            .post("/sessions/playing/stopped")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
+        // Android TV's external player only sends a stop, without a session.
+        request(http::Method::POST, "/sessions/playing/stopped".to_string())
             .json(&serde_json::json!({
-                "ItemId": bluray_group.id.simple().to_string(),
-                "MediaSourceId": bluray_group.id.simple().to_string(),
-                "PlaySessionId": "picked-group-session",
+                "ItemId": simple(version),
+                "MediaSourceId": simple(version),
                 "PositionTicks": 600_000_000i64,
             }))
             .await
@@ -7475,8 +7516,7 @@ mod tests {
             0
         );
 
-        // A group's poster is found by its tag: the group itself is shared and
-        // has no artwork.
+        // The version shows the movie's poster.
         let dir = tempfile::tempdir().unwrap();
         let poster = dir
             .path()
@@ -7496,17 +7536,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let tag = db::MediaImage::get_for_media(&ctx.db, &movie.id)
-            .await
-            .unwrap()
-            .get(db::ImageKind::Primary)
-            .unwrap()
-            .id;
         server
-            .get(&format!(
-                "/items/{}/images/primary?tag={tag}",
-                bluray_group.id
-            ))
+            .get(&format!("/items/{version}/images/primary"))
             .await
             .assert_status_ok();
     }

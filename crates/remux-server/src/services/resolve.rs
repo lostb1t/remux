@@ -1262,7 +1262,7 @@ impl MediaResolveService {
 
     /// The item a version belongs to. A client that picked a version (Android TV
     /// refetches the item by its source id and plays that) holds the version's
-    /// id as the item id, but watch state, favorites and ratings belong to the
+    /// id (a stream id, or a group's `VersionId`) as the item id, but watch state, favorites and ratings belong to the
     /// episode or movie it plays. Any other id is returned as is.
     pub(crate) async fn playable_item_id(
         ctx: &AppContext,
@@ -1273,7 +1273,10 @@ impl MediaResolveService {
             Ok(Some(media)) => Self::version_owner(ctx, user_id, &media)
                 .await
                 .map_or(id, |owner| owner.id),
-            _ => id,
+            Ok(None) => crate::services::VersionId::decode(&ctx.db, id)
+                .await
+                .map_or(id, |v| v.owner),
+            Err(_) => id,
         }
     }
 
@@ -1284,6 +1287,15 @@ impl MediaResolveService {
         user_id: Uuid,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
+        if db::Media::get_by_id(&ctx.db, &id)
+            .await?
+            .is_none()
+        {
+            if let Some(version) = crate::services::VersionId::decode(&ctx.db, id).await
+            {
+                return Ok(db::Media::get_by_id(&ctx.db, &version.owner).await?);
+            }
+        }
         let Some(media) = Self::resolve_item(id, ctx).await? else {
             return Ok(None);
         };

@@ -165,6 +165,7 @@ pub async fn report_playback_start(
     session: auth::AuthSession,
     Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    report_source_id(&state, &mut data).await;
     if !data
         .item_id
         .is_nil()
@@ -225,6 +226,45 @@ pub async fn report_playback_start(
             ..PlaybackContext::from_parts(&session, &data, playback.as_ref(), None)
         }));
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// A report naming a picked group's version id as its source names the plain
+/// group, the way the session and stream selection know it (see `VersionId`).
+async fn report_source_id(state: &AppState, data: &mut api::PlaybackInfo) {
+    let Some(source) = data
+        .media_source_id
+        .as_deref()
+        .and_then(|sid| Uuid::parse_str(sid).ok())
+    else {
+        return;
+    };
+    if db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &source,
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_none()
+    {
+        if let Some(version) = crate::services::VersionId::decode(
+            &state
+                .ctx
+                .db,
+            source,
+        )
+        .await
+        {
+            data.media_source_id = Some(
+                version
+                    .group
+                    .simple()
+                    .to_string(),
+            );
+        }
+    }
 }
 
 /// The item a progress/stop report is about. A version id maps back to its
@@ -296,6 +336,7 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    report_source_id(&state, &mut data).await;
     if !data
         .item_id
         .is_nil()
@@ -446,6 +487,7 @@ pub async fn report_playback_stopped(
     session: auth::AuthSession,
     Json(mut data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
+    report_source_id(&state, &mut data).await;
     if !data
         .item_id
         .is_nil()

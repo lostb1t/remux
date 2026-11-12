@@ -94,6 +94,25 @@ async fn items_images_inner(
             (b, ct, url.clone(), true)
         } else {
             let key = id.to_string();
+            // A picked group's version id is no row of its own: serve its title's.
+            let id = match db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await?
+            {
+                Some(_) => id,
+                None => crate::services::VersionId::decode(
+                    &state
+                        .ctx
+                        .db,
+                    id,
+                )
+                .await
+                .map_or(id, |v| v.owner),
+            };
             if let Some(media) = db::Media::get_by_id(
                 &state
                     .ctx
