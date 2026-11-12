@@ -50,3 +50,9 @@ pub fn device_selected_stream(
 pub fn session_selected_stream(play_session_id: &str, source_id: Uuid) -> String {
     format!("pstream:psid:{play_session_id}:{source_id}")
 }
+
+/// The release a request without PlaybackInfo was given for an item, keyed by
+/// the release first in line.
+pub fn walked_stream(item_id: Uuid, head_id: Uuid) -> String {
+    format!("pstream:walk:{item_id}:{head_id}")
+}

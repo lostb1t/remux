@@ -5,9 +5,7 @@ use crate::{
     db::PreProbeQualityExt,
     device_profile::SourceRankingContext,
     ids::{ItemId, StreamGroupId, UserId},
-    playback::probe::{
-        ProbeOutcome, probe_stream, resolve_stream_root, source_is_alive,
-    },
+    playback::probe::{ProbeOutcome, probe_stream, resolve_stream_root},
 };
 use remux_sdks::{remux::StreamFilter, remuxdb};
 use tracing::{debug, warn};
@@ -558,9 +556,10 @@ impl StreamService {
                     }
                     // No PlaybackInfo checked this source (Download,
                     // `/Videos/{id}/stream` without PlaybackInfo): take the
-                    // first of a few that is still alive, else the first, and
-                    // keep the pick so Range requests get the same file. Not
-                    // for live TV: the check can take the only IPTV slot.
+                    // first of a few that doesn't answer as gone, else the
+                    // first, and keep the pick so Range requests get the same
+                    // file. Not for live TV: the check can take the only IPTV
+                    // slot.
                     let mut pick = 0;
                     if !matches!(
                         media.kind,
@@ -569,7 +568,7 @@ impl StreamService {
                     {
                         // Keyed by the head, so a changed device preference
                         // walks again.
-                        let key = format!("pstream:walk:{item_id}:{}", head.id);
+                        let key = crate::store_keys::walked_stream(item_id, head.id);
                         let remembered = ctx
                             .store
                             .get::<Uuid>(&key)
@@ -586,13 +585,25 @@ impl StreamService {
                                 .take(4)
                                 .enumerate()
                             {
-                                if source_is_alive(source).await {
+                                // A slow resolve keeps its place.
+                                let gone = match &source.stream_info {
+                                    Some(si) => {
+                                        si.descriptor
+                                            .availability()
+                                            .await
+                                            == Some(false)
+                                    }
+                                    None => false,
+                                };
+                                if !gone {
                                     pick = i;
                                     break;
                                 }
                             }
+                            // Every read restarts the TTL, so a long playback
+                            // keeps its file.
                             ctx.store
-                                .save(
+                                .save_sliding(
                                     key,
                                     sources[pick].id,
                                     std::time::Duration::from_secs(10 * 60),

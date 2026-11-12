@@ -2674,45 +2674,61 @@ mod tests {
 
         let (server, guard, token) = authenticated_server().await;
         let ctx = &guard.0;
-        let episode = crate::integration_test::seed_episode(ctx).await;
-        // Two releases in stored order; the first now resolves to the clip.
-        for (idx, path) in [(0_i64, "/blocked"), (1, "/release.mkv")] {
-            let mut source = insert_test_source(ctx).await;
-            source
-                .stream_info
-                .as_mut()
-                .unwrap()
-                .descriptor = crate::stream::StreamDescriptor::http(upstream.url(path));
-            source
-                .save(&ctx.db)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE media SET parent_id = ?, idx = ? WHERE id = ?")
+        // An episode with two releases in stored order.
+        let item_with = async |imdb: &str, paths: [&str; 2]| {
+            let episode = crate::integration_test::seed_episode_with(
+                ctx,
+                crate::db::ExternalIds {
+                    imdb: crate::db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            for (idx, path) in paths
+                .into_iter()
+                .enumerate()
+            {
+                let mut source = insert_test_source(ctx).await;
+                source
+                    .stream_info
+                    .as_mut()
+                    .unwrap()
+                    .descriptor =
+                    crate::stream::StreamDescriptor::http(upstream.url(path));
+                source
+                    .save(&ctx.db)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE media SET parent_id = ?, idx = ? WHERE id = ?")
+                    .bind(episode.id)
+                    .bind(idx as i64)
+                    .bind(source.id)
+                    .execute(&ctx.db)
+                    .await
+                    .unwrap();
+            }
+            // Fresh streams: no addon refresh, and both rows count as current.
+            sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+                .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(30))
                 .bind(episode.id)
-                .bind(idx)
-                .bind(source.id)
                 .execute(&ctx.db)
                 .await
                 .unwrap();
-        }
-        // Fresh streams: no addon refresh, and both rows count as current.
-        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
-            .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(30))
-            .bind(episode.id)
-            .execute(&ctx.db)
-            .await
-            .unwrap();
-
-        let download = async || {
+            episode.id
+        };
+        let download = async |id: uuid::Uuid| {
             server
-                .get(&format!("/items/{}/download", episode.id))
+                .get(&format!("/items/{id}/download"))
                 .add_header(
                     http::header::AUTHORIZATION,
                     HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
                 )
                 .await
         };
-        let response = download().await;
+
+        // The first release now resolves to the clip.
+        let episode = item_with("tt0306414", ["/blocked", "/release.mkv"]).await;
+        let response = download(episode).await;
         response.assert_status_ok();
         assert_eq!(response.text(), "release");
 
@@ -2725,9 +2741,23 @@ mod tests {
             then.status(200)
                 .body("first release");
         });
-        let response = download().await;
+        let response = download(episode).await;
         response.assert_status_ok();
         assert_eq!(response.text(), "release");
+
+        // A release that doesn't answer the check in time, like a slow
+        // debrid resolve, isn't gone and keeps its place.
+        upstream.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/slow");
+            then.status(200)
+                .delay(std::time::Duration::from_secs(6))
+                .body("slow release");
+        });
+        let episode = item_with("tt0000002", ["/slow", "/release.mkv"]).await;
+        let response = download(episode).await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "slow release");
     }
 
     #[test]

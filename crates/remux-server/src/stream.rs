@@ -271,13 +271,21 @@ impl StreamDescriptor {
     /// archive signature; body-read errors leave the stream alive. Non-HTTP
     /// variants return `true`.
     pub async fn is_alive(&self) -> bool {
+        self.availability()
+            .await
+            .unwrap_or(false)
+    }
+
+    /// The check behind [`Self::is_alive`]: `None` when the ranged GET times
+    /// out, as a slow debrid resolve does, rather than answering as gone.
+    pub(crate) async fn availability(&self) -> Option<bool> {
         let Self::Http {
             url,
             request_headers,
             ..
         } = self
         else {
-            return true;
+            return Some(true);
         };
         let mut request = AVAILABILITY_CLIENT.get(url);
         for (key, value) in request_headers {
@@ -285,11 +293,13 @@ impl StreamDescriptor {
         }
         request = request.header(http::header::RANGE, "bytes=0-7");
 
-        let Ok(mut response) = request
+        let mut response = match request
             .send()
             .await
-        else {
-            return false;
+        {
+            Ok(response) => response,
+            Err(e) if e.is_timeout() => return None,
+            Err(_) => return Some(false),
         };
         if response
             .status()
@@ -297,7 +307,7 @@ impl StreamDescriptor {
             >= 400
             || is_aiostreams_error_clip(response.url())
         {
-            return false;
+            return Some(false);
         }
 
         // Read only until the magic-number prefix is available; servers that
@@ -312,9 +322,11 @@ impl StreamDescriptor {
                 _ => break,
             }
         }
-        !ARCHIVE_MAGIC
-            .iter()
-            .any(|magic| head.starts_with(magic))
+        Some(
+            !ARCHIVE_MAGIC
+                .iter()
+                .any(|magic| head.starts_with(magic)),
+        )
     }
 
     /// Instantiate the runtime service for self-contained variants.
