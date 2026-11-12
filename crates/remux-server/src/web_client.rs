@@ -499,7 +499,7 @@ mod tests {
             api::DefaultWebClient::Remux
         );
         assert_eq!(
-            api::DefaultWebClient::from_str_lossy("anfiteatro"),
+            api::DefaultWebClient::from_str_lossy("unknown-client"),
             api::DefaultWebClient::Jellyfin
         );
     }
