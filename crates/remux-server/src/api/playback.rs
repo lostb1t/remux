@@ -2651,6 +2651,115 @@ mod tests {
         assert_eq!(response.text(), "fallback stream");
     }
 
+    #[tokio::test]
+    async fn download_without_playback_info_skips_an_error_clip_release() {
+        let upstream = httpmock::MockServer::start();
+        let mut blocked = upstream.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/blocked");
+            then.status(307)
+                .header("Location", "/static/unavailable_for_legal_reasons.mp4");
+        });
+        for (path, body) in [
+            ("/static/unavailable_for_legal_reasons.mp4", "error clip"),
+            ("/release.mkv", "release"),
+        ] {
+            upstream.mock(|when, then| {
+                when.method(httpmock::Method::GET)
+                    .path(path);
+                then.status(200)
+                    .body(body);
+            });
+        }
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        // An episode with two releases in stored order.
+        let item_with = async |imdb: &str, paths: [&str; 2]| {
+            let episode = crate::integration_test::seed_episode_with(
+                ctx,
+                crate::db::ExternalIds {
+                    imdb: crate::db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            for (idx, path) in paths
+                .into_iter()
+                .enumerate()
+            {
+                let mut source = insert_test_source(ctx).await;
+                source
+                    .stream_info
+                    .as_mut()
+                    .unwrap()
+                    .descriptor =
+                    crate::stream::StreamDescriptor::http(upstream.url(path));
+                source
+                    .save(&ctx.db)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE media SET parent_id = ?, idx = ? WHERE id = ?")
+                    .bind(episode.id)
+                    .bind(idx as i64)
+                    .bind(source.id)
+                    .execute(&ctx.db)
+                    .await
+                    .unwrap();
+            }
+            // Fresh streams: no addon refresh, and both rows count as current.
+            sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+                .bind(chrono::Utc::now().naive_utc() - chrono::Duration::seconds(30))
+                .bind(episode.id)
+                .execute(&ctx.db)
+                .await
+                .unwrap();
+            episode.id
+        };
+        let download = async |id: uuid::Uuid| {
+            server
+                .get(&format!("/items/{id}/download"))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+                )
+                .await
+        };
+
+        // The first release now resolves to the clip.
+        let episode = item_with("tt0306414", ["/blocked", "/release.mkv"]).await;
+        let response = download(episode).await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "release");
+
+        // The pick holds for later (Range) requests even once the first
+        // release works again, so the client keeps getting the same file.
+        blocked.delete();
+        upstream.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/blocked");
+            then.status(200)
+                .body("first release");
+        });
+        let response = download(episode).await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "release");
+
+        // A release that doesn't answer the check in time, like a slow
+        // debrid resolve, isn't gone and keeps its place.
+        upstream.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/slow");
+            then.status(200)
+                .delay(std::time::Duration::from_secs(6))
+                .body("slow release");
+        });
+        let episode = item_with("tt0000002", ["/slow", "/release.mkv"]).await;
+        let response = download(episode).await;
+        response.assert_status_ok();
+        assert_eq!(response.text(), "slow release");
+    }
+
     #[test]
     fn item_runtime_fills_missing_source_duration() {
         let mut source = crate::api::MediaSourceInfo::default();

@@ -525,7 +525,7 @@ impl StreamService {
                     .refresh_streams(&mut media, ctx, user_id)
                     .await
                     .inspect_err(|e| tracing::error!("refresh_streams failed: {e:#}"));
-                let sources = media
+                let mut sources = media
                     .streams(&ctx.db)
                     .await?;
                 // Here `requested_id` resolved to a Movie/Episode/Track, so it
@@ -541,29 +541,78 @@ impl StreamService {
                         .into_iter()
                         .find(|s| s.id == sid)
                         .ok_or_else(|| anyhow::anyhow!("stream not found: {}", sid))
-                } else if let Some(key) = device_key {
-                    let saved = ctx
-                        .store
-                        .get::<Uuid>(crate::store_keys::device_stream(item_id, key));
-                    let by_pref = saved.and_then(|sid| {
+                } else {
+                    // The device's PlaybackInfo pick first, then stored order.
+                    let saved = device_key.and_then(|key| {
+                        ctx.store
+                            .get::<Uuid>(crate::store_keys::device_stream(item_id, key))
+                    });
+                    if let Some(pos) = saved.and_then(|sid| {
                         sources
                             .iter()
-                            .find(|s| s.id == *sid)
-                            .cloned()
-                    });
-                    by_pref
-                        .or_else(|| {
-                            sources
-                                .into_iter()
-                                .next()
-                        })
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("no playable sources for {}", item_id)
-                        })
-                } else {
+                            .position(|s| s.id == *sid)
+                    }) {
+                        sources[..=pos].rotate_right(1);
+                    }
+                    // No PlaybackInfo checked this source (Download,
+                    // `/Videos/{id}/stream` without PlaybackInfo): take the
+                    // first of a few that doesn't answer as gone, else the
+                    // first, and keep the pick so Range requests get the same
+                    // file. Not for live TV: the check can take the only IPTV
+                    // slot.
+                    let mut pick = 0;
+                    if !matches!(
+                        media.kind,
+                        db::MediaKind::TvChannel | db::MediaKind::TvProgram
+                    ) && let Some(head) = sources.first()
+                    {
+                        // Keyed by the head, so a changed device preference
+                        // walks again.
+                        let key = crate::store_keys::walked_stream(item_id, head.id);
+                        let remembered = ctx
+                            .store
+                            .get::<Uuid>(&key)
+                            .and_then(|sid| {
+                                sources
+                                    .iter()
+                                    .position(|s| s.id == *sid)
+                            });
+                        if let Some(pos) = remembered {
+                            pick = pos;
+                        } else {
+                            for (i, source) in sources
+                                .iter()
+                                .take(4)
+                                .enumerate()
+                            {
+                                // A slow resolve keeps its place.
+                                let gone = match &source.stream_info {
+                                    Some(si) => {
+                                        si.descriptor
+                                            .availability()
+                                            .await
+                                            == Some(false)
+                                    }
+                                    None => false,
+                                };
+                                if !gone {
+                                    pick = i;
+                                    break;
+                                }
+                            }
+                            // Every read restarts the TTL, so a long playback
+                            // keeps its file.
+                            ctx.store
+                                .save_sliding(
+                                    key,
+                                    sources[pick].id,
+                                    std::time::Duration::from_secs(10 * 60),
+                                );
+                        }
+                    }
                     sources
                         .into_iter()
-                        .next()
+                        .nth(pick)
                         .ok_or_else(|| {
                             anyhow::anyhow!("no playable sources for {}", item_id)
                         })
