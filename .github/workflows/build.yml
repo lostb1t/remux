@@ -301,8 +301,13 @@ jobs:
           df -h /
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          # Windows stays on 1.99 for now: with Cargo 1.100's per-unit build
+          # dirs, sccache expands Cargo's @argfile into a rustc command line
+          # past Windows' 32K limit (os error 206). Back to stable once an
+          # sccache release fixes that.
+          toolchain: ${{ matrix.os == 'windows-latest' && '1.99' || 'stable' }}
           targets: ${{ matrix.target }}
 
       - name: Set up sccache
