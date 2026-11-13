@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554188676,
+  "lastUpdate": 1794567216151,
   "repoUrl": "https://github.com/lostb1t/remux",
   "entries": {
     "Benchmark": [
@@ -14143,6 +14143,142 @@ window.BENCHMARK_DATA = {
             "name": "nextup_date_cutoff/30days",
             "value": 57380012,
             "range": "± 3997394",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "tuschla",
+            "username": "tuschla",
+            "email": "53692914+tuschla@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fab51e7d85dd012adae70f01194304b78576f2b2",
+          "message": "fix(playback): stop leaking ffmpeg transcodes from retried and stopped sessions (#701)\n\nffmpeg could outlive the playback it belongs to in a few ways, all\nreproduced against current main:\n\n- **Retries:** when jellyfin-web retries under a new PlaySessionId\nwithout `DELETE /Videos/ActiveEncodings`, each attempt left an ffmpeg\nrunning until the 15 min reaper; after a retry storm 23 were still\nrunning a minute later. A new transcode now stops the same device and\nuser's older transcode of the same item. Trade-off: browser tabs share a\nDeviceId, so one user can't play the same item in two tabs at once.\n- **Stops that miss the transcode:** a stop while no ffmpeg was running\n(before the first spawn, between restarts) was ignored and the loop kept\nspawning (related to #613), and a stop arriving while `master.m3u8` was\nstill creating the transcode missed it (16 of 16 leaked). Both now stop\nit.\n- **Shutdown:** Ctrl-C/SIGTERM, `/System/Shutdown`, `/System/Restart`\nand desktop Quit left ffmpeg running after remux exited. They now stop\nall sessions first, bounded at 10 s.\n- **Smaller fixes:** a transcode now records the device that asked for\nit, so `/Sessions` no longer shows another session's item while it\nstarts, and a start report no longer drops a transcode attached while it\nran.\n\nWith the PR: no ffmpeg left after the retry storm, after stops during\ncreation, or after shutdown, and an audio switch ends the old transcode\nin 0.5 s instead of 2.1 s. I used LLMs for help with the implementation\nand testing.\n\n---------\n\nCo-authored-by: lostb1t <coding-mosses0z@icloud.com>",
+          "timestamp": "2026-11-13T10:33:14Z",
+          "url": "https://github.com/lostb1t/remux/commit/fab51e7d85dd012adae70f01194304b78576f2b2"
+        },
+        "date": 1794567214573,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "items_latest/Limit=20&Recursive=false",
+            "value": 1763480,
+            "range": "± 882764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&Recursive=false",
+            "value": 7009928,
+            "range": "± 1357101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=500&Recursive=false",
+            "value": 23782811,
+            "range": "± 3711083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&IncludeItemTypes=Movie&Recursive=false",
+            "value": 490144,
+            "range": "± 84443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_latest/Limit=100&IncludeItemTypes=Series&Recursive=false",
+            "value": 48793520,
+            "range": "± 3099970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=20&Recursive=false",
+            "value": 21180000,
+            "range": "± 2512898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&Recursive=false",
+            "value": 21206126,
+            "range": "± 2888126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=500&Recursive=false",
+            "value": 20440978,
+            "range": "± 2935698",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&IncludeItemTypes=Movie&Recursive=false",
+            "value": 593851,
+            "range": "± 81795",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&IncludeItemTypes=Series&Recursive=false",
+            "value": 132157815,
+            "range": "± 8079805",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&Filters=IsPlayed&Recursive=false",
+            "value": 21785949,
+            "range": "± 2745096",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "items_get/Limit=100&SortBy=DateCreated&Recursive=false",
+            "value": 21040063,
+            "range": "± 2182542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=50&Recursive=false",
+            "value": 247137294,
+            "range": "± 25154251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=200&Recursive=false",
+            "value": 251242717,
+            "range": "± 32431226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_scale/Limit=500&Recursive=false",
+            "value": 284754594,
+            "range": "± 73165382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/Limit=500&EnableResumable=true&Recursive=false",
+            "value": 251381964,
+            "range": "± 51565271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_resumable/Limit=500&EnableResumable=false&Recursive=false",
+            "value": 272058678,
+            "range": "± 40074901",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/epoch",
+            "value": 278620165,
+            "range": "± 47087560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nextup_date_cutoff/30days",
+            "value": 65795237,
+            "range": "± 12025164",
             "unit": "ns/iter"
           }
         ]
