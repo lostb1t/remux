@@ -139,8 +139,30 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config) -> Result<()> {
     let addr = std::net::SocketAddr::new(config.host, config.port);
-    let (router, _) = init_app_from_filesystem(config).await?;
-    bind_and_serve(router, addr).await
+    let (router, ctx) = init_app_from_filesystem(config).await?;
+    tokio::select! {
+        result = bind_and_serve(router, addr) => result,
+        Ok(()) = shutdown_signal() => {
+            // HLS ffmpeg writes to files and never notices remux exiting.
+            info!("shutting down");
+            ctx.shutdown()
+                .await;
+            Ok(())
+        }
+    }
+}
+
+/// Resolves on Ctrl-C, SIGTERM on Unix, or console close on Windows.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(windows)]
+    let mut terminate = tokio::signal::windows::ctrl_close()?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 pub async fn bind_and_serve(router: Router, addr: std::net::SocketAddr) -> Result<()> {
@@ -447,9 +469,14 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    /// Gracefully shut down background services (torrent DHT, etc.).
-    /// Call this when the server is stopping to release sockets immediately.
+    /// Stop every playback session (exiting runs no destructors, so ffmpeg
+    /// would outlive remux) and refuse new transcodes, then shut down
+    /// background services (torrent DHT, etc.) to release sockets immediately.
+    /// Call this when the server is stopping.
     pub async fn shutdown(&self) {
+        self.sessions
+            .stop_all()
+            .await;
         let old = self
             .torrent
             .write()

@@ -65,6 +65,8 @@ impl SegmentContainer {
 
 pub struct TranscodeSession {
     pub id: String,
+    /// The user whose request created this transcode.
+    pub user_id: Uuid,
     pub item_id: Uuid,
     pub media_source_id: Uuid,
     pub output_dir: PathBuf,
@@ -90,6 +92,9 @@ pub struct TranscodeSession {
     /// Kill channel and done notifier for the ffmpeg subprocess.
     pub kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub wait_done: Arc<Notify>,
+    /// Set when the session is stopped, so ffmpeg is never (re)spawned
+    /// afterwards.
+    pub stopped: bool,
     /// Index of the last segment the client has requested (0-based).
     pub last_segment_index: Arc<AtomicU32>,
     /// Start offset of this transcode in seconds (from start_time_ticks).
@@ -130,6 +135,7 @@ pub struct TranscodeSession {
 impl TranscodeSession {
     pub fn new(
         play_session_id: String,
+        user_id: Uuid,
         item_id: Uuid,
         media_source_id: Uuid,
         input_url: String,
@@ -159,6 +165,7 @@ impl TranscodeSession {
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
         Arc::new(tokio::sync::RwLock::new(Self {
             id: play_session_id,
+            user_id,
             item_id,
             media_source_id,
             output_dir,
@@ -178,6 +185,7 @@ impl TranscodeSession {
             transcode_reasons,
             kill_tx: None,
             wait_done: Arc::new(Notify::new()),
+            stopped: false,
             last_segment_index: Arc::new(AtomicU32::new(0)),
             start_time_secs: 0,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
