@@ -259,6 +259,7 @@ pub(crate) struct IptvAddon {
     pub(crate) addon_id: Uuid,
     /// M3U URL for M3U addons; Xtream server base URL for Xtream addons.
     pub(crate) m3u_url: String,
+    #[allow(dead_code)] // configured EPG source, not read yet
     pub(crate) epg_url: Option<String>,
     pub(crate) xtream_username: Option<String>,
     pub(crate) xtream_password: Option<String>,

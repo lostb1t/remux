@@ -149,7 +149,7 @@ pub async fn delete_stream_group(
 }
 
 #[derive(Debug, Deserialize)]
-struct PreviewQuery {
+pub struct PreviewQuery {
     imdb_id: String,
 }
 

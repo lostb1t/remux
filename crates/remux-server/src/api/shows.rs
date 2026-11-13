@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use std::collections::HashMap;
 
 use axum::{Json, extract::State, response::IntoResponse};
@@ -6,7 +7,7 @@ use remux_macros::{get, query};
 use uuid::Uuid;
 
 use crate::{
-    AppState, OptionExt, api, db,
+    AppState, api, db,
     db::{auth, media::push_release_date_filter},
     services::resolve::ResolvedItem,
 };
@@ -107,9 +108,11 @@ pub async fn shows_episodes(
         // picked version's id after a version pick: start at its episode.
         let start_id = crate::services::MediaResolveService::playable_item_id(
             &state.ctx,
-            session
-                .user
-                .id,
+            UserId(
+                session
+                    .user
+                    .id,
+            ),
             start_id,
         )
         .await;

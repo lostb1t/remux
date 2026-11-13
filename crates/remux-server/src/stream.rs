@@ -239,19 +239,12 @@ impl StreamDescriptor {
             Self::Local(path) => path
                 .to_string_lossy()
                 .into_owned(),
-            Self::Torrent { .. } | Self::Opendal { .. } => {
-                format!("http://127.0.0.1:{}/stream/{}", port, media_id)
-            }
-        }
-    }
-
-    /// URL to hand to the Jellyfin client for direct play.
-    /// `Http` streams play directly. Everything else routes through our stream proxy
-    /// (client can't access local FS; Torrent/Opendal need server-side resolution).
-    pub fn client_url(&self, media_id: Uuid, server_base: &str) -> String {
-        match self {
-            Self::Http { url, .. } => url.clone(),
-            _ => format!("{}/stream/{}", server_base.trim_end_matches('/'), media_id),
+            Self::Torrent { .. } | Self::Opendal { .. } => format!(
+                "http://127.0.0.1:{}/stream/{}?token={}",
+                port,
+                media_id,
+                stream_link_token(media_id)
+            ),
         }
     }
 
@@ -543,6 +536,56 @@ static AVAILABILITY_CLIENT: std::sync::LazyLock<reqwest::Client> =
             .build()
             .expect("failed to build availability client")
     });
+
+/// Key for the `/stream/{id}` links this server hands to its own ffmpeg and
+/// ffprobe (see [`StreamDescriptor::server_input`]). Random per run: those
+/// links are used right away and never outlive the process.
+static STREAM_LINK_KEY: std::sync::LazyLock<[u8; 32]> =
+    std::sync::LazyLock::new(rand::random);
+
+fn stream_link_mac(media_id: Uuid) -> hmac::Hmac<sha2::Sha256> {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&*STREAM_LINK_KEY)
+        .expect("HMAC takes a key of any length");
+    mac.update(media_id.as_bytes());
+    mac
+}
+
+/// The token a `/stream/{id}` link carries. The route is unauthenticated (ffmpeg
+/// sends no credentials), and stream ids are derived from public data, so the
+/// token is what keeps anyone else from streaming through this server.
+pub(crate) fn stream_link_token(media_id: Uuid) -> String {
+    use hmac::Mac;
+    stream_link_mac(media_id)
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Whether `token` is [`stream_link_token`] for `media_id`, compared in
+/// constant time.
+pub(crate) fn is_stream_link_token(media_id: Uuid, token: &str) -> bool {
+    use hmac::Mac;
+    let bytes: Option<Vec<u8>> = (token.len() % 2 == 0)
+        .then(|| {
+            (0..token.len())
+                .step_by(2)
+                .map(|i| {
+                    token
+                        .get(i..i + 2)
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
+                .collect()
+        })
+        .flatten();
+    bytes.is_some_and(|b| {
+        stream_link_mac(media_id)
+            .verify_slice(&b)
+            .is_ok()
+    })
+}
 
 /// Clips AIOStreams redirects to (`/static/<clip>`) when a debrid resolve
 /// fails; they are playable MP4s, so status alone reads them as alive. Mirrors
@@ -1051,26 +1094,6 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         return c.mime_type();
     }
     "application/octet-stream"
-}
-
-/// Extract the `urn:btih:` info-hash from a magnet URI.
-fn extract_btih(magnet: &str) -> Option<String> {
-    url::Url::parse(magnet)
-        .ok()?
-        .query_pairs()
-        .find(|(k, _)| k == "xt")
-        .and_then(|(_, v)| {
-            v.strip_prefix("urn:btih:")
-                .map(|h| h.to_ascii_lowercase())
-        })
-}
-
-fn extract_query_param(url: &str, param: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()?
-        .query_pairs()
-        .find(|(k, _)| k == param)
-        .map(|(_, v)| v.into_owned())
 }
 
 #[cfg(test)]

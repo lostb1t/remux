@@ -28,11 +28,11 @@ impl SegmentContainer {
     /// for clients that declare HEVC in TS only (webOS and Tizen play fMP4
     /// HEVC badly), see `client_wants_hevc_in_ts`.
     pub fn for_codecs(
-        video_codec: &str,
+        copy_video: bool,
         source_video_codec: Option<&str>,
         hevc_in_ts: bool,
     ) -> Self {
-        let hevc_copy = video_codec == "copy"
+        let hevc_copy = copy_video
             && source_video_codec
                 .and_then(|s| {
                     s.parse::<VideoCodec>()
@@ -73,8 +73,8 @@ pub struct TranscodeSession {
     /// Broadcasts state transitions so waiters can react immediately.
     pub state_tx: Arc<watch::Sender<TranscodeState>>,
     pub created_at: Instant,
-    pub video_codec: String,
-    pub audio_codec: String,
+    pub video_codec: crate::playback::codec::CodecTarget,
+    pub audio_codec: crate::playback::codec::CodecTarget,
     pub audio_stream_index: Option<i32>,
     /// Channel count the audio is re-encoded to (None when the audio is copied).
     pub audio_channels: Option<u32>,
@@ -134,8 +134,8 @@ impl TranscodeSession {
         media_source_id: Uuid,
         input_url: String,
         output_dir: PathBuf,
-        video_codec: String,
-        audio_codec: String,
+        video_codec: crate::playback::codec::CodecTarget,
+        audio_codec: crate::playback::codec::CodecTarget,
         audio_stream_index: Option<i32>,
         subtitle_stream_index: Option<i32>,
         burn_subtitle: bool,
@@ -209,7 +209,8 @@ impl TranscodeSession {
 
     pub fn segment_container(&self) -> SegmentContainer {
         SegmentContainer::for_codecs(
-            &self.video_codec,
+            self.video_codec
+                .is_copy(),
             self.source_video_codec
                 .as_deref(),
             self.hevc_in_ts,

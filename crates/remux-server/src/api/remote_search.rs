@@ -297,7 +297,7 @@ pub async fn search_remote_subtitles(
                 .ctx
                 .store
                 .save(
-                    format!("subtitle:{}", id),
+                    crate::store_keys::remote_subtitle(&id),
                     url_str,
                     std::time::Duration::from_secs(3600),
                 );
@@ -333,7 +333,7 @@ pub async fn download_remote_subtitle(
     let _url = state
         .ctx
         .store
-        .get::<String>(format!("subtitle:{}", subtitle_id));
+        .get::<String>(crate::store_keys::remote_subtitle(&subtitle_id));
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -40,7 +40,7 @@ impl Task for ClearImageCacheTask {
         let mut removed = 0usize;
 
         for entry in super::iter_dir(&cache_dir) {
-            if let Err(e) = std::fs::remove_file(entry.path()) {
+            if let Err(e) = tokio::fs::remove_file(entry.path()).await {
                 warn!(path = %entry.path().display(), error = %e, "failed to remove cached image");
             } else {
                 removed += 1;

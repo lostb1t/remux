@@ -1,9 +1,7 @@
 use std::{
-    collections::HashMap,
     convert::Infallible,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -17,37 +15,14 @@ use crate::web_patches::{CSS, JS};
 
 const BRANDING_CONFIG_KEY: &str = "branding_configuration";
 
-#[derive(Clone, Default)]
-pub struct TransformCache(Arc<Mutex<HashMap<String, Bytes>>>);
-
-impl TransformCache {
-    pub fn get(&self, path: &str) -> Option<Bytes> {
-        self.0
-            .lock()
-            .unwrap()
-            .get(path)
-            .cloned()
-    }
-    pub fn insert(&self, path: String, bytes: Bytes) {
-        self.0
-            .lock()
-            .unwrap()
-            .insert(path, bytes);
-    }
-}
-
 #[derive(Clone)]
 pub struct TransformLayer {
-    cache: TransformCache,
     pool: Option<sqlx::SqlitePool>,
 }
 
 impl TransformLayer {
     pub fn new(pool: Option<sqlx::SqlitePool>) -> Self {
-        Self {
-            cache: TransformCache::default(),
-            pool,
-        }
+        Self { pool }
     }
 }
 
@@ -56,9 +31,6 @@ impl<S> Layer<S> for TransformLayer {
     fn layer(&self, inner: S) -> Self::Service {
         TransformService {
             inner,
-            cache: self
-                .cache
-                .clone(),
             pool: self
                 .pool
                 .clone(),
@@ -69,7 +41,6 @@ impl<S> Layer<S> for TransformLayer {
 #[derive(Clone)]
 pub struct TransformService<S> {
     inner: S,
-    cache: TransformCache,
     pool: Option<sqlx::SqlitePool>,
 }
 
@@ -108,9 +79,6 @@ where
             headers.remove(http::header::IF_MODIFIED_SINCE);
             headers.remove(http::header::IF_NONE_MATCH);
         }
-        let cache = self
-            .cache
-            .clone();
         let pool = self
             .pool
             .clone();

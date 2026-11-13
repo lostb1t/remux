@@ -1,4 +1,4 @@
-use crate::{OptionExt, ResultExt};
+use crate::OptionExt;
 use axum::{
     Json,
     extract::{Path, State},

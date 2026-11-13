@@ -1,3 +1,4 @@
+use crate::ids::UserId;
 use axum::{
     Json,
     extract::{Path, State},
@@ -8,22 +9,20 @@ use axum_extra::extract::Query;
 use chrono::Utc;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
-use serde::Deserialize;
-use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
 use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common,
+    AppState, IntoApiError, OptionExt, ResultExt, api,
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
-    playback::session::TranscodeSession,
+    playback::codec::CodecTarget,
     playback_session,
     playback_session::ServedPlayback,
-    services::{self, MediaResolveService},
+    services::MediaResolveService,
     signals::{
         Event, PlaybackContext, PlaybackPosition, RemoteCommandInfo, RemotePlayInfo,
         RemotePlaystateInfo,
@@ -172,9 +171,11 @@ pub async fn report_playback_start(
     {
         data.item_id = MediaResolveService::playable_item_id(
             &state.ctx,
-            session
-                .user
-                .id,
+            UserId(
+                session
+                    .user
+                    .id,
+            ),
             data.item_id,
         )
         .await;
@@ -322,9 +323,11 @@ async fn report_item_id(
     }
     MediaResolveService::playable_item_id(
         &state.ctx,
-        session
-            .user
-            .id,
+        UserId(
+            session
+                .user
+                .id,
+        ),
         data.item_id,
     )
     .await
@@ -689,7 +692,7 @@ pub async fn sessions_capabilities_full_by_id(
 #[serde_as]
 #[query]
 #[derive(Default)]
-struct SessionsQuery {
+pub struct SessionsQuery {
     #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
     #[serde_as(as = "Option<DurationSeconds<u64>>")]
     active_within: Option<Duration>,
@@ -941,30 +944,24 @@ pub(crate) async fn build_session_list(
                 // Use the actual source codec name when ffmpeg is copying the
                 // stream (remux). Clients use VideoCodec/AudioCodec to display
                 // the stream format, so "copy" is meaningless to them.
-                let video_codec_name = if ts.video_codec == "copy" {
-                    ts.source_video_codec
+                let video_codec_name = match &ts.video_codec {
+                    CodecTarget::Copy => ts
+                        .source_video_codec
                         .clone()
-                        .unwrap_or_else(|| {
-                            ts.video_codec
-                                .clone()
-                        })
-                } else {
-                    ts.video_codec
-                        .clone()
+                        .unwrap_or_else(|| "copy".to_string()),
+                    CodecTarget::Transcode(codec) => codec.clone(),
                 };
-                let audio_codec_name = if ts.audio_codec == "copy" {
-                    ts.source_audio_codec
+                let audio_codec_name = match &ts.audio_codec {
+                    CodecTarget::Copy => ts
+                        .source_audio_codec
                         .clone()
-                        .unwrap_or_else(|| {
-                            ts.audio_codec
-                                .clone()
-                        })
-                } else {
-                    ts.audio_codec
-                        .clone()
+                        .unwrap_or_else(|| "copy".to_string()),
+                    CodecTarget::Transcode(codec) => codec.clone(),
                 };
 
-                let is_video_direct = ts.video_codec == "copy";
+                let is_video_direct = ts
+                    .video_codec
+                    .is_copy();
                 let container = if ts.use_fmp4() { "fmp4" } else { "ts" };
                 let bitrate = if is_video_direct {
                     probe_data.and_then(|p| p.bitrate)
@@ -977,7 +974,9 @@ pub(crate) async fn build_session_list(
                     video_codec: Some(video_codec_name),
                     container: Some(container.to_string()),
                     is_video_direct,
-                    is_audio_direct: ts.audio_codec == "copy",
+                    is_audio_direct: ts
+                        .audio_codec
+                        .is_copy(),
                     bitrate,
                     framerate: ts.source_frame_rate,
                     width,
@@ -1207,7 +1206,7 @@ pub async fn get_sessions(
 #[post("/userplayeditems/{id}")]
 pub async fn user_mark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -1217,7 +1216,7 @@ pub async fn user_mark_played(
 #[delete("/userplayeditems/{id}")]
 pub async fn user_unmark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -1229,7 +1228,7 @@ pub async fn user_unmark_played(
 
 #[query]
 #[derive(Default)]
-struct RemotePlayQuery {
+pub struct RemotePlayQuery {
     item_ids: remux_sdks::CommaSeparatedList<Uuid>,
     play_command: Option<String>,
     start_position_ticks: Option<i64>,
@@ -1241,7 +1240,7 @@ struct RemotePlayQuery {
 
 #[query]
 #[derive(Default)]
-struct RemotePlaystateQuery {
+pub struct RemotePlaystateQuery {
     seek_position_ticks: Option<i64>,
     controlling_user_id: Option<String>,
 }
@@ -1264,7 +1263,7 @@ enum PlaystateCommand {
 
 #[query]
 #[derive(Default)]
-struct RemoteViewingQuery {
+pub struct RemoteViewingQuery {
     item_type: Option<String>,
     item_id: Option<String>,
     item_name: Option<String>,
@@ -1272,7 +1271,7 @@ struct RemoteViewingQuery {
 
 #[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-struct RemoteFullCommand {
+pub struct RemoteFullCommand {
     name: Option<String>,
     controlling_user_id: Option<String>,
     arguments: Option<std::collections::HashMap<String, String>>,
@@ -1280,7 +1279,7 @@ struct RemoteFullCommand {
 
 #[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-struct RemoteMessageBody {
+pub struct RemoteMessageBody {
     header: Option<String>,
     text: Option<String>,
     timeout_ms: Option<i64>,

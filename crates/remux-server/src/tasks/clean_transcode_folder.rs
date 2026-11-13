@@ -52,11 +52,13 @@ impl Task for CleanTranscodeFolderTask {
             if !active.contains(&name) {
                 // Kill any orphaned ffmpeg process before removing the dir.
                 #[cfg(unix)]
-                if let Ok(pid_str) = std::fs::read_to_string(
+                if let Ok(pid_str) = tokio::fs::read_to_string(
                     entry
                         .path()
                         .join(".pid"),
-                ) {
+                )
+                .await
+                {
                     if let Ok(pid) = pid_str
                         .trim()
                         .parse::<libc::pid_t>()
@@ -69,7 +71,7 @@ impl Task for CleanTranscodeFolderTask {
                         }
                     }
                 }
-                if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                if let Err(e) = tokio::fs::remove_dir_all(entry.path()).await {
                     warn!(
                         "failed to remove transcode dir {}: {e:#}",
                         entry

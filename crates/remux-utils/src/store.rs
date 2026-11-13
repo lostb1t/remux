@@ -6,6 +6,8 @@ pub struct StoreEntry {
     pub item: Arc<dyn Any + Send + Sync>,
     pub ttl: Duration,
     pub weight: u32,
+    /// Every read restarts `ttl` (see [`Store::save_sliding`]).
+    pub sliding: bool,
 }
 
 impl Clone for StoreEntry {
@@ -14,6 +16,7 @@ impl Clone for StoreEntry {
             item: Arc::clone(&self.item),
             ttl: self.ttl,
             weight: self.weight,
+            sliding: self.sliding,
         }
     }
 }
@@ -57,6 +60,26 @@ impl Store {
             item: Arc::new(item),
             ttl,
             weight: 1,
+            sliding: false,
+        });
+        self.inner
+            .insert(key.into(), entry);
+    }
+
+    /// [`Self::save`], but every read restarts `ttl`: the entry lives as long
+    /// as it keeps being used, plus `ttl`. For state that must outlast a
+    /// session of any length, such as which file a client is reading.
+    pub fn save_sliding<T: Any + Send + Sync + 'static>(
+        &self,
+        key: impl Into<String>,
+        item: T,
+        ttl: Duration,
+    ) {
+        let entry = Arc::new(StoreEntry {
+            item: Arc::new(item),
+            ttl,
+            weight: 1,
+            sliding: true,
         });
         self.inner
             .insert(key.into(), entry);
@@ -73,6 +96,7 @@ impl Store {
             item: Arc::new(item),
             ttl,
             weight,
+            sliding: false,
         });
         self.inner
             .insert(key.into(), entry);
@@ -91,6 +115,7 @@ impl Store {
             item: item as Arc<dyn Any + Send + Sync>,
             ttl,
             weight,
+            sliding: false,
         });
         self.inner
             .insert(key.into(), entry);
@@ -109,6 +134,7 @@ impl Store {
                     item: Arc::new(item),
                     ttl,
                     weight: 1,
+                    sliding: false,
                 })
             })
             .is_fresh()
@@ -193,12 +219,16 @@ impl Expiry<String, Arc<StoreEntry>> for PerEntryExpiry {
     fn expire_after_read(
         &self,
         _: &String,
-        _: &Arc<StoreEntry>,
+        value: &Arc<StoreEntry>,
         _: std::time::Instant,
         current: Option<Duration>,
         _: std::time::Instant,
     ) -> Option<Duration> {
-        current
+        if value.sliding {
+            Some(value.ttl)
+        } else {
+            current
+        }
     }
 }
 
@@ -222,6 +252,35 @@ mod tests {
                 .unwrap(),
             1,
             "first writer's value should win"
+        );
+    }
+
+    #[test]
+    fn a_sliding_entry_lives_while_it_is_read() {
+        let store = Store::new(10);
+        let ttl = Duration::from_millis(300);
+        store.save_sliding("sliding", 1u32, ttl);
+        store.save("fixed", 1u32, ttl);
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(
+                store
+                    .get::<u32>("sliding")
+                    .is_some()
+            );
+        }
+        assert!(
+            store
+                .get::<u32>("fixed")
+                .is_none(),
+            "a plain entry expires"
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            store
+                .get::<u32>("sliding")
+                .is_none(),
+            "unread, it expires"
         );
     }
 }

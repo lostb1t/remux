@@ -12,57 +12,25 @@ pub(crate) const DATE_CREATED_ORDER_EXPR: &str = "datetime(created_at)";
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 use crate::{
-    OptionExt, ResultExt, api,
+    api,
     api::MediaSourceInfo,
-    common::{IntoVec, get_uuid, server_id},
+    common::{get_uuid, server_id},
     sdks,
-    services::stremio as stremio_service,
-    stream::{StreamDescriptor, StreamInfo},
 };
 use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
-use axum::{
-    Json, Router, ServiceExt,
-    body::Body,
-    extract::{FromRequestParts, Request},
-    http::{StatusCode, request::Parts},
-    middleware,
-    middleware::Next,
-    response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
-};
-use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
-use chrono::{DateTime, Duration, NaiveDateTime, Utc, prelude::*};
-use config::{self, Config};
-use futures::future::BoxFuture;
-use futures_util::StreamExt;
-use http::Uri;
+use chrono::{Duration, NaiveDateTime, Utc, prelude::*};
 use regex::Regex;
-use reqwest::{self, header::LOCATION};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use serde_with::skip_serializing_none;
 use sqlx::{Row, SqlitePool};
 use std::{
     self,
     collections::{HashMap, HashSet},
-    env, fs,
-    path::Path,
-    str::FromStr,
     sync::{Arc, LazyLock},
 };
 use thiserror::Error;
-use timed;
-use tower::{Layer, util::MapRequestLayer};
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-};
-use tracing::{self, debug, error, info, instrument, trace, warn};
-use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
-use url::Url;
-use uuid::{Uuid, uuid};
+use tracing::{self, debug, error, warn};
+use uuid::Uuid;
 
 #[derive(
     strum_macros::EnumString,
@@ -112,7 +80,7 @@ pub enum MediaStatus {
     Released,
     #[default]
     #[serde(rename = "unknown")]
-    #[strum(to_string = "unknown", serialize = "unknown")]
+    #[strum(to_string = "unknown")]
     #[sqlx(rename = "unknown")]
     Other,
 }
@@ -2806,7 +2774,7 @@ impl Media {
             return Ok(());
         }
 
-        let mut items: Vec<Self> = items
+        let items: Vec<Self> = items
             .iter()
             .filter(|item| match item.validate() {
                 Ok(()) => true,
@@ -4400,24 +4368,6 @@ impl Media {
             } else {
                 None
             };
-
-        // series_excluded: no series possible → use NOT IN bloom filter for unplayed
-        // series_only:     only series → emit episode EXISTS directly (no CASE wrapper)
-        // else (mixed):    OR-split so non-series still get the bloom filter
-        let series_excluded = filter
-            .kind
-            .as_ref()
-            .map(|k| !k.is_empty() && !k.contains(&MediaKind::Series))
-            .unwrap_or(false);
-        let series_only = filter
-            .kind
-            .as_ref()
-            .map(|k| {
-                !k.is_empty()
-                    && k.iter()
-                        .all(|k| matches!(k, MediaKind::Series))
-            })
-            .unwrap_or(false);
 
         for qb in [&mut count_qb, &mut records_qb] {
             if is_genre_scope_query {
@@ -6760,7 +6710,7 @@ impl Media {
         // hidden, leaving artist pages empty for single-only artists — #208). The
         // album_kinds column/filter machinery stays for compatibility but is not
         // applied here.
-        let mut result = Self::get_by_filter(
+        let result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
@@ -6906,11 +6856,11 @@ impl Media {
 
     pub async fn into_base_item(
         self,
-        db: &sqlx::SqlitePool,
+        _db: &sqlx::SqlitePool,
     ) -> Result<api::BaseItemDto> {
         //  let provider_ids = ProviderIds::get_by_media_id(db, &self.id).await?;
 
-        let mut item = api::BaseItemDto {
+        let item = api::BaseItemDto {
             id: self.id,
             server_id: server_id(),
             type_: self
@@ -8177,7 +8127,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
         return Ok(media_instances);
     }
 
-    let imdb_id = imdb_id.unwrap();
+    let _imdb_id = imdb_id.unwrap();
 
     let series_key = media.series_canonical_key();
 
@@ -9979,7 +9929,6 @@ mod tests {
         }
     }
 
-    use super::*;
     use crate::db::MediaIdRaw;
 
     /// `stremio_meta_episode` is the per-episode fast path used by meta refresh;
@@ -12397,7 +12346,7 @@ mod tests {
 
         let album_row =
             |title: &str, imdb: &str, deezer: i64, kind: Option<AlbumKind>| {
-                let mut ext = ExternalIds {
+                let ext = ExternalIds {
                     imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
                     deezer_album: Some(deezer),
                     ..Default::default()

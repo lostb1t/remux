@@ -1,8 +1,7 @@
 use crate::{
     api, db,
-    device_profile::{
-        DeviceProfileExt, SubtitleCodec, VideoCodec, subtitle_codec_matches_profile,
-    },
+    device_profile::{DeviceProfileExt, SubtitleCodec, VideoCodec},
+    playback::codec::CodecTarget,
 };
 use remux_sdks::remux::{
     DlnaProfileType, EmbeddedSubtitleHandling, EncodingOptions, PlayMethod,
@@ -69,25 +68,25 @@ impl PlaybackPermissions {
         subtitle_burn_requested: bool,
     ) -> ResolvedPlaybackCodecs {
         let burn_subtitle = subtitle_burn_requested && self.video_transcoding;
+        let requested_video = CodecTarget::from(requested_video);
+        let requested_audio = CodecTarget::from(requested_audio);
         let video = if burn_subtitle
-            || (!codec_is_copy(requested_video) && self.video_transcoding)
+            || (!requested_video.is_copy() && self.video_transcoding)
         {
-            "h264"
+            CodecTarget::Transcode("h264".into())
         } else {
-            "copy"
-        }
-        .to_string();
-        let audio = if codec_is_copy(requested_audio) || !self.audio_transcoding {
-            "copy".to_string()
+            CodecTarget::Copy
+        };
+        let audio = if self.audio_transcoding {
+            requested_audio
         } else {
-            requested_audio.to_string()
+            CodecTarget::Copy
         };
         // Re-encoding audio into the codec it already has, without reshaping
-        // it, is a pure remux in effect; the codec string above is left alone
-        // so a genuine AAC downmix still reaches FFmpeg when remuxing is on.
-        let direct_play_only = codec_is_copy(&video)
-            && (codec_is_copy(&audio) || audio_passthrough)
-            && !self.remuxing;
+        // it, is a pure remux in effect; the codec above is left alone so a
+        // genuine AAC downmix still reaches FFmpeg when remuxing is on.
+        let direct_play_only =
+            video.is_copy() && (audio.is_copy() || audio_passthrough) && !self.remuxing;
 
         ResolvedPlaybackCodecs {
             video,
@@ -118,8 +117,8 @@ impl PlaybackPermissions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPlaybackCodecs {
-    pub video: String,
-    pub audio: String,
+    pub video: CodecTarget,
+    pub audio: CodecTarget,
     pub direct_play_only: bool,
     pub burn_subtitle: bool,
 }
@@ -165,10 +164,6 @@ pub(crate) fn audio_is_passthrough(
     requested_codec.eq_ignore_ascii_case(source_codec)
         && !exceeds(max_channels, source_channels)
         && !exceeds(max_bitrate, source_bitrate)
-}
-
-fn codec_is_copy(codec: &str) -> bool {
-    codec.eq_ignore_ascii_case("copy")
 }
 
 /// Per-request config shared across all streams in the playback loop.
@@ -373,7 +368,7 @@ fn build_video_transcode(
     // Jellyfin Web advertises both fMP4 and MPEG-TS HLS profiles. Jellyfin
     // selects TS for live H.264; match the profile to our HLS output, which
     // is TS except when copying HEVC as fMP4/CMAF.
-    let is_hevc_copy = video_codec == "copy"
+    let is_hevc_copy = video_codec.is_copy()
         && source
             .video_stream()
             .and_then(|s| {
@@ -450,8 +445,8 @@ fn build_video_transcode(
         reasons.contains(&api::TranscodeReason::StreamCountExceedsLimit(String::new()));
     let container_not_playable =
         reasons.contains(&api::TranscodeReason::ContainerNotSupported(String::new()));
-    if video_codec == "copy"
-        && audio_codec == "copy"
+    if video_codec.is_copy()
+        && audio_codec.is_copy()
         && !needs_hevc_retag
         && !needs_stream_filter
         && !container_not_playable
@@ -948,8 +943,8 @@ mod tests {
 
         let codecs = permissions.resolve_codecs("h264", "aac", false, false);
 
-        assert_eq!(codecs.video, "copy");
-        assert_eq!(codecs.audio, "copy");
+        assert_eq!(codecs.video, CodecTarget::from("copy"));
+        assert_eq!(codecs.audio, CodecTarget::from("copy"));
         assert!(codecs.direct_play_only);
         assert!(!permissions.processing_available());
     }
@@ -972,7 +967,7 @@ mod tests {
         assert!(passthrough);
         let codecs = permissions.resolve_codecs("copy", "aac", passthrough, false);
         assert!(codecs.direct_play_only);
-        assert_eq!(codecs.audio, "aac");
+        assert_eq!(codecs.audio, CodecTarget::from("aac"));
 
         let downmix =
             audio_is_passthrough("aac", Some("aac"), Some(6), None, Some(2), None);
@@ -1040,13 +1035,13 @@ mod tests {
 
         for permissions in [globally_disabled, user_disabled] {
             let codecs = permissions.resolve_codecs("copy", "copy", false, true);
-            assert_eq!(codecs.video, "copy");
+            assert_eq!(codecs.video, CodecTarget::from("copy"));
             assert!(!codecs.burn_subtitle);
         }
 
         let allowed = PlaybackPermissions::for_user(&EncodingOptions::default(), None)
             .resolve_codecs("copy", "copy", false, true);
-        assert_eq!(allowed.video, "h264");
+        assert_eq!(allowed.video, CodecTarget::from("h264"));
         assert!(allowed.burn_subtitle);
     }
 

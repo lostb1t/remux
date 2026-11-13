@@ -232,53 +232,11 @@ struct XtreamVodStream {
     pub name: Option<String>,
     pub stream_id: Option<serde_json::Value>,
     pub stream_icon: Option<String>,
-    pub category_id: Option<serde_json::Value>,
     pub category_name: Option<String>,
     pub plot: Option<String>,
-    pub genre: Option<String>,
     pub releasedate: Option<String>,
     pub rating: Option<serde_json::Value>,
     pub container_extension: Option<String>,
-}
-
-/// Fetch VOD categories and return `category_id → ProgramKind` (best-effort).
-pub async fn fetch_vod_categories(
-    client: &reqwest::Client,
-    server: &str,
-    username: &str,
-    password: &str,
-) -> HashMap<String, ProgramKind> {
-    let base = server.trim_end_matches('/');
-    let url = format!(
-        "{}/player_api.php?username={}&password={}&action=get_vod_categories",
-        base, username, password
-    );
-    let Ok(resp) = client
-        .get(&url)
-        .send()
-        .await
-    else {
-        return HashMap::new();
-    };
-    let Ok(cats) = resp
-        .json::<Vec<XtreamCategory>>()
-        .await
-    else {
-        return HashMap::new();
-    };
-    cats.into_iter()
-        .filter_map(|c| {
-            let id = json_value_to_string(
-                c.category_id
-                    .as_ref()?,
-            )?;
-            let kind = super::parse_program_kind(
-                c.category_name
-                    .as_deref()?,
-            )?;
-            Some((id, kind))
-        })
-        .collect()
 }
 
 /// Fetch VOD streams and convert them to `db::Media` items (kind=Movie).
@@ -300,8 +258,6 @@ pub async fn fetch_vod_streams(
     let username = username.to_owned();
     let password = password.to_owned();
     let source_id = source_id.to_owned();
-    let category_kinds =
-        fetch_vod_categories(client, server, &username, &password).await;
 
     let resp = client
         .get(&url)
@@ -324,7 +280,6 @@ pub async fn fetch_vod_streams(
             password: String,
             addon_id: Uuid,
             source_id: String,
-            category_kinds: HashMap<String, ProgramKind>,
         }
 
         impl<'de> Visitor<'de> for VodCollector {
@@ -345,7 +300,6 @@ pub async fn fetch_vod_streams(
                         &self.password,
                         self.addon_id,
                         &self.source_id,
-                        &self.category_kinds,
                     ) {
                         items.push(m);
                     }
@@ -360,7 +314,6 @@ pub async fn fetch_vod_streams(
             password,
             addon_id,
             source_id,
-            category_kinds,
         })
         .map_err(anyhow::Error::from)
     })
@@ -374,7 +327,6 @@ fn vod_to_media(
     password: &str,
     addon_id: Uuid,
     source_id: &str,
-    category_kinds: &HashMap<String, ProgramKind>,
 ) -> Option<db::Media> {
     let name = v
         .name
@@ -438,52 +390,10 @@ struct XtreamSeriesItem {
     pub name: Option<String>,
     pub series_id: Option<serde_json::Value>,
     pub cover: Option<String>,
-    pub category_id: Option<serde_json::Value>,
     pub category_name: Option<String>,
     pub plot: Option<String>,
-    pub genre: Option<String>,
     pub releasedate: Option<String>,
     pub rating: Option<serde_json::Value>,
-}
-
-/// Fetch series categories and return `category_id → ProgramKind`.
-pub async fn fetch_series_categories(
-    client: &reqwest::Client,
-    server: &str,
-    username: &str,
-    password: &str,
-) -> HashMap<String, ProgramKind> {
-    let base = server.trim_end_matches('/');
-    let url = format!(
-        "{}/player_api.php?username={}&password={}&action=get_series_categories",
-        base, username, password
-    );
-    let Ok(resp) = client
-        .get(&url)
-        .send()
-        .await
-    else {
-        return HashMap::new();
-    };
-    let Ok(cats) = resp
-        .json::<Vec<XtreamCategory>>()
-        .await
-    else {
-        return HashMap::new();
-    };
-    cats.into_iter()
-        .filter_map(|c| {
-            let id = json_value_to_string(
-                c.category_id
-                    .as_ref()?,
-            )?;
-            let kind = super::parse_program_kind(
-                c.category_name
-                    .as_deref()?,
-            )?;
-            Some((id, kind))
-        })
-        .collect()
 }
 
 /// Fetch the series list and convert to `db::Media` items (kind=Series).
@@ -504,8 +414,6 @@ pub async fn fetch_series_list(
         base, username, password
     );
     let source_id = source_id.to_owned();
-    let category_kinds =
-        fetch_series_categories(client, server, username, password).await;
 
     let resp = client
         .get(&url)
@@ -525,7 +433,6 @@ pub async fn fetch_series_list(
         struct SeriesCollector {
             addon_id: Uuid,
             source_id: String,
-            category_kinds: HashMap<String, ProgramKind>,
         }
 
         impl<'de> Visitor<'de> for SeriesCollector {
@@ -539,12 +446,8 @@ pub async fn fetch_series_list(
             ) -> Result<Vec<db::Media>, A::Error> {
                 let mut items = Vec::new();
                 while let Some(s) = seq.next_element::<XtreamSeriesItem>()? {
-                    if let Some(m) = series_to_media(
-                        s,
-                        self.addon_id,
-                        &self.source_id,
-                        &self.category_kinds,
-                    ) {
+                    if let Some(m) = series_to_media(s, self.addon_id, &self.source_id)
+                    {
                         items.push(m);
                     }
                 }
@@ -555,7 +458,6 @@ pub async fn fetch_series_list(
         de.deserialize_seq(SeriesCollector {
             addon_id,
             source_id,
-            category_kinds,
         })
         .map_err(anyhow::Error::from)
     })
@@ -566,7 +468,6 @@ fn series_to_media(
     s: XtreamSeriesItem,
     addon_id: Uuid,
     source_id: &str,
-    category_kinds: &HashMap<String, ProgramKind>,
 ) -> Option<db::Media> {
     let name = s
         .name

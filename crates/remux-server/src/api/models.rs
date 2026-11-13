@@ -260,10 +260,6 @@ pub fn db_user_to_dto(data_dir: &std::path::Path, user: db::User) -> UserDto {
     }
 }
 
-fn image_tag(url: Option<&str>) -> Option<String> {
-    url.map(|u| u.to_string())
-}
-
 fn media_image_tag(media: &db::Media, kind: db::ImageKind) -> Option<String> {
     media
         .images
@@ -399,7 +395,7 @@ fn db_media_to_item_inner(
     hide_sources: bool,
     include_sources: bool,
 ) -> BaseItemDto {
-    use crate::common::{IntoVec, ToRunTimeTicks};
+    use crate::common::ToRunTimeTicks;
 
     let type_ = media
         .kind

@@ -22,8 +22,10 @@ pub struct M3uChannel {
     /// Derived from group-title (and Xtream category for Xtream sources)
     pub program_kind: Option<ProgramKind>,
     /// tvg-language attribute
+    #[allow(dead_code)] // parsed from the playlist; not used yet
     pub language: Option<String>,
     /// Catchup type (e.g. "default", "append", "shift", "flussonic")
+    #[allow(dead_code)] // parsed from the playlist; not used yet
     pub catchup: Option<String>,
     /// Number of days of catchup content available
     pub catchup_days: Option<i64>,

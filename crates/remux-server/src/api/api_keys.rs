@@ -10,7 +10,7 @@ use crate::{
     AppState, api,
     db::{ApiKey, auth},
 };
-use axum_anyhow::{ApiResult as Result, IntoApiError};
+use axum_anyhow::ApiResult as Result;
 
 #[query]
 pub struct CreateKeyQuery {
@@ -21,7 +21,7 @@ pub struct CreateKeyQuery {
 #[get("/auth/keys")]
 pub async fn get_api_keys(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     let keys = ApiKey::get_all(
         &state
@@ -54,7 +54,7 @@ pub async fn get_api_keys(
 #[post("/auth/keys")]
 pub async fn create_api_key(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Query(params): Query<CreateKeyQuery>,
 ) -> Result<impl IntoResponse> {
     let key = ApiKey::create(
@@ -80,7 +80,7 @@ pub async fn create_api_key(
 #[delete("/auth/keys/{key}")]
 pub async fn delete_api_key(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse> {
     ApiKey::delete(

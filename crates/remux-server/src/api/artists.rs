@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     response::IntoResponse,
 };
 use axum_anyhow::ApiResult as Result;

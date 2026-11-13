@@ -26,4 +26,8 @@ jobs:
           key: test
 
       - name: Run tests
+        # Warnings fail the build: they hid dead code and ignored errors for a
+        # long time behind `#![allow(warnings)]`.
+        env:
+          RUSTFLAGS: -D warnings
         run: cargo test -p remux-server -p remux-sdks

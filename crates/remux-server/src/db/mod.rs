@@ -201,32 +201,6 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
-    let config = Settings::get_config_or_default(pool).await;
-    let rows = sqlx::query_as::<_, (uuid::Uuid, String)>(
-        "SELECT id, certification FROM media WHERE certification IS NOT NULL AND certification_age IS NULL",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for (id, certification) in rows {
-        if let Some(age) = crate::localization::ratings::resolve_rating_age(
-            Some(&certification),
-            config
-                .metadata_country_code
-                .as_deref(),
-        ) {
-            sqlx::query("UPDATE media SET certification_age = ?1 WHERE id = ?2")
-                .bind(age)
-                .bind(id)
-                .execute(pool)
-                .await?;
-        }
-    }
-
-    Ok(())
-}
-
 /// Populate `user_media_state.media_raw` for rows written before it existed,
 /// and rebuild rows still holding the old full-JSON format (starts with `{`)
 /// into the compact `identity_key()` format matching now expects — see
@@ -470,9 +444,12 @@ pub async fn migrate_channel_ids(pool: &SqlitePool) -> Result<()> {
 }
 
 pub async fn checkpoint_db(pool: &SqlitePool) {
-    sqlx::query("PRAGMA wal_checkpoint(FULL)")
+    if let Err(e) = sqlx::query("PRAGMA wal_checkpoint(FULL)")
         .execute(pool)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %e, "WAL checkpoint failed");
+    }
 }
 
 #[derive(
@@ -543,6 +520,75 @@ impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
 
 #[cfg(test)]
 mod tests {
+    /// SQL in this crate names media kinds as string literals (`kind = 'movie'`,
+    /// `kind IN ('season', 'episode')`). Each must be a value `MediaKind` (or
+    /// `OpendalKind`, for `opendal_files.media_kind`) actually stores, or a
+    /// renamed variant would silently make a query match nothing.
+    #[test]
+    fn media_kind_literals_in_sql_are_real_kinds() {
+        use std::str::FromStr;
+        let kind_list = regex::Regex::new(
+            r"(\w*kind)\s*(?:=|!=|<>|IN|NOT IN)\s*\(?\s*((?:'[a-z_]+'\s*,?\s*)+)",
+        )
+        .unwrap();
+        let literal = regex::Regex::new(r"'([a-z_]+)'").unwrap();
+        let mut checked = 0;
+        let mut bad = vec![];
+        let mut stack = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src"
+        ))];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry
+                    .unwrap()
+                    .path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path
+                    .extension()
+                    .is_none_or(|e| e != "rs")
+                {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                for found in kind_list.captures_iter(&source) {
+                    let column = &found[1];
+                    for value in literal.captures_iter(&found[2]) {
+                        let value = &value[1];
+                        let known = match column {
+                            "media_kind" => {
+                                crate::addons::opendal::OpendalKind::from_str(value)
+                                    .is_ok()
+                            }
+                            c if c.ends_with("kind")
+                                && c != "program_kind"
+                                && c != "collection_kind" =>
+                            {
+                                super::MediaKind::from_str(value).is_ok()
+                            }
+                            _ => true,
+                        };
+                        checked += 1;
+                        if !known {
+                            bad.push(format!(
+                                "{}: {column} = '{value}'",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 50,
+            "the scan found the SQL kind literals ({checked})"
+        );
+        assert!(bad.is_empty(), "unknown kinds in SQL: {bad:#?}");
+    }
+
     /// X shares an imdb id with Y, and Y a tmdb id with Z, so the dedupe maps
     /// X -> Y -> Z. X's season must end up under Z, not under Y (itself a
     /// loser, whose delete would cascade the season away).

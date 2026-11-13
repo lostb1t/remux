@@ -11,7 +11,6 @@ pub mod lrclib;
 pub mod media_tracker;
 pub mod opendal;
 pub mod probe;
-pub mod squid;
 pub mod stremio;
 pub mod tmdb;
 pub mod torznab;
@@ -20,7 +19,7 @@ pub mod ytdlp;
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
@@ -30,7 +29,6 @@ use std::{
 };
 
 use crate::keyed_lock::KeyedLock;
-use libc;
 use tracing::{Instrument, debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -886,9 +884,9 @@ pub trait MetaAddon: Send + Sync {
     /// Fetch remote image candidates for manual image selection in the UI.
     async fn images_fetch(
         &self,
-        media: &db::Media,
-        ctx: &AppContext,
-        options: ImageFetchOptions,
+        _media: &db::Media,
+        _ctx: &AppContext,
+        _options: ImageFetchOptions,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
     }
@@ -986,8 +984,8 @@ pub trait StreamAddon: Send + Sync {
     /// Only called when `StreamDescriptor::addon_id()` points to this addon.
     async fn serve_stream(
         &self,
-        descriptor: &crate::stream::StreamDescriptor,
-        headers: &axum::http::HeaderMap,
+        _descriptor: &crate::stream::StreamDescriptor,
+        _headers: &axum::http::HeaderMap,
     ) -> axum_anyhow::ApiResult<axum::response::Response> {
         Err(axum_anyhow::ApiError::builder()
             .status(axum::http::StatusCode::BAD_REQUEST)
@@ -1344,8 +1342,6 @@ fn apply_manifest_info(
 // AddonService
 // ---------------------------------------------------------------------------
 
-const MANIFEST_FETCH_CONCURRENCY: usize = 25;
-
 #[derive(Clone)]
 pub struct AddonService {
     inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
@@ -1643,7 +1639,7 @@ impl AddonService {
         let addons = Addon::list(db).await?;
         let mut pending = Vec::new();
 
-        for mut addon in addons
+        for addon in addons
             .into_iter()
             .filter(|a| a.enabled)
         {
@@ -2153,10 +2149,7 @@ impl AddonService {
         async_stream::stream! {
             let mut seen = std::collections::HashSet::new();
             seen.insert(root.id);
-            let root_title = root.title.clone();
-            let root_id = root.id;
             let mut queue = vec![root];
-            let mut total_yielded = 0usize;
 
             while let Some(node) = queue.pop() {
                 let applicable: Vec<Arc<dyn TreeAddon>> = svc
@@ -2208,7 +2201,6 @@ impl AddonService {
                                     if !is_leaf {
                                         queue.push(child.clone());
                                     }
-                                    total_yielded += 1;
                                     yield child;
                                 }
                             }

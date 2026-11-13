@@ -179,12 +179,18 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
     .into_admin_service();
 
     #[cfg(not(dashboard_built))]
-    let admin = {
-        let paths = remux_server::FilesystemPaths::load_from_env();
-        remux_server::admin_from_filesystem(&paths.dashboard_path)
-    };
+    let admin = remux_server::admin_from_filesystem(
+        &config
+            .paths
+            .dashboard_path,
+    );
 
     let addr = std::net::SocketAddr::new(config.host, config.port);
+    #[cfg(not(jellyfin_web_built))]
+    let web_path = config
+        .paths
+        .web_path
+        .clone();
     #[cfg(remux_web_built)]
     let remux_web = Some(remux_server::RemuxWeb::from_embedded(&REMUX_WEB));
     #[cfg(not(remux_web_built))]
@@ -198,8 +204,7 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
 
         #[cfg(not(jellyfin_web_built))]
         {
-            let paths = remux_server::FilesystemPaths::load_from_env();
-            remux_server::WebClientService::from_filesystem(&paths.web_path, pool)
+            remux_server::WebClientService::from_filesystem(&web_path, pool)
         }
     })
     .await?;

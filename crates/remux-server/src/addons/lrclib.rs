@@ -9,10 +9,7 @@ use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
     LyricAddon, LyricSearchRequest, MediaKind, ResourceType,
 };
-use crate::{
-    common::{TickUnit, ToRunTimeTicks},
-    db,
-};
+use crate::common::{TickUnit, ToRunTimeTicks};
 use remux_sdks::remux::{LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto};
 
 pub struct LrcLibPreset;

@@ -1,7 +1,7 @@
 use crate::{
     addons::SubtitleInfo,
     api, common,
-    common::{ToRunTimeTicks, get_uuid},
+    common::ToRunTimeTicks,
     db,
     playback::probe::{
         StreamMeta, display_title_audio, display_title_subtitle, display_title_video,
@@ -10,10 +10,7 @@ use crate::{
     stream::StreamDescriptor,
 };
 use anyhow::Result;
-use std::{
-    collections::HashMap,
-    convert::{TryFrom, TryInto},
-};
+use std::{collections::HashMap, convert::TryFrom};
 use tracing::warn;
 
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
@@ -644,36 +641,6 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
         localized_external: Some("External".to_string()),
         localized_hearing_impaired: Some("Hearing Impaired".to_string()),
         ..Default::default()
-    }
-}
-
-pub fn stream_into_media_source_info(
-    id: String,
-    jellyfin_media_type: api::MediaType,
-    stream: stremio::Stream,
-) -> api::MediaSourceInfo {
-    let id = get_uuid();
-    api::MediaSourceInfo {
-        id: id.clone(),
-        e_tag: id.clone(),
-        path: stream.url,
-        protocol: api::MediaProtocol::File,
-        supports_transcoding: false,
-        supports_direct_stream: true,
-        supports_direct_play: true,
-        is_remote: false,
-        name: stream
-            .name
-            .clone(),
-        ..Default::default()
-    }
-}
-
-fn to_option_bool(flag: i64) -> Option<bool> {
-    match flag {
-        1 => Some(true),
-        0 => Some(false),
-        _ => None,
     }
 }
 

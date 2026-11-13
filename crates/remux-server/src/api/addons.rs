@@ -21,7 +21,6 @@ use crate::{
     db::{MediaKind as DbMediaKind, auth},
 };
 use axum_anyhow::ApiResult as Result;
-use remux_sdks::remux::MediaKind;
 
 type CapabilitySnapshot = (Vec<remux_sdks::stremio::ResourceType>, Vec<DbMediaKind>);
 
@@ -786,6 +785,7 @@ mod test {
     use crate::integration_test::{auth_header_with_token, authenticated_server};
     use async_trait::async_trait;
     use http::header::HeaderValue;
+    use remux_sdks::remux::MediaKind;
     use serde_json::json;
     use std::sync::Arc;
 

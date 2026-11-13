@@ -119,6 +119,7 @@ mod tests {
     #[test]
     fn a_deriving_struct_inherits_the_redaction() {
         #[derive(Debug)]
+        #[allow(dead_code)] // read through Debug only
         struct Holder {
             name: String,
             token: Secret<String>,

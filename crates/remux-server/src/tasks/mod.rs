@@ -13,7 +13,7 @@ use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
 use tokio_cron_scheduler::{Job, JobScheduler, job::JobId};
 use tracing::{error, info};
 
-use crate::{AppContext, db, ws};
+use crate::{AppContext, db};
 use remux_sdks::remux::TaskTriggerInfoType;
 use strum_macros::{Display, EnumString};
 
@@ -33,7 +33,6 @@ mod refresh_all_meta;
 mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
-mod series_sync;
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
@@ -49,7 +48,6 @@ use refresh_all_meta::RefreshAllMetaTask;
 use refresh_iptv::RefreshIptvTask;
 use refresh_library::{RefreshCatalogsTask, RefreshIndexesTask, RefreshLibraryTask};
 use refresh_popularity::RefreshPopularityTask;
-use series_sync::SeriesSyncTask;
 
 // --- Task category ---
 
@@ -312,7 +310,6 @@ impl TaskService {
         service
             .register_task(Arc::new(RefreshAllMetaTask))
             .await?;
-        // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service
             .register_task(Arc::new(PurgeMediaTask))
             .await?;

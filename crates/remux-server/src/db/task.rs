@@ -2,7 +2,6 @@ use anyhow::Result;
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use uuid::Uuid;
 
 use crate::common::get_uuid;
 use remux_sdks::remux::TaskTriggerInfoType;

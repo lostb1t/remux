@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 mod store;
 pub use store::Store;
 

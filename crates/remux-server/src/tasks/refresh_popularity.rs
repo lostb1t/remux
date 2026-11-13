@@ -408,7 +408,7 @@ mod tests {
             (0..20).collect::<Vec<u32>>(),
             4,
             &delays,
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             lookup,
         )
         .await;
@@ -433,7 +433,7 @@ mod tests {
             vec![1_u32, 2, 3],
             2,
             &delays,
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             lookup,
         )
         .await;
@@ -458,7 +458,7 @@ mod tests {
             vec![1_u32],
             1,
             &[Duration::ZERO; 3],
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             |_| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 std::future::ready(MetricsLookup::NotFound)
@@ -521,7 +521,7 @@ mod tests {
             (0..100).collect::<Vec<u32>>(),
             4,
             &[Duration::ZERO; 2],
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             lookup,
         )
         .await;
@@ -566,7 +566,7 @@ mod tests {
             (0..40).collect::<Vec<u32>>(),
             16,
             &[Duration::ZERO; 3],
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             |_| {
                 let round = started.fetch_add(1, SeqCst) / 40;
                 let now = active.fetch_add(1, SeqCst) + 1;
@@ -613,7 +613,7 @@ mod tests {
             (0..page_len as u32).collect::<Vec<u32>>(),
             4,
             &[Duration::ZERO; 2],
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             lookup,
         )
         .await;
@@ -958,7 +958,7 @@ mod tests {
             page,
             2,
             &[Duration::ZERO; 3],
-            &mut Duration::MAX,
+            &mut Duration::MAX.clone(),
             |media| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 std::future::ready(if media.id == unknown {

@@ -1,18 +1,17 @@
+use crate::ids::UserId;
 use std::collections::HashMap;
 
 use anyhow::Context;
 use axum::{
     Json,
-    body::Bytes,
     extract::{Path, State},
     http::header,
-    response::{IntoResponse, Redirect},
+    response::IntoResponse,
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
@@ -33,7 +32,7 @@ use remux_sdks::remux::Username;
 use super::{
     items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
     mock_items,
-    shows::{livetv_view_id, livetv_view_item, next_up_candidates},
+    shows::{livetv_view_item, next_up_candidates},
 };
 
 #[post("/users/{user_id}/configuration")]
@@ -99,7 +98,7 @@ pub async fn user_configuration_legacy(
 }
 
 #[derive(Deserialize)]
-struct DisplayPrefQuery {
+pub struct DisplayPrefQuery {
     user_id: Option<Uuid>,
     client: String,
 }
@@ -338,7 +337,7 @@ pub async fn authenticate_with_quickconnect(
     let entry = state
         .ctx
         .store
-        .get::<QuickConnectEntry>(format!("qc:{}", body.secret))
+        .get::<QuickConnectEntry>(crate::store_keys::quick_connect(&body.secret))
         .context_unauthorized("QuickConnect request not found or expired")?;
 
     if !entry.authenticated {
@@ -395,11 +394,11 @@ pub async fn authenticate_with_quickconnect(
     state
         .ctx
         .store
-        .delete(format!("qc:{}", body.secret));
+        .delete(crate::store_keys::quick_connect(&body.secret));
     state
         .ctx
         .store
-        .delete(format!("qc:code:{}", entry.code));
+        .delete(crate::store_keys::quick_connect_code(&entry.code));
 
     build_auth_response(&state, device, user).await
 }
@@ -407,7 +406,7 @@ pub async fn authenticate_with_quickconnect(
 #[get("/users")]
 pub async fn users(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let users = db::User::get_by_filter(
         &state
@@ -463,9 +462,10 @@ pub async fn mark_favorite(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context("not found")?;
     let ms = media
         .mark_favorite(
             &state
@@ -491,9 +491,10 @@ pub async fn unmark_favorite(
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context("not found")?;
     let ms = media
         .unmark_favorite(
             &state
@@ -517,9 +518,10 @@ async fn unmark_favorite_inner(
     user: db::User,
     id: Uuid,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context("not found")?;
     let ms = media
         .unmark_favorite(
             &state
@@ -565,9 +567,10 @@ pub async fn mark_favorite_modern(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("Item not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("Item not found")?;
     let s = media
         .mark_favorite(
             &state
@@ -593,9 +596,10 @@ pub async fn unmark_favorite_modern(
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("Item not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("Item not found")?;
     let s = media
         .unmark_favorite(
             &state
@@ -624,9 +628,10 @@ async fn set_user_flag(
     flag: db::UserFlag,
     on: bool,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("Item not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("Item not found")?;
     let ms = media
         .set_user_flag(
             &state
@@ -703,9 +708,10 @@ pub(crate) async fn set_played(
     id: Uuid,
     played: bool,
 ) -> Result<axum::response::Response> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     let (ms, event) = if played {
         let server_config = db::Settings::get_config_or_default(
             &state
@@ -754,7 +760,7 @@ pub(crate) async fn set_played(
 #[post("/users/{user_id}/playeditems/{id}")]
 pub async fn mark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -764,7 +770,7 @@ pub async fn mark_played(
 #[delete("/users/{user_id}/playeditems/{id}")]
 pub async fn unmark_played(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -819,14 +825,15 @@ impl RatingQuery {
 #[post("/useritems/{id}/rating")]
 pub async fn update_item_rating(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
     Query(q): Query<RatingQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
@@ -851,13 +858,14 @@ pub async fn update_item_rating(
 #[delete("/useritems/{id}/rating")]
 pub async fn delete_item_rating(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
@@ -881,14 +889,15 @@ pub async fn delete_item_rating(
 #[post("/users/{user_id}/items/{id}/rating")]
 pub async fn update_item_rating_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<RatingQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     let rating = q.parse()?;
     let ms = db::UserMediaState::set_rating(
         &state
@@ -913,13 +922,14 @@ pub async fn update_item_rating_legacy(
 #[delete("/users/{user_id}/items/{id}/rating")]
 pub async fn delete_item_rating_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     let ms = db::UserMediaState::set_rating(
         &state
             .ctx
@@ -950,7 +960,7 @@ pub async fn delete_item_rating_legacy(
 #[post("/useritems/{id}/userdata")]
 pub async fn update_item_user_data(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
     Json(update): Json<api::UpdateUserItemDataDto>,
@@ -961,7 +971,7 @@ pub async fn update_item_user_data(
 #[post("/users/{user_id}/items/{id}/userdata")]
 pub async fn update_item_user_data_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     auth::TargetUser(user): auth::TargetUser,
     Path((_, id)): Path<(Uuid, Uuid)>,
     Json(update): Json<api::UpdateUserItemDataDto>,
@@ -976,9 +986,10 @@ async fn handle_update_item_user_data(
     id: Uuid,
     update: api::UpdateUserItemDataDto,
 ) -> Result<impl IntoResponse> {
-    let media = MediaResolveService::resolve_playable_item(id, user.id, &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let media =
+        MediaResolveService::resolve_playable_item(id, UserId(user.id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
     if let Some(rating) = update.rating {
         db::UserRating::try_from(rating)
             .context_bad_request("rating must be between 0 and 10")?;
@@ -1066,7 +1077,7 @@ async fn handle_update_item_user_data(
 
 #[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<api::SpecialViewOptionDto>>(vec![]))
@@ -1075,7 +1086,7 @@ pub async fn users_groupingoptions(
 #[post("/users/new")]
 pub async fn create_user(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Json(payload): Json<api::CreateUserByName>,
 ) -> Result<impl IntoResponse> {
     let password = payload
@@ -1252,7 +1263,7 @@ pub async fn change_password(
 #[post("/users/{user_id}/policy")]
 pub async fn update_user_policy(
     State(state): State<AppState>,
-    session: auth::AdminSession,
+    _session: auth::AdminSession,
     Path(user_id): Path<Uuid>,
     Json(policy): Json<api::UserPolicy>,
 ) -> Result<impl IntoResponse> {
@@ -1400,7 +1411,7 @@ pub async fn users_get_by_id(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(Uuid, Uuid)>,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(
@@ -1436,7 +1447,7 @@ pub async fn users_items_latest(
 }
 
 #[query]
-pub(crate) struct UserViewsQuery {
+pub struct UserViewsQuery {
     pub(crate) include_hidden: Option<bool>,
 }
 
@@ -1975,8 +1986,8 @@ pub async fn users_items_similar(
 
 #[get("/users/{user_id}/intros")]
 pub async fn users_intros(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
+    State(_state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
@@ -2069,7 +2080,7 @@ async fn serve_avatar_for(
 // --- GET (no auth required — matches Jellyfin behaviour) ---
 
 #[derive(Deserialize)]
-struct UserImageQuery {
+pub struct UserImageQuery {
     #[serde(rename = "userId", alias = "user_id")]
     user_id: Option<Uuid>,
     tag: Option<String>,
@@ -2157,7 +2168,7 @@ pub async fn upload_user_image(
 #[post("/users/{user_id}/images/{image_type}")]
 pub async fn upload_user_image_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -2177,7 +2188,7 @@ pub async fn upload_user_image_legacy(
 #[post("/users/{user_id}/images/{image_type}/{index}")]
 pub async fn upload_user_image_indexed(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
@@ -2218,7 +2229,7 @@ pub async fn delete_user_image(
 #[delete("/users/{user_id}/images/{image_type}")]
 pub async fn delete_user_image_legacy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(
@@ -2236,7 +2247,7 @@ pub async fn delete_user_image_legacy(
 #[delete("/users/{user_id}/images/{image_type}/{index}")]
 pub async fn delete_user_image_indexed(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(

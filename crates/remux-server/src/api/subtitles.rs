@@ -12,13 +12,9 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common::HideConsole, db,
-    db::auth, playback::engine::ffmpeg_http_input_args,
+    AppState, OptionExt, api, common::HideConsole, db, db::auth,
+    playback::engine::ffmpeg_http_input_args,
 };
-
-fn ffmpeg_bin() -> String {
-    std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
-}
 
 /// The cache storage codec for a requested text subtitle format: ASS/SSA requests
 /// get a native ASS cache (styled dialogue preserved), everything else the SRT
@@ -397,7 +393,7 @@ async fn extract_subtitles_to_cache(
         media_source_id,
         streams,
     )?;
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
     cmd.hide_console();
     cmd.kill_on_drop(true);
     cmd.args(&args);
@@ -427,7 +423,9 @@ async fn extract_subtitles_to_cache(
         .status
         .success()
     {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
         delete_tmp_outputs(cache_paths);
         anyhow::bail!("ffmpeg subtitle extraction failed: {stderr}");
     }
@@ -1161,7 +1159,7 @@ async fn subtitles_stream_inner(
 
     // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
     if is_binary {
-        let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
         cmd.hide_console();
         cmd.kill_on_drop(true);
         cmd.args(["-copyts"]);

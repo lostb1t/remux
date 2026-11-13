@@ -1,4 +1,4 @@
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{Json, response::IntoResponse};
 use tracing::{debug, info};
 use uuid::Uuid;
 

@@ -300,16 +300,6 @@ impl ImageProcessOptions {
                 .is_some()
     }
 
-    fn output_format(&self) -> ImageFormat {
-        match self
-            .format
-            .as_deref()
-        {
-            Some("png") => ImageFormat::Png,
-            _ => ImageFormat::Jpeg,
-        }
-    }
-
     pub fn content_type(&self) -> &'static str {
         match self
             .format
@@ -933,26 +923,6 @@ impl ImageService {
     async fn read_rgba(path: &str) -> anyhow::Result<RgbaImage> {
         let bytes = tokio::fs::read(path).await?;
         Ok(image::load_from_memory(&bytes)?.into_rgba8())
-    }
-
-    async fn fetch_and_resize(url: &str) -> anyhow::Result<RgbImage> {
-        let img = Self::fetch_rgb(url).await?;
-        Ok(image::imageops::resize(
-            &img,
-            OUT_W,
-            OUT_H,
-            image::imageops::FilterType::Lanczos3,
-        ))
-    }
-
-    async fn read_local_and_resize(path: &str) -> anyhow::Result<RgbImage> {
-        let img = Self::read_rgb(path).await?;
-        Ok(image::imageops::resize(
-            &img,
-            OUT_W,
-            OUT_H,
-            image::imageops::FilterType::Lanczos3,
-        ))
     }
 }
 

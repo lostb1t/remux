@@ -1,39 +1,12 @@
-use axum::response::Html;
-use reqwest;
-
-use crate::{IntoApiError, OptionExt, ResultExt};
-use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
-use axum::{
-    Json, Router, ServiceExt,
-    body::Body,
-    extract::{FromRequestParts, Request},
-    http::{StatusCode, request::Parts},
-    middleware,
-    middleware::Next,
-    response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
-};
-use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
+use crate::{IntoApiError, OptionExt};
+use anyhow::{Result, anyhow};
+use axum::{extract::FromRequestParts, http::request::Parts};
+use axum_anyhow::ApiError;
 use chrono::{Duration, Utc, prelude::*};
-use config::{self, Config};
-use futures::future::BoxFuture;
-use futures_util::StreamExt;
-use http::Uri;
-use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
-use timed;
-use tower::{Layer, util::MapRequestLayer};
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-};
-use tracing::{self, debug, instrument, warn};
-use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
-use url::Url;
+use std::{self, collections::HashMap};
+use tracing::{self};
 use uuid::Uuid;
 
 use crate::{AppState, common::get_uuid, db};
@@ -780,7 +753,7 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
 
     async fn from_request_parts(
         parts: &mut Parts,
-        state: &AppState,
+        _state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         if let Some(auth) = parts
             .headers

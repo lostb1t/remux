@@ -7,7 +7,7 @@ use axum_extra::extract::Query;
 use remux_macros::get;
 use uuid::Uuid;
 
-use crate::{AppState, IntoApiError, OptionExt, api, db, db::auth};
+use crate::{AppState, OptionExt, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 #[get("/studios")]

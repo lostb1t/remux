@@ -1,5 +1,4 @@
 use nutype::nutype;
-use serde::{Deserialize, Serialize};
 
 #[nutype(
     validate(not_empty),
