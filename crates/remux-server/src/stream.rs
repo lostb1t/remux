@@ -277,7 +277,8 @@ impl StreamDescriptor {
     }
 
     /// The check behind [`Self::is_alive`]: `None` when the ranged GET times
-    /// out, as a slow debrid resolve does, rather than answering as gone.
+    /// out, as a slow debrid resolve does, rather than answering as gone. A
+    /// host that never accepts the connection is gone.
     pub(crate) async fn availability(&self) -> Option<bool> {
         let Self::Http {
             url,
@@ -298,7 +299,7 @@ impl StreamDescriptor {
             .await
         {
             Ok(response) => response,
-            Err(e) if e.is_timeout() => return None,
+            Err(e) if e.is_timeout() && !e.is_connect() => return None,
             Err(_) => return Some(false),
         };
         if response
@@ -1208,6 +1209,19 @@ mod tests {
     #[test]
     fn stream_proxy_client_builds_without_panic() {
         let _ = &*STREAM_PROXY_CLIENT;
+    }
+
+    #[tokio::test]
+    async fn a_host_that_never_connects_is_gone_not_slow() {
+        // TEST-NET-1: never routed, so the connect fails or hits the
+        // connect timeout.
+        let descriptor = StreamDescriptor::http("http://192.0.2.1/release.mkv");
+        assert_eq!(
+            descriptor
+                .availability()
+                .await,
+            Some(false)
+        );
     }
 
     #[tokio::test]
