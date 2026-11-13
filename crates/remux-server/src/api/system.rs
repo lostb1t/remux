@@ -797,7 +797,9 @@ pub async fn system_restart(
     );
 
     // Exit runs no destructors, so stop ffmpeg first. Not after the spawn:
-    // the successor binds the port once this process exits.
+    // the successor binds the port once this process exits. Not the full
+    // `AppContext::shutdown`: its torrent HTTP listener stays bound, so a
+    // failed restart could not bring P2P back.
     state
         .ctx
         .sessions
@@ -868,8 +870,7 @@ pub async fn system_shutdown(
     // Exit runs no destructors, so stop ffmpeg first.
     state
         .ctx
-        .sessions
-        .stop_all()
+        .shutdown()
         .await;
 
     shutdown_server().await?;

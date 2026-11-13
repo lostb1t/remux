@@ -19,8 +19,8 @@ pub fn auth_header_with_token(token: &str) -> String {
     )
 }
 
-/// RAII guard that shuts down the `AppContext` (releases torrent/DHT sockets)
-/// when the test ends. Hold this for the lifetime of the test.
+/// RAII guard that shuts down the `AppContext` (stops transcodes, releases
+/// torrent/DHT sockets) when the test ends. Hold this for the lifetime of the test.
 pub struct TestGuard(pub AppContext);
 
 impl Drop for TestGuard {

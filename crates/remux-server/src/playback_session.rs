@@ -1039,12 +1039,45 @@ impl PlaybackSessionManager {
             }
             others
         };
+        self.stop_transcodes_of(others, user_id, item_id)
+            .await;
+        true
+    }
+
+    /// A stop report without PlaySessionId names no transcode stub, so it ends
+    /// the device's unreported transcodes of the user's item, as a retry does.
+    pub async fn stop_unreported(&self, device_id: &str, user_id: Uuid, item_id: Uuid) {
+        let stubs = self
+            .sessions
+            .iter()
+            .filter(|e| e.device_id == device_id && !e.is_reported())
+            .filter_map(|e| {
+                Some((
+                    e.key()
+                        .clone(),
+                    e.transcode
+                        .clone()?,
+                ))
+            })
+            .collect();
+        self.stop_transcodes_of(stubs, user_id, item_id)
+            .await;
+    }
+
+    /// Stops those `transcodes` (by play session) that are `user_id`'s of
+    /// `item_id`.
+    async fn stop_transcodes_of(
+        &self,
+        transcodes: Vec<(String, Arc<tokio::sync::RwLock<TranscodeSession>>)>,
+        user_id: Uuid,
+        item_id: Uuid,
+    ) {
         // Spawned and awaited: a client abandoning this request (a retry
         // storm cancels its masters) must not cut a stop short after the
         // transcode left its slot.
         let sessions = self.clone();
         let _ = tokio::spawn(async move {
-            for (other_id, other) in others {
+            for (other_id, other) in transcodes {
                 let same = {
                     let t = other
                         .read()
@@ -1056,7 +1089,7 @@ impl PlaybackSessionManager {
                 }
                 info!(
                     play_session_id = %other_id,
-                    "Stopping transcode superseded by a newer one of the item"
+                    "Stopping the device's other transcode of the item"
                 );
                 if let Some(mut s) = sessions
                     .sessions
@@ -1071,7 +1104,6 @@ impl PlaybackSessionManager {
             }
         })
         .await;
-        true
     }
 
     /// Stop and remove the transcode from a session (e.g. on seek or client stop),

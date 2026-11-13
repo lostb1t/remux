@@ -574,6 +574,24 @@ pub async fn report_playback_stopped(
             .signals
             .emit(Event::SessionsChanged);
         if let Some(item_id) = changed_item_id {
+            if data
+                .play_session_id
+                .is_none()
+            {
+                state
+                    .ctx
+                    .sessions
+                    .stop_unreported(
+                        &session
+                            .device
+                            .id,
+                        session
+                            .user
+                            .id,
+                        item_id,
+                    )
+                    .await;
+            }
             state
                 .ctx
                 .signals
@@ -591,6 +609,19 @@ pub async fn report_playback_stopped(
         .item_id
         .is_nil()
     {
+        state
+            .ctx
+            .sessions
+            .stop_unreported(
+                &session
+                    .device
+                    .id,
+                session
+                    .user
+                    .id,
+                data.item_id,
+            )
+            .await;
         // No play session to attach this stop to: the client never reported a
         // start and sent no `PlaySessionId`. The stop
         // still names the item and the position, and Jellyfin persists it
@@ -2330,6 +2361,31 @@ mod e2e_tests {
         ctx.sessions
             .stop_all()
             .await;
+    }
+
+    /// A client reporting without PlaySessionId gets a start under a random
+    /// id, which leaves master.m3u8's transcode unreported. Its stop must
+    /// still end that transcode.
+    #[tokio::test]
+    async fn a_stop_without_play_session_ends_the_unreported_transcode() {
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = auth_header_with_token(&token);
+        let item = insert_test_source(ctx)
+            .await
+            .id;
+
+        request_hls(&server, &auth, item, "hls").await;
+        let ts = ctx
+            .sessions
+            .get_transcode("hls")
+            .unwrap();
+        let start = json!({ "ItemId": item, "PlayMethod": "Transcode" });
+        report(&server, &auth, "/sessions/playing", start).await;
+        let stop = json!({ "ItemId": item });
+        report(&server, &auth, "/sessions/playing/stopped", stop).await;
+
+        assert!(stopped(&ts).await);
     }
 
     /// master.m3u8 runs before the start report. As on Jellyfin, `/Sessions`

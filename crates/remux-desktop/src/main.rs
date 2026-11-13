@@ -3,7 +3,6 @@
 mod ffmpeg;
 
 use anyhow::Result;
-use remux_server::playback_session::PlaybackSessionManager;
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -86,9 +85,9 @@ fn main() -> Result<()> {
     let rt_handle = rt
         .handle()
         .clone();
-    // Filled once the server is up, so Quit can stop its transcodes.
-    let sessions: Arc<OnceLock<PlaybackSessionManager>> = Arc::new(OnceLock::new());
-    let server_sessions = sessions.clone();
+    // Filled once the server is up, so Quit can shut it down.
+    let app: Arc<OnceLock<remux_server::AppContext>> = Arc::new(OnceLock::new());
+    let server_app = app.clone();
     let server_config = config.clone();
     let cleanup_dir = log_dir.clone();
     let cleanup_retention = config.log_file_retention_days;
@@ -111,7 +110,7 @@ fn main() -> Result<()> {
                      environment variable."
                 );
             }
-            if let Err(e) = serve(server_config, &server_sessions).await {
+            if let Err(e) = serve(server_config, &server_app).await {
                 tracing::error!("server error: {e:#}");
             }
         });
@@ -175,8 +174,8 @@ fn main() -> Result<()> {
             } else if ev.id == quit_id {
                 tracing::info!("quit");
                 // Exiting runs no destructors: ffmpeg would outlive the app.
-                if let Some(sessions) = sessions.get() {
-                    rt_handle.block_on(sessions.stop_all());
+                if let Some(ctx) = app.get() {
+                    rt_handle.block_on(ctx.shutdown());
                 }
                 *control_flow = ControlFlow::Exit;
             }
@@ -186,7 +185,7 @@ fn main() -> Result<()> {
 
 async fn serve(
     config: remux_server::Config,
-    sessions: &OnceLock<PlaybackSessionManager>,
+    app: &OnceLock<remux_server::AppContext>,
 ) -> anyhow::Result<()> {
     #[cfg(dashboard_built)]
     let admin = remux_server::embedded_static::EmbeddedDir {
@@ -226,10 +225,7 @@ async fn serve(
             }
         })
         .await?;
-    let _ = sessions.set(
-        ctx.sessions
-            .clone(),
-    );
+    let _ = app.set(ctx);
     remux_server::bind_and_serve(router, addr).await
 }
 

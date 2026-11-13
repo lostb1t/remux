@@ -144,9 +144,8 @@ pub async fn serve(config: Config) -> Result<()> {
         result = bind_and_serve(router, addr) => result,
         Ok(()) = shutdown_signal() => {
             // HLS ffmpeg writes to files and never notices remux exiting.
-            info!("shutting down: stopping playback sessions");
-            ctx.sessions
-                .stop_all()
+            info!("shutting down");
+            ctx.shutdown()
                 .await;
             Ok(())
         }
@@ -470,9 +469,14 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    /// Gracefully shut down background services (torrent DHT, etc.).
-    /// Call this when the server is stopping to release sockets immediately.
+    /// Stop every playback session (exiting runs no destructors, so ffmpeg
+    /// would outlive remux) and refuse new transcodes, then shut down
+    /// background services (torrent DHT, etc.) to release sockets immediately.
+    /// Call this when the server is stopping.
     pub async fn shutdown(&self) {
+        self.sessions
+            .stop_all()
+            .await;
         let old = self
             .torrent
             .write()
