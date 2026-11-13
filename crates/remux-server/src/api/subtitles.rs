@@ -423,7 +423,9 @@ async fn extract_subtitles_to_cache(
         .status
         .success()
     {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
         delete_tmp_outputs(cache_paths);
         anyhow::bail!("ffmpeg subtitle extraction failed: {stderr}");
     }

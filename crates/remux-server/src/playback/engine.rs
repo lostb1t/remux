@@ -1310,6 +1310,7 @@ async fn run_ffmpeg(
                 .await
             {
                 if !line.is_empty() {
+                    let line = crate::playback::probe::redact_urls_in(&line);
                     debug!("ffmpeg: {}", line);
                     buf.push_str(&line);
                     buf.push('\n');
@@ -1371,7 +1372,10 @@ pub async fn start_transcode(
 
         loop {
             let args = build_hls_args(&params);
-            debug!("ffmpeg args: {}", args.join(" "));
+            debug!(
+                "ffmpeg args: {}",
+                crate::playback::probe::redact_urls_in(&args.join(" "))
+            );
 
             let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
             let (monitor_stop_tx, monitor_stop_rx) =
@@ -1959,7 +1963,10 @@ pub fn start_progressive_transcode(
     impl futures::Stream<Item = std::result::Result<bytes::Bytes, std::io::Error>>,
 > {
     let args = build_progressive_args(&params);
-    debug!("ffmpeg progressive args: {:?}", args);
+    debug!(
+        "ffmpeg progressive args: {}",
+        crate::playback::probe::redact_urls_in(&args.join(" "))
+    );
 
     let env_overrides = params
         .accelerator
@@ -1995,7 +2002,7 @@ pub fn start_progressive_transcode(
             .await
         {
             if !line.is_empty() {
-                debug!("ffmpeg: {}", line);
+                debug!("ffmpeg: {}", crate::playback::probe::redact_urls_in(&line));
             }
         }
         match child

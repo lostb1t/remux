@@ -627,6 +627,40 @@ pub(crate) fn redact_url(url: &str) -> String {
     }
 }
 
+/// [`redact_url`] for every HTTP(S) URL inside a command line or a line of
+/// tool output, e.g. ffmpeg's `Input #0, …, from 'http://…'`.
+pub(crate) fn redact_urls_in(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | ','))
+            .unwrap_or(tail.len());
+        let url = &tail[..end];
+        let shown = redact_url(url);
+        // An unparseable URL comes back as is; never let it through.
+        if shown == url {
+            out.push_str(
+                &url[..url
+                    .find("//")
+                    .map_or(0, |i| i + 2)],
+            );
+            out.push('…');
+        } else {
+            out.push_str(&shown);
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Runs ffprobe to completion, killing the process once `deadline` passes so a
 /// hung source can't leave it running after the caller has given up.
 fn run_ffprobe(
@@ -2442,7 +2476,7 @@ mod timeout_tests {
 
 #[cfg(test)]
 mod redact_tests {
-    use super::redact_url;
+    use super::{redact_url, redact_urls_in};
 
     #[test]
     fn http_urls_lose_credentials_path_and_query() {
@@ -2451,6 +2485,21 @@ mod redact_tests {
             "https://cdn.example:8443/…"
         );
         assert_eq!(redact_url("http://host/a.mkv"), "http://host/…");
+    }
+
+    #[test]
+    fn urls_inside_tool_output_are_redacted() {
+        assert_eq!(
+            redact_urls_in(
+                "Input #0, matroska, from 'http://127.0.0.1:3000/stream/abc?token=s3cret':"
+            ),
+            "Input #0, matroska, from 'http://127.0.0.1:3000/…':"
+        );
+        assert_eq!(
+            redact_urls_in("-i https://cdn/x.mkv?sig=1 -c:v copy"),
+            "-i https://cdn/… -c:v copy"
+        );
+        assert_eq!(redact_urls_in("http://[bad/s3cret"), "http://…");
     }
 
     #[test]

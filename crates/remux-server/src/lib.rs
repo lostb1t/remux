@@ -541,6 +541,18 @@ fn default_torrent_http_port() -> u16 {
     9876
 }
 
+/// Serializes a set secret as `"<redacted>"`, so the logged config doesn't
+/// carry it.
+fn serialize_redacted<S: serde::Serializer>(
+    value: &Option<String>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match value {
+        Some(_) => serializer.serialize_some("<redacted>"),
+        None => serializer.serialize_none(),
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "default_data_dir")]
@@ -584,8 +596,9 @@ pub struct Config {
     #[serde(default = "default_bgutil_script_path")]
     pub bgutil_script_path: std::path::PathBuf,
     /// Extra arguments passed to every yt-dlp call (`YTDLP_EXTRA_ARGS`), split
-    /// on whitespace.
-    #[serde(default)]
+    /// on whitespace. Can carry credentials (`--password`, proxy URLs), so
+    /// the config log shows only whether it is set.
+    #[serde(default, serialize_with = "serialize_redacted")]
     pub ytdlp_extra_args: Option<String>,
     /// Web asset locations (`WEB_PATH`, `DASHBOARD_PATH`, `REMUX_WEB_PATH`).
     #[serde(flatten, default)]
@@ -1215,5 +1228,24 @@ mod open_file_limit_tests {
     fn clamps_soft_limit_to_the_existing_hard_limit() {
         assert_eq!(desired_open_file_limit(256, 4096), Some(4096));
         assert_eq!(desired_open_file_limit(4096, 4096), None);
+    }
+}
+
+#[cfg(test)]
+mod config_log_tests {
+    use super::Config;
+
+    #[test]
+    fn the_logged_config_hides_ytdlp_extra_args() {
+        let config = Config {
+            ytdlp_extra_args: Some("--password hunter2".into()),
+            ..Default::default()
+        };
+        let logged = serde_json::to_string(&config).unwrap();
+        assert!(!logged.contains("hunter2"), "{logged}");
+        assert!(
+            logged.contains(r#""ytdlp_extra_args":"<redacted>""#),
+            "{logged}"
+        );
     }
 }

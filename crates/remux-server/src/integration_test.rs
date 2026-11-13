@@ -45,8 +45,16 @@ pub async fn new_test_server_with_config(
     let (app, ctx) = init_app_with_ctx(config).await?;
     // Route through the same request URI normaliser as the real server
     // (`bind_and_serve`), so tests see the paths production routing sees.
+    // The outer router records the raw URI as `OriginalUri` before the
+    // rewrite; production has no outer router, so drop it and let the app
+    // record the rewritten one (`WebClientService` builds redirects from it).
     let app = axum::Router::new().fallback_service(tower::Layer::layer(
-        &tower::util::MapRequestLayer::new(crate::rewrite_request_uri),
+        &tower::util::MapRequestLayer::new(|req: http::Request<axum::body::Body>| {
+            let mut req = crate::rewrite_request_uri(req);
+            req.extensions_mut()
+                .remove::<axum::extract::OriginalUri>();
+            req
+        }),
         app,
     ));
 
