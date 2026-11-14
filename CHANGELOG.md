@@ -1,3 +1,36 @@
+# [0.41.0](https://github.com/lostb1t/remux/compare/v0.40.0...v0.41.0) (2026-11-14)
+
+
+### Bug Fixes
+
+* honor Filters=Likes and Filters=Dislikes in item listings ([#685](https://github.com/lostb1t/remux/issues/685)) ([f6bd8ce](https://github.com/lostb1t/remux/commit/f6bd8ce83e71c4aa59e44ee853623125bc97d6c9))
+* include Remux Web in the desktop builds ([59ded94](https://github.com/lostb1t/remux/commit/59ded94c416dbb41346875066fbfa878a3f881a2))
+* keep a picked version tied to its own episode or movie after opening another one ([#698](https://github.com/lostb1t/remux/issues/698)) ([e541ec1](https://github.com/lostb1t/remux/commit/e541ec1afd9724483e57d292ad11d051410e1d65))
+* let live TV be paused and rewound for 30 minutes (fixes [#146](https://github.com/lostb1t/remux/issues/146)) ([#692](https://github.com/lostb1t/remux/issues/692)) ([30a92ec](https://github.com/lostb1t/remux/commit/30a92ec0b37bb1609f214d02edc8e8bde2af9afb))
+* lock down the internal stream link, fix saving library options and stop hiding compiler warnings ([#700](https://github.com/lostb1t/remux/issues/700)) ([4342a4f](https://github.com/lostb1t/remux/commit/4342a4f810b40258b78a50b79620e02372bf2381))
+* log a meta addon 404 as debug instead of an error (fixes [#687](https://github.com/lostb1t/remux/issues/687)) ([cd837ba](https://github.com/lostb1t/remux/commit/cd837ba001fae2804deefd42fb44b838278745b6))
+* only recall a remembered track index on the release it was picked on ([#689](https://github.com/lostb1t/remux/issues/689)) ([2ba07b3](https://github.com/lostb1t/remux/commit/2ba07b322053660b45d31ee05e9472fa0ad76f38))
+* play the URL inside a .strm file instead of looking it up on the share ([d68e5b2](https://github.com/lostb1t/remux/commit/d68e5b2dd6a11be548d8379cfa34c2750a4e1fb3))
+* play the version you picked on Android TV with an external player (fixes [#696](https://github.com/lostb1t/remux/issues/696)) ([#697](https://github.com/lostb1t/remux/issues/697)) ([e8d821e](https://github.com/lostb1t/remux/commit/e8d821ecec02accf2c4ac0b2650bf6ebe667ede5))
+* **playback:** stop leaking ffmpeg transcodes from retried and stopped sessions ([#701](https://github.com/lostb1t/remux/issues/701)) ([fab51e7](https://github.com/lostb1t/remux/commit/fab51e7d85dd012adae70f01194304b78576f2b2)), closes [#613](https://github.com/lostb1t/remux/issues/613)
+* refuse AIOStreams error clips on direct streams and item lookups ([#699](https://github.com/lostb1t/remux/issues/699)) ([d7ea6f6](https://github.com/lostb1t/remux/commit/d7ea6f676354f3ad0f9dec4cdf7a630330fbeaba)), closes [#622](https://github.com/lostb1t/remux/issues/622)
+* report played percentage and episode counts for series and seasons ([#686](https://github.com/lostb1t/remux/issues/686)) ([216f2ca](https://github.com/lostb1t/remux/commit/216f2caa4cd013e19ea62d864b95518fae6ff710))
+* serialize the user id without dashes and skip empty device profile fields ([abe0d9e](https://github.com/lostb1t/remux/commit/abe0d9e297f9d4483c6229e386e910316441e8e7))
+* show subtitle files next to a video on a WebDAV share ([#688](https://github.com/lostb1t/remux/issues/688)) ([8203d0c](https://github.com/lostb1t/remux/commit/8203d0cc0e95636e13e2d94fd28f70636da3bed5))
+* skip a release whose host never accepts the connection ([9a44fdc](https://github.com/lostb1t/remux/commit/9a44fdc2316c35c9bf474348a07bd3665d975cdd))
+* stop a live TV channel from restarting on every playlist refresh (fixes [#690](https://github.com/lostb1t/remux/issues/690)) ([#691](https://github.com/lostb1t/remux/issues/691)) ([d14752f](https://github.com/lostb1t/remux/commit/d14752f45ab86a7ac8ddabb17ca5d8042f09d71e))
+* write item query parameters with the names Jellyfin expects ([5f79d70](https://github.com/lostb1t/remux/commit/5f79d7078c1f7a731de949151904db80f5ebce52))
+
+
+### Features
+
+* add a setting to turn all stream groups on or off ([41dca97](https://github.com/lostb1t/remux/commit/41dca97b30543b0e57e57c1dc84e7c70421ac826))
+* add a Watchlist library and a watchlist rule for collections ([#693](https://github.com/lostb1t/remux/issues/693)) ([1a9f802](https://github.com/lostb1t/remux/commit/1a9f8027da4b71aba550c0b60937d585f437150b))
+* add an option to enable new IPTV channels automatically (fixes [#30](https://github.com/lostb1t/remux/issues/30)) ([#695](https://github.com/lostb1t/remux/issues/695)) ([47ccd78](https://github.com/lostb1t/remux/commit/47ccd7896c8d1d73dc5ed88b9df56bc1d23d51f2))
+* pick a version that fits the device's bitrate limit ([#681](https://github.com/lostb1t/remux/issues/681)) ([975304b](https://github.com/lostb1t/remux/commit/975304b3496d170c5d5b56275071f16a729267d4))
+* prefer 4K over low resolutions on screens that scale it down ([#684](https://github.com/lostb1t/remux/issues/684)) ([6ebc836](https://github.com/lostb1t/remux/commit/6ebc83643dddcb08f23b07684bc79583daa2f020))
+* report Jellyfin 12.4 as the server version ([cdadca3](https://github.com/lostb1t/remux/commit/cdadca32b8bc79a6c926b56bb57078d64c0f731c))
+
 # [0.40.0](https://github.com/lostb1t/remux/compare/v0.39.0...v0.40.0) (2026-11-07)
 
 
