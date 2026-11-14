@@ -59,14 +59,20 @@ impl AddonPreset for StremioPreset {
                 MediaKind::TvChannel,
                 MediaKind::TvProgram,
             ],
-            options: vec![AddonOption {
-                id: "manifest_url".to_string(),
-                name: "Manifest URL".to_string(),
-                description: Some("Full URL to the addon's manifest.json".to_string()),
-                required: true,
-                default: None,
-                kind: AddonOptionType::Url,
-            }],
+            options: vec![
+                AddonOption {
+                    id: "manifest_url".to_string(),
+                    name: "Manifest URL".to_string(),
+                    description: Some(
+                        "Full URL to the addon's manifest.json".to_string(),
+                    ),
+                    required: true,
+                    default: None,
+                    kind: AddonOptionType::Url,
+                },
+                match_across_seasons_option(),
+                match_spelling_option(),
+            ],
         }
     }
 
@@ -87,6 +93,7 @@ impl AddonPreset for StremioPreset {
         let addon = Arc::new(StremioAddon {
             addon_id,
             manifest_url,
+            episode_matching: EpisodeMatching::from_cfg(cfg),
             client,
             medias_cache: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -203,6 +210,8 @@ pub struct StremioManifestUrl(String);
 pub struct StremioAddon {
     addon_id: Uuid,
     manifest_url: StremioManifestUrl,
+    /// The opt-in episode matching rules, from the addon's options.
+    episode_matching: EpisodeMatching,
     #[allow(dead_code)] // the service builds its own client
     client: reqwest::Client,
     /// Raw Stremio `Meta` cached per series lookup-id for the duration of one tree sync.
@@ -447,7 +456,15 @@ impl MetaAddon for StremioAddon {
         _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         let svc = self.service()?;
-        stremio_meta_fetch(&svc, media, ctx, &self.medias_cache, &self.failed).await
+        stremio_meta_fetch(
+            &svc,
+            media,
+            ctx,
+            &self.medias_cache,
+            &self.failed,
+            self.episode_matching,
+        )
+        .await
     }
 
     fn on_meta_fetch_timeout(&self, media: &db::Media) {
@@ -1031,6 +1048,7 @@ async fn stremio_meta_fetch(
         std::collections::HashMap<String, Arc<sdks::stremio::Meta>>,
     >,
     failed: &std::sync::Mutex<std::collections::HashSet<String>>,
+    matching: EpisodeMatching,
 ) -> Result<Option<db::Media>> {
     // This series already failed once this tree walk. Return quietly — the
     // original failure was already logged; every episode re-surfacing it as
@@ -1172,6 +1190,7 @@ async fn stremio_meta_fetch(
                         media
                             .external_ids
                             .tvdb,
+                        matching,
                     )
                 })
             else {
@@ -1186,8 +1205,9 @@ async fn stremio_meta_fetch(
             )?;
             // The matched video can sit at a different number when the addon
             // splits or merges episodes differently from where this episode
-            // came from (e.g. TMDB vs IMDb double episodes). Keep our own
-            // numbering; only the video id and metadata come from the addon.
+            // came from (e.g. TMDB vs IMDb double episodes), and in another
+            // season when that option is on. Keep our own numbering; only the
+            // video id and metadata come from the addon.
             found.idx = media.idx;
             let relations = build_episode_relations(media, meta_ep);
             if !relations.is_empty() {
@@ -1217,7 +1237,13 @@ async fn stremio_meta_fetch(
 /// 4. the first video that aired on our air date, but only when the video at
 ///    our number is clearly a different airing and the season's dates are
 ///    actually distinct (some addons stamp a whole season with one date);
-/// 5. the video at the same number, as before.
+/// 5. with [`EpisodeMatching::across_seasons`], the only video in the whole
+///    series whose title matches ours;
+/// 6. with [`EpisodeMatching::spelling`], the only video in the season whose
+///    title is a letter or two away from ours;
+/// 7. the video at the same number, as before.
+///
+/// Rules 5 and 6 are options on the addon, off by default.
 fn match_episode_video<'a>(
     videos: &'a [sdks::stremio::Episode],
     season: i64,
@@ -1225,6 +1251,7 @@ fn match_episode_video<'a>(
     title: &str,
     aired: Option<chrono::NaiveDate>,
     tvdb: Option<i64>,
+    matching: EpisodeMatching,
 ) -> Option<&'a sdks::stremio::Episode> {
     let in_season: Vec<&sdks::stremio::Episode> = videos
         .iter()
@@ -1278,12 +1305,12 @@ fn match_episode_video<'a>(
     };
 
     let key = episode_title_key(title);
+    let title_of = |v: &sdks::stremio::Episode| {
+        v.get_name()
+            .map(|n| episode_title_key(&n))
+            .unwrap_or_default()
+    };
     if !key.is_empty() {
-        let title_of = |v: &sdks::stremio::Episode| {
-            v.get_name()
-                .map(|n| episode_title_key(&n))
-                .unwrap_or_default()
-        };
         if let Some(v) = by_index.filter(|v| title_of(v) == key) {
             return Some(v);
         }
@@ -1330,7 +1357,140 @@ fn match_episode_video<'a>(
         }
     }
 
+    // Only the number is left. The opt-in rules follow a real title further
+    // than that: an exact title elsewhere in the series first, then a near
+    // miss in the season.
+    if is_distinctive_title(title) {
+        if matching.across_seasons {
+            // Season 0 holds specials, which reuse episode titles freely.
+            let mut same = videos
+                .iter()
+                .filter(|v| {
+                    v.season
+                        .is_some_and(|s| s > 0)
+                })
+                .filter(|v| title_of(v) == key);
+            if let (Some(v), None) = (same.next(), same.next()) {
+                return Some(v);
+            }
+        }
+        if matching.spelling {
+            let mut close = in_season
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v.get_name()
+                        .is_some_and(|name| is_distinctive_title(&name))
+                        && is_spelling_variant(&key, &title_of(v))
+                });
+            if let (Some(v), None) = (close.next(), close.next()) {
+                return Some(v);
+            }
+        }
+    }
+
     by_index
+}
+
+/// Opt-in rules of [`match_episode_video`] for an episode it could otherwise
+/// only place by its number. Each is an option on the addon and off by
+/// default: they follow a title further than the default rules dare to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EpisodeMatching {
+    /// Follow a title into another season, when no other video in the series
+    /// carries it. Sources don't always cut a series into seasons at the same
+    /// episode.
+    pub(crate) across_seasons: bool,
+    /// Follow a title in the same season that is a letter or two away from
+    /// ours ("A Rumor in the Vestry" for "A Rumour in the Vestry").
+    pub(crate) spelling: bool,
+}
+
+impl EpisodeMatching {
+    fn from_cfg(cfg: &serde_json::Value) -> Self {
+        let flag = |id: &str| {
+            cfg.get(id)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+        Self {
+            across_seasons: flag("match_episodes_across_seasons"),
+            spelling: flag("match_episode_spelling"),
+        }
+    }
+}
+
+fn match_across_seasons_option() -> AddonOption {
+    AddonOption {
+        id: "match_episodes_across_seasons".to_string(),
+        name: "Match episodes across seasons".to_string(),
+        description: Some(
+            "Find an episode by its title in another season when this addon \
+             numbers seasons differently from your library."
+                .to_string(),
+        ),
+        required: false,
+        default: Some(serde_json::Value::Bool(false)),
+        kind: AddonOptionType::Boolean,
+    }
+}
+
+fn match_spelling_option() -> AddonOption {
+    AddonOption {
+        id: "match_episode_spelling".to_string(),
+        name: "Allow small spelling differences".to_string(),
+        description: Some(
+            "Accept an episode title that differs from your library's by a \
+             letter or two."
+                .to_string(),
+        ),
+        required: false,
+        default: Some(serde_json::Value::Bool(false)),
+        kind: AddonOptionType::Boolean,
+    }
+}
+
+/// Whether two normalised titles are the same title spelled a little
+/// differently: one letter apart from 12 letters up, two from 24 up. Shorter
+/// titles are too easily a different word ("Wake", "Lake").
+fn is_spelling_variant(a: &str, b: &str) -> bool {
+    let a: Vec<char> = a
+        .chars()
+        .collect();
+    let b: Vec<char> = b
+        .chars()
+        .collect();
+    let longest = a
+        .len()
+        .max(b.len());
+    let allowed = (longest / 12).min(2);
+    let apart = a
+        .len()
+        .abs_diff(b.len());
+    if allowed == 0 || apart > allowed {
+        return false;
+    }
+    // Levenshtein distance, one row at a time.
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a
+        .iter()
+        .enumerate()
+    {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b
+            .iter()
+            .enumerate()
+        {
+            let substitute = diagonal + usize::from(ca != cb);
+            diagonal = row[j + 1];
+            row[j + 1] = substitute
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+        }
+    }
+    let distance = row[b.len()];
+    distance > 0 && distance <= allowed
 }
 
 /// Normalises an episode title for matching across sources: case, punctuation
@@ -2455,6 +2615,20 @@ mod tests {
         chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
     }
 
+    /// The default: none of the opt-in matching rules.
+    const STRICT: EpisodeMatching = EpisodeMatching {
+        across_seasons: false,
+        spelling: false,
+    };
+    const ACROSS_SEASONS: EpisodeMatching = EpisodeMatching {
+        across_seasons: true,
+        spelling: false,
+    };
+    const SPELLING: EpisodeMatching = EpisodeMatching {
+        across_seasons: false,
+        spelling: true,
+    };
+
     /// Cinemeta's (IMDb's) season 6 of Friends: 25 videos, with "The One That
     /// Could Have Been" and "The One with the Proposal" in two parts each.
     const FRIENDS_S6_VIDEOS: &[(i64, &str, &str)] = &[
@@ -2533,8 +2707,9 @@ mod tests {
             .iter()
             .zip(FRIENDS_S6_EXPECTED)
         {
-            let v = match_episode_video(&videos, 6, *idx, title, date(aired), None)
-                .unwrap();
+            let v =
+                match_episode_video(&videos, 6, *idx, title, date(aired), None, STRICT)
+                    .unwrap();
             assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02} {title}");
         }
     }
@@ -2554,6 +2729,7 @@ mod tests {
                 &format!("Episodio {idx}"),
                 date(aired),
                 None,
+                STRICT,
             )
             .unwrap();
             assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02}");
@@ -2648,14 +2824,22 @@ mod tests {
             .iter()
             .zip(OFFICE_S6_EXPECTED)
         {
-            let v = match_episode_video(&videos, 6, *idx, title, date(aired), None)
-                .unwrap();
+            let v =
+                match_episode_video(&videos, 6, *idx, title, date(aired), None, STRICT)
+                    .unwrap();
             assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02} {title}");
         }
         // Every video shares one date, so with no title to go on the number stands.
-        let v =
-            match_episode_video(&videos, 6, 5, "Episodio 5", date("2009-10-15"), None)
-                .unwrap();
+        let v = match_episode_video(
+            &videos,
+            6,
+            5,
+            "Episodio 5",
+            date("2009-10-15"),
+            None,
+            STRICT,
+        )
+        .unwrap();
         assert_eq!(v.episode, Some(5));
     }
 
@@ -2669,8 +2853,16 @@ mod tests {
             (16, 1832421, 17),
             (24, 2161041, 26),
         ] {
-            let v = match_episode_video(&videos, 6, idx, "Episodio", None, Some(tvdb))
-                .unwrap();
+            let v = match_episode_video(
+                &videos,
+                6,
+                idx,
+                "Episodio",
+                None,
+                Some(tvdb),
+                STRICT,
+            )
+            .unwrap();
             assert_eq!(v.episode, Some(expected), "TMDB S06E{idx:02}");
         }
     }
@@ -2687,18 +2879,28 @@ mod tests {
             ],
         );
         // A repeated placeholder title doesn't pull an episode to another airing.
-        let v = match_episode_video(&videos, 1, 4, "TBA", date("2026-09-10"), None)
-            .unwrap();
+        let v =
+            match_episode_video(&videos, 1, 4, "TBA", date("2026-09-10"), None, STRICT)
+                .unwrap();
         assert_eq!(v.episode, Some(4));
         // A one-day air date skew on a daily show isn't a different episode.
-        let v =
-            match_episode_video(&videos, 1, 3, "Episodio 3", date("2026-09-08"), None)
-                .unwrap();
+        let v = match_episode_video(
+            &videos,
+            1,
+            3,
+            "Episodio 3",
+            date("2026-09-08"),
+            None,
+            STRICT,
+        )
+        .unwrap();
         assert_eq!(v.episode, Some(3));
         // Missing date and title: the number as before.
-        let v = match_episode_video(&videos, 1, 2, "", None, None).unwrap();
+        let v = match_episode_video(&videos, 1, 2, "", None, None, STRICT).unwrap();
         assert_eq!(v.episode, Some(2));
-        assert!(match_episode_video(&videos, 2, 1, "Pilot", None, None).is_none());
+        assert!(
+            match_episode_video(&videos, 2, 1, "Pilot", None, None, STRICT).is_none()
+        );
     }
 
     /// A season as a metadata addon lists it.
@@ -2746,8 +2948,9 @@ mod tests {
             .iter()
             .zip(REORDERED_SEASON_EXPECTED)
         {
-            let v = match_episode_video(&videos, 5, *idx, title, date(aired), None)
-                .unwrap();
+            let v =
+                match_episode_video(&videos, 5, *idx, title, date(aired), None, STRICT)
+                    .unwrap();
             assert_eq!(v.episode, Some(expected), "S05E{idx:02} {title}");
         }
     }
@@ -2766,21 +2969,205 @@ mod tests {
             ],
         );
         // Two videos carry the title, so the air date still picks between them.
-        let v =
-            match_episode_video(&videos, 1, 3, "Clip Show", date("2034-09-28"), None)
-                .unwrap();
+        let v = match_episode_video(
+            &videos,
+            1,
+            3,
+            "Clip Show",
+            date("2034-09-28"),
+            None,
+            STRICT,
+        )
+        .unwrap();
         assert_eq!(v.episode, Some(4));
         // Neither aired on our date, so the title decides nothing.
-        let v =
-            match_episode_video(&videos, 1, 3, "Clip Show", date("2034-11-30"), None)
-                .unwrap();
+        let v = match_episode_video(
+            &videos,
+            1,
+            3,
+            "Clip Show",
+            date("2034-11-30"),
+            None,
+            STRICT,
+        )
+        .unwrap();
         assert_eq!(v.episode, Some(3));
         // "Episode 6" is the only video of that name, but it's a name the
         // addon made from its own numbering, not a title to follow.
-        let v =
-            match_episode_video(&videos, 1, 6, "Episode 6", date("2034-10-12"), None)
-                .unwrap();
+        let v = match_episode_video(
+            &videos,
+            1,
+            6,
+            "Episode 6",
+            date("2034-10-12"),
+            None,
+            STRICT,
+        )
+        .unwrap();
         assert_eq!(v.episode, Some(6));
+    }
+
+    /// Two episodes our source has in season 5 are in the addon's season 4.
+    fn two_season_videos() -> Vec<sdks::stremio::Episode> {
+        let mut videos = season_videos(
+            4,
+            &[
+                (19, "A Debt in Amber", "2031-03-14"),
+                (20, "The Pale Ferryman", "2031-03-21"),
+                (21, "Understudy to the Rain", "2031-03-21"),
+            ],
+        );
+        videos.extend(season_videos(5, REORDERED_SEASON_VIDEOS));
+        videos
+    }
+
+    #[test]
+    fn match_episode_video_follows_a_title_into_another_season_when_asked() {
+        let videos = two_season_videos();
+        let find = |idx: i64, title: &str, matching: EpisodeMatching| {
+            let v = match_episode_video(
+                &videos,
+                5,
+                idx,
+                title,
+                date("2031-09-15"),
+                None,
+                matching,
+            )
+            .unwrap();
+            (v.season, v.episode)
+        };
+        // Off by default: the number stands.
+        assert_eq!(find(5, "The Pale Ferryman", STRICT), (Some(5), Some(5)));
+        assert_eq!(
+            find(5, "The Pale Ferryman", ACROSS_SEASONS),
+            (Some(4), Some(20))
+        );
+        assert_eq!(
+            find(6, "Understudy to the Rain", ACROSS_SEASONS),
+            (Some(4), Some(21))
+        );
+        // A title the season itself has is still found there first.
+        assert_eq!(
+            find(11, "The Tin Meridian", ACROSS_SEASONS),
+            (Some(5), Some(9))
+        );
+        // A title no video has, and a generated name, keep their number.
+        assert_eq!(
+            find(5, "The Unsent Telegram", ACROSS_SEASONS),
+            (Some(5), Some(5))
+        );
+        assert_eq!(find(5, "TBA", ACROSS_SEASONS), (Some(5), Some(5)));
+    }
+
+    #[test]
+    fn match_episode_video_leaves_a_title_shared_by_two_seasons_alone() {
+        let mut videos = season_videos(1, &[(5, "The Reunion", "2020-02-01")]);
+        videos.extend(season_videos(
+            2,
+            &[
+                (1, "Opening Night", "2021-01-01"),
+                (5, "The Reunion", "2021-02-01"),
+            ],
+        ));
+        videos.extend(season_videos(3, &[(1, "Homecoming", "2022-01-01")]));
+        let v = match_episode_video(
+            &videos,
+            3,
+            1,
+            "The Reunion",
+            date("2022-03-01"),
+            None,
+            ACROSS_SEASONS,
+        )
+        .unwrap();
+        assert_eq!((v.season, v.episode), (Some(3), Some(1)));
+    }
+
+    #[test]
+    fn match_episode_video_follows_a_near_spelling_when_asked() {
+        let videos = season_videos(
+            2,
+            &[
+                (6, "Nobody at the Weir", "2033-02-04"),
+                (9, "A Rumor in the Vestry", "2033-02-18"),
+                (10, "The Glass Tithe", "2033-02-18"),
+            ],
+        );
+        let find = |title: &str, matching: EpisodeMatching| {
+            match_episode_video(
+                &videos,
+                2,
+                6,
+                title,
+                date("2033-01-07"),
+                None,
+                matching,
+            )
+            .unwrap()
+            .episode
+        };
+        let ours = "A Rumour in the Vestry";
+        assert_eq!(find(ours, STRICT), Some(6));
+        assert_eq!(find(ours, SPELLING), Some(9));
+        // Too far from any title in the season: the number stands.
+        assert_eq!(find("A Rumour in the Valley", SPELLING), Some(6));
+    }
+
+    #[test]
+    fn is_spelling_variant_allows_a_letter_or_two_in_long_titles_only() {
+        let key = episode_title_key;
+        for (a, b) in [
+            ("A Rumour in the Vestry", "A Rumor in the Vestry"),
+            ("An Honest Embezler", "An Honest Embezzler"),
+            (
+                "The Harbour Commissioner Waits",
+                "The Harbor Commissioner Awaits",
+            ),
+        ] {
+            assert!(is_spelling_variant(&key(a), &key(b)), "{a:?} / {b:?}");
+        }
+        for (a, b) in [
+            // identical titles are a match, not a variant
+            ("A Rumor in the Vestry", "A Rumor in the Vestry"),
+            // short titles: one letter is a different word
+            ("The Cold Wake", "The Cold Lake"),
+            // two letters apart needs a longer title
+            ("The Silent Printer", "The Silent Winter"),
+            ("The Glass Tithe", "A Rumor in the Vestry"),
+            ("Episode 12", "Episode 13"),
+        ] {
+            assert!(!is_spelling_variant(&key(a), &key(b)), "{a:?} / {b:?}");
+        }
+    }
+
+    #[test]
+    fn stremio_preset_offers_the_episode_matching_options_off_by_default() {
+        let options = StremioPreset
+            .metadata()
+            .options;
+        for id in ["match_episodes_across_seasons", "match_episode_spelling"] {
+            let option = options
+                .iter()
+                .find(|o| o.id == id)
+                .unwrap_or_else(|| panic!("no {id} option"));
+            assert!(!option.required);
+            assert_eq!(option.default, Some(serde_json::Value::Bool(false)));
+        }
+        assert_eq!(
+            EpisodeMatching::from_cfg(&serde_json::json!({ "manifest_url": "x" })),
+            STRICT
+        );
+        assert_eq!(
+            EpisodeMatching::from_cfg(&serde_json::json!({
+                "match_episodes_across_seasons": true,
+                "match_episode_spelling": true,
+            })),
+            EpisodeMatching {
+                across_seasons: true,
+                spelling: true,
+            }
+        );
     }
 
     #[test]
@@ -2872,7 +3259,7 @@ mod tests {
         };
         episode.grandparent = Some(Arc::new(series));
 
-        let found = stremio_meta_fetch(&svc, &episode, ctx, &cache, &failed)
+        let found = stremio_meta_fetch(&svc, &episode, ctx, &cache, &failed, STRICT)
             .await
             .unwrap()
             .unwrap();
@@ -2923,14 +3310,14 @@ mod tests {
             ..Default::default()
         };
 
-        let found = stremio_meta_fetch(&svc, &series, ctx, &cache, &failed)
+        let found = stremio_meta_fetch(&svc, &series, ctx, &cache, &failed, STRICT)
             .await
             .unwrap();
         assert!(found.is_none());
         unknown.assert();
         // A second item under the same series does not ask the addon again.
         assert!(
-            stremio_meta_fetch(&svc, &series, ctx, &cache, &failed)
+            stremio_meta_fetch(&svc, &series, ctx, &cache, &failed, STRICT)
                 .await
                 .unwrap()
                 .is_none()
