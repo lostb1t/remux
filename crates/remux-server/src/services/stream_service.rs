@@ -405,7 +405,8 @@ impl StreamService {
     /// item the version belongs to plus the version as the requested source, so
     /// swap them back: `(owner, Some(version))`. A group's [`VersionId`] comes
     /// back as its title and the plain group id, also when it is sent as the
-    /// source. Any other id is returned as is.
+    /// source. A requested source that is not one of the title's is dropped
+    /// (see [`Self::source_of`]). Any other id is returned as is.
     ///
     /// [`VersionId`]: crate::services::VersionId
     pub(crate) async fn version_target(
@@ -414,21 +415,6 @@ impl StreamService {
         item_id: Uuid,
         requested_id: Option<Uuid>,
     ) -> (Uuid, Option<Uuid>) {
-        let requested_id = match requested_id {
-            Some(requested) if requested != item_id => Some(
-                match db::Media::get_by_id(&ctx.db, &requested)
-                    .await
-                    .ok()
-                    .flatten()
-                {
-                    Some(_) => requested,
-                    None => crate::services::VersionId::decode(&ctx.db, requested)
-                        .await
-                        .map_or(requested, |v| v.group),
-                },
-            ),
-            requested => requested,
-        };
         let owner = match db::Media::get_by_id(&ctx.db, &item_id)
             .await
             .ok()
@@ -450,6 +436,16 @@ impl StreamService {
                 .await
                 .map(|v| (v.owner, v.group)),
         };
+        let title = match owner {
+            Some((owner, _)) => owner,
+            None => Self::persisted_id(ctx, item_id),
+        };
+        let requested_id = match requested_id {
+            Some(requested) if requested != item_id => {
+                Self::source_of(ctx, title, requested).await
+            }
+            requested => requested,
+        };
         match owner {
             Some((owner, version)) => (
                 owner,
@@ -461,6 +457,47 @@ impl StreamService {
             ),
             None => (item_id, requested_id),
         }
+    }
+
+    /// `requested` as a source of `title`, or `None` when it isn't one: another
+    /// title, one of its streams or versions, or an id that names nothing.
+    /// Jellyfin never plays a MediaSourceId that isn't one of the item's own
+    /// sources. jellyfin-web sends the previous title's after a browser Back,
+    /// which would play that title under this one and save its progress here.
+    /// A stream group is shared by every title, so it is a source of any; a
+    /// group's [`VersionId`] comes back as the plain group.
+    ///
+    /// [`VersionId`]: crate::services::VersionId
+    async fn source_of(ctx: &AppContext, title: Uuid, requested: Uuid) -> Option<Uuid> {
+        let row = db::Media::get_by_id(&ctx.db, &Self::persisted_id(ctx, requested))
+            .await
+            .ok()
+            .flatten();
+        let (source, of) = match row {
+            Some(row) => (
+                requested,
+                match row.kind {
+                    db::MediaKind::Stream => row.parent_id,
+                    db::MediaKind::StreamGroup => None,
+                    _ => Some(row.id),
+                },
+            ),
+            None => {
+                let version =
+                    crate::services::VersionId::decode(&ctx.db, requested).await?;
+                (version.group, Some(version.owner))
+            }
+        };
+        of.is_none_or(|of| of == title)
+            .then_some(source)
+    }
+
+    /// The row a search or catalog id was persisted as, else `id` itself (see
+    /// `MediaResolveService::resolve_item`).
+    fn persisted_id(ctx: &AppContext, id: Uuid) -> Uuid {
+        ctx.store
+            .get::<Uuid>(id.to_string())
+            .map_or(id, |real| *real)
     }
 
     /// One-shot lookup for handlers that only need a single resolved stream (subtitles, video).
@@ -530,8 +567,7 @@ impl StreamService {
                     .await?;
                 // Here `requested_id` resolved to a Movie/Episode/Track, so it
                 // is an *item* id (auto-play, or the PlaybackInfo rewrite of
-                // source[0].Id — the sibling item's UUID when duplicate items
-                // share one IMDB id). An item's id is never one of its stream
+                // source[0].Id). An item's id is never one of its stream
                 // ids, so matching it against `sources` can only fail; treat it
                 // as auto-play and fall through to preference / first source.
                 let specific_stream =
@@ -1882,6 +1918,72 @@ mod tests {
         );
     }
 
+    /// Another title's id, or one of its streams or versions, is not a source
+    /// of this title: it is dropped, so playback falls back to this title's own
+    /// sources. jellyfin-web sends the previous title's after a browser Back.
+    #[tokio::test]
+    async fn another_titles_source_is_not_a_source_of_this_one() {
+        let (_server, guard, _token) =
+            crate::integration_test::authenticated_server().await;
+        let ctx = &guard.0;
+        let title = async |imdb: &str| {
+            let mut movie = db::Media {
+                kind: db::MediaKind::Movie,
+                title: imdb.into(),
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new(imdb.to_string()).ok(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            movie
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            let mut stream = db::Media {
+                kind: db::MediaKind::Stream,
+                parent_id: Some(movie.id),
+                ..Default::default()
+            };
+            stream
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            (movie.id, stream.id)
+        };
+        let (movie, stream) = title("tt1234571").await;
+        let (other, other_stream) = title("tt1234572").await;
+        let mut group = db::Media {
+            kind: db::MediaKind::StreamGroup,
+            ..Default::default()
+        };
+        group
+            .save(&ctx.db)
+            .await
+            .unwrap();
+        let version = |owner| crate::services::VersionId::new(owner, group.id).id();
+        let target = |item, requested| {
+            StreamService::version_target(ctx, None, item, Some(requested))
+        };
+
+        for foreign in [other, other_stream, version(other), Uuid::new_v4()] {
+            assert_eq!(target(movie, foreign).await, (movie, None), "{foreign}");
+        }
+        // A version held as the item keeps playing that version.
+        assert_eq!(target(stream, other).await, (movie, Some(stream)));
+        // A search id persisted as the title is that title.
+        let search_id = Uuid::new_v4();
+        ctx.store
+            .save(
+                search_id.to_string(),
+                movie,
+                std::time::Duration::from_secs(60),
+            );
+        assert_eq!(target(search_id, stream).await, (search_id, Some(stream)));
+        assert_eq!(target(search_id, other_stream).await, (search_id, None));
+        assert_eq!(target(movie, search_id).await, (movie, Some(search_id)));
+    }
+
     #[test]
     fn subtitle_query_comes_from_the_streams_filename_and_size() {
         let stream = db::Media {
@@ -2132,8 +2234,8 @@ mod tests {
     }
 
     /// A `MediaSourceId` that is an item id (auto-play, or the PlaybackInfo
-    /// rewrite of `source[0].Id` — the sibling's UUID when duplicate items share
-    /// one IMDB id) must resolve to a stream. Before the fix the Movie arm looked
+    /// rewrite of `source[0].Id`) must resolve to a stream.
+    /// Before the fix the Movie arm looked
     /// for the item's own id among its streams, failed with "stream not found",
     /// and the stream endpoint served the no-streams placeholder (#212): source
     /// #1 of every affected title played blank while the rest worked.
@@ -2164,36 +2266,6 @@ mod tests {
             .execute(&ctx.db)
             .await
             .unwrap();
-
-        // Movie B: an unrelated item with no stream rows of its own. Sharing
-        // `owner`'s external ids used to be how this scenario arose (two
-        // rows for the same film) — that's now prevented at the DB level,
-        // but the code path under test only cares that B's id is a real,
-        // distinct Movie row mistakenly handed back as a MediaSourceId, not
-        // that it represents the same content as A, so it just needs its
-        // own (any) external id to satisfy validation.
-        let mut dup = db::Media {
-            id: Uuid::new_v4(),
-            title: owner
-                .title
-                .clone(),
-            kind: db::MediaKind::Movie,
-            external_ids: db::ExternalIds {
-                imdb: db::NonEmptyString::try_new("tt9999998").ok(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        dup.save(&ctx.db)
-            .await
-            .unwrap();
-
-        // B played with MediaSourceId = A.id (what the auto-play rewrite hands
-        // out). Before the fix: Err("stream not found: <A.id>").
-        let resolved = StreamService::lookup(ctx, dup.id, Some(owner.id), None, None)
-            .await
-            .expect("an item id used as MediaSourceId must resolve to a stream");
-        assert_eq!(resolved.id, stream.id);
 
         // Plain auto-play (MediaSourceId == item being played) still works.
         let resolved = StreamService::lookup(ctx, owner.id, Some(owner.id), None, None)
