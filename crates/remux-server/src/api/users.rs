@@ -30,7 +30,7 @@ use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
 
 use super::{
-    items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
+    items::{ItemsQueryResultBuilder, get_items, items, items_flat},
     mock_items,
     shows::{livetv_view_item, next_up_candidates},
 };
@@ -1411,30 +1411,21 @@ pub async fn users_get_by_id(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Path((_user_id, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(
-        item(
-            state,
-            session,
-            id,
-            q.fields
-                .as_deref(),
-        )
-        .await?
-        .context_not_found("item not found")?,
-    )
-    .into_response());
+    super::items::items_get(State(state), session, target, Path(id), Query(q)).await
 }
 
 #[get("/users/{user_id}/items")]
 pub async fn users_items(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    items(State(state), session, Query(q)).await
+    items(State(state), session, target, Query(q)).await
 }
 
 #[get("/users/{user_id}/items/latest")]
@@ -1971,9 +1962,10 @@ async fn resume_items(
 pub async fn users_items_resume(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    resume_items(state, session, q).await
+    resume_items(state, session.acting_for(target), q).await
 }
 
 #[get("/users/{user_id}/items/similar")]
@@ -2005,9 +1997,10 @@ pub async fn users_items_intros(
 pub async fn useritems_resume(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    resume_items(state, session, q).await
+    resume_items(state, session.acting_for(target), q).await
 }
 
 #[post("/users/forgotpassword")]
@@ -5723,6 +5716,208 @@ mod e2e_tests {
             ids.contains(&watched_col.id),
             "Watched collection missing after user2 watches an item"
         );
+    }
+
+    /// Creates a regular user and logs them in, returning `(id, token)`.
+    async fn regular_user(
+        server: &axum_test::TestServer,
+        admin_auth: &str,
+        name: &str,
+    ) -> (String, String) {
+        let created = server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": name, "Password": "pw" }))
+            .await;
+        created.assert_status_ok();
+        let id = created.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let login = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": name, "Pw": "pw" }))
+            .await;
+        let token = login.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (id, token)
+    }
+
+    fn item_ids(body: &serde_json::Value) -> Vec<String> {
+        body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                i["Id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    // An API key authenticates as the first admin, and the `{userId}` path
+    // segment and `userId` query were ignored, so a companion app reading a
+    // family member's resume, next up or favourites got the admin's lists
+    // instead. Jellyfin answers these for the named user.
+    #[tokio::test]
+    async fn an_api_key_reads_the_named_users_lists() {
+        use crate::api::shows::test::{insert_series_with_episodes, insert_state};
+
+        let (server, guard, admin_token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let (kid, _) = regular_user(&server, &admin_auth, "kid").await;
+        let kid_uuid: Uuid = kid
+            .parse()
+            .unwrap();
+
+        let resp = server
+            .post("/auth/keys?app=companion")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let key = resp
+            .json::<crate::api::AuthenticationInfo>()
+            .access_token
+            .expect("a new key returns its token");
+        let get = |path: String| {
+            server
+                .get(&path)
+                .add_header("X-Emby-Token", HeaderValue::from_str(&key).unwrap())
+        };
+
+        let now = chrono::Utc::now().naive_utc();
+        let external_ids = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt4400001".to_string()).ok(),
+            ..Default::default()
+        };
+        let mut movie = db::Media {
+            id: Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Movie,
+                external_ids: external_ids.clone(),
+                season: None,
+                episode: None,
+            }),
+            title: "Half Watched".into(),
+            kind: db::MediaKind::Movie,
+            external_ids,
+            released_at: Some(now - chrono::Duration::days(365)),
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+        insert_state(db, kid_uuid, movie.id, 0, 100, Some(now), Some(now)).await;
+        let (_, episodes) =
+            insert_series_with_episodes(db, "KidSeries", &["Ep1", "Ep2"]).await;
+        insert_state(db, kid_uuid, episodes[0].id, 1, 0, Some(now), Some(now)).await;
+        server
+            .post(&format!("/users/{kid}/favoriteitems/{}", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await
+            .assert_status_ok();
+        let movie_id = movie
+            .id
+            .simple()
+            .to_string();
+        let next_episode = episodes[1]
+            .id
+            .simple()
+            .to_string();
+
+        let resume = get(format!("/users/{kid}/items/resume")).await;
+        resume.assert_status_ok();
+        assert_eq!(item_ids(&resume.json()), [movie_id.clone()]);
+        let resume = get(format!("/useritems/resume?userId={kid}")).await;
+        assert_eq!(item_ids(&resume.json()), [movie_id.clone()]);
+
+        let next_up = get(format!("/shows/nextup?userId={kid}")).await;
+        next_up.assert_status_ok();
+        assert_eq!(item_ids(&next_up.json()), [next_episode]);
+
+        for path in [
+            format!("/users/{kid}/items?Recursive=true&Filters=IsFavorite"),
+            format!("/items?userId={kid}&Recursive=true&Filters=IsFavorite"),
+        ] {
+            let favourites = get(path.clone()).await;
+            favourites.assert_status_ok();
+            assert_eq!(item_ids(&favourites.json()), [movie_id.clone()], "{path}");
+        }
+
+        let single = get(format!("/users/{kid}/items/{}", movie.id)).await;
+        single.assert_status_ok();
+        let single: serde_json::Value = single.json();
+        assert_eq!(single["UserData"]["IsFavorite"], true);
+        assert_eq!(single["UserData"]["PlaybackPositionTicks"], 1_000_000_000);
+
+        // Without a user named, the key still reads the admin's own lists.
+        let own = get("/useritems/resume".to_string()).await;
+        assert!(item_ids(&own.json()).is_empty());
+        let own = get("/items?Recursive=true&Filters=IsFavorite".to_string()).await;
+        assert!(item_ids(&own.json()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_cannot_read_someone_elses_lists() {
+        let (server, _guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let admin = get_user_id(&server, &admin_auth).await;
+        let (me, token) = regular_user(&server, &admin_auth, "regular").await;
+        let auth = auth_header_with_token(&token);
+
+        for path in [
+            format!("/users/{admin}/items/resume"),
+            format!("/useritems/resume?userId={admin}"),
+            format!("/shows/nextup?userId={admin}"),
+            format!("/users/{admin}/items?Recursive=true&Filters=IsFavorite"),
+            format!("/items?userId={admin}&Recursive=true&Filters=IsFavorite"),
+        ] {
+            let resp = server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .expect_failure()
+                .await;
+            assert_eq!(resp.status_code(), http::StatusCode::FORBIDDEN, "{path}");
+        }
+
+        // Naming yourself is fine.
+        for path in [
+            format!("/users/{me}/items/resume"),
+            format!("/shows/nextup?userId={me}"),
+            format!("/items?userId={me}&Recursive=true&Filters=IsFavorite"),
+        ] {
+            server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .await
+                .assert_status_ok();
+        }
     }
 }
 

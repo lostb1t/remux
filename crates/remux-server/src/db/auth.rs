@@ -637,6 +637,18 @@ impl FromRequestParts<AppState> for TargetUser {
     }
 }
 
+impl AuthSession {
+    /// This session acting for `target`, the user named by the `{userId}` path
+    /// segment or `userId` query (see [`TargetUser`]). User-scoped data such as
+    /// resume points, next up, favourites, played state and the parental policy
+    /// then come from that user, as in Jellyfin, while the device stays the
+    /// caller's. This is what lets an admin or an API key read another user's
+    /// lists instead of always getting the first admin's.
+    pub fn acting_for(self, TargetUser(user): TargetUser) -> Self {
+        Self { user, ..self }
+    }
+}
+
 /// Extractor that only succeeds for admin users. Derefs to AuthSession.
 pub struct AdminSession(pub AuthSession);
 

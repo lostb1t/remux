@@ -152,8 +152,10 @@ pub async fn shows_episodes(
 pub async fn shows_nextup(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    let session = session.acting_for(target);
     // Home-screen call: no seriesId — return one next-up episode per in-progress series.
     // When the unified setting is on, this feed is folded into Continue
     // Watching instead — but only for this seriesId-less aggregate call; a
