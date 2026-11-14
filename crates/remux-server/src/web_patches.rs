@@ -673,6 +673,92 @@ pub static JS: &str = r#"
   processRoot(document.body);
 }());
 
+
+// "Sign in with …" buttons on the login page, one per OIDC provider from
+// /remux/sso/providers. Fetched once, only after a login form shows up.
+(function () {
+  var providers = null;
+  var fetching = false;
+  // jellyfin-web may sit under a reverse-proxy prefix and is mounted at
+  // /web/ and /jellyfin/; keep both so the session returns to the same place.
+  var m = location.pathname.match(/^(.*?)\/(web|jellyfin)(\/|$)/i);
+  var base = m ? m[1] : '';
+  var returnTo = m ? '/' + m[2] + '/' : '/web/';
+  // Whether the page was opened with a stored session. If so, a login form
+  // showing up later means the user just signed out (or the session ended),
+  // and sending them straight back to the provider would sign them in again.
+  var openedSignedIn = (function () {
+    try {
+      var c = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+      return (c.Servers || []).some(function (s) { return !!s.AccessToken; });
+    } catch (e) { return false; }
+  }());
+
+  function addButtons(form) {
+    if (form.querySelector('.remux-sso')) return;
+    var box = document.createElement('div');
+    box.className = 'remux-sso';
+    box.style.marginTop = '1em';
+    for (var i = 0; i < providers.length; i++) {
+      var p = providers[i];
+      var a = document.createElement('a');
+      a.className = 'raised block emby-button';
+      a.style.display = 'block';
+      a.style.textAlign = 'center';
+      a.style.textDecoration = 'none';
+      a.style.marginTop = '0.5em';
+      a.href = base + '/sso/oid/start/' + encodeURIComponent(p.Name) +
+        '?redirect=' + encodeURIComponent(returnTo);
+      a.textContent = 'Sign in with ' + p.DisplayName;
+      box.appendChild(a);
+    }
+    form.appendChild(box);
+  }
+
+  // OIDC_AUTO_REDIRECT: go straight to the provider, but not after a sign-out
+  // (see openedSignedIn). `?local` in the address shows the form instead, and
+  // a second attempt within a minute (e.g. after "Back to sign-in" on an error
+  // page) falls back to the buttons so a failing provider can't trap the
+  // browser in a redirect loop.
+  function autoRedirect() {
+    if (openedSignedIn) return false;
+    if (providers.length !== 1 || !providers[0].AutoRedirect) return false;
+    var skip = (location.search + location.hash).split(/[?&#]/)
+      .some(function (t) { return /^local(=|$)/i.test(t); });
+    if (skip) return false;
+    var key = 'remux_sso_auto_redirect', now = Date.now(), last = 0;
+    try { last = +sessionStorage.getItem(key) || 0; } catch (e) {}
+    if (now - last < 60000) return false;
+    try { sessionStorage.setItem(key, String(now)); } catch (e) {}
+    observer.disconnect();
+    location.replace(base + '/sso/oid/start/' + encodeURIComponent(providers[0].Name) +
+      '?redirect=' + encodeURIComponent(returnTo));
+    return true;
+  }
+
+  function scan() {
+    var forms = document.querySelectorAll('.manualLoginForm');
+    if (!forms.length) return;
+    if (providers === null) {
+      if (fetching) return;
+      fetching = true;
+      fetch(base + '/remux/sso/providers')
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .catch(function () { return []; })
+        .then(function (list) { providers = list || []; scan(); });
+      return;
+    }
+    // Nothing configured: stop watching the DOM for the rest of the page.
+    if (!providers.length) { observer.disconnect(); return; }
+    if (autoRedirect()) return;
+    for (var i = 0; i < forms.length; i++) addButtons(forms[i]);
+  }
+
+  var observer = new MutationObserver(scan);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  scan();
+}());
+
 "#;
 
 #[cfg(test)]
