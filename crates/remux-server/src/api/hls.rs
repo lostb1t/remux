@@ -531,8 +531,10 @@ async fn create_hls_session(
         let runtime_ticks = if is_live {
             0
         } else {
-            // Take the maximum of stored runtime and probe data so a stale/short
-            // metadata value can't truncate the playlist for a longer file.
+            // Size the playlist from the file's probed duration: a longer metadata
+            // runtime lists segments ffmpeg never writes. A probe far off the
+            // metadata runtime may be RemuxDB's record of another file, so then
+            // the larger of the two stands, as metadata does for an unprobed file.
             let stored_ticks = resolved_media
                 .runtime
                 .or(media.runtime)
@@ -543,9 +545,15 @@ async fn create_hls_session(
                 .as_ref()
                 .and_then(|p| p.run_time_ticks)
                 .filter(|&t| t > 0);
-            let rt = match (stored_ticks, probe_ticks) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b),
+            let rt = if crate::services::stream_service::implausible_runtime(
+                resolved_media
+                    .runtime
+                    .or(media.runtime),
+                probe_ticks,
+            ) {
+                stored_ticks.max(probe_ticks)
+            } else {
+                probe_ticks.or(stored_ticks)
             };
             match rt {
                 Some(t) if t > 0 => t,
@@ -2247,6 +2255,56 @@ mod tests {
         drop(session);
         ctx.sessions
             .stop_transcode("hls-selection")
+            .await;
+    }
+
+    /// An episode whose metadata runtime ran past its file listed segments
+    /// ffmpeg never wrote, and playback stalled short of the end. A probe far
+    /// off the runtime (RemuxDB's record of another file) must not cut it short.
+    #[tokio::test]
+    async fn the_playlist_covers_exactly_the_probed_file() {
+        use http::header::HeaderValue;
+
+        use crate::integration_test::{
+            auth_header_with_token, authenticated_server, insert_test_source,
+        };
+
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        // The test source probes at 10 s.
+        for (psid, runtime, expected_secs) in
+            [("longer", 12, 10), ("another-file", 40, 40)]
+        {
+            let mut source = insert_test_source(ctx).await;
+            source.runtime = Some(runtime);
+            source
+                .save(&ctx.db)
+                .await
+                .unwrap();
+            server
+                .get(&format!(
+                    "/videos/{}/master.m3u8?PlaySessionId={}",
+                    source.id, psid
+                ))
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .await
+                .assert_status_ok();
+            let session = ctx
+                .sessions
+                .get_transcode(psid)
+                .expect("HLS session");
+            assert_eq!(
+                session
+                    .read()
+                    .await
+                    .runtime_ticks,
+                expected_secs * 10_000_000,
+                "{psid}"
+            );
+        }
+        ctx.sessions
+            .stop_all()
             .await;
     }
 
