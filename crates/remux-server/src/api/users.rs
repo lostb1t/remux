@@ -99,30 +99,16 @@ pub async fn user_configuration_legacy(
 
 #[derive(Deserialize)]
 pub struct DisplayPrefQuery {
-    user_id: Option<Uuid>,
     client: String,
 }
 
 #[get("/displaypreferences/{id}")]
 pub async fn get_display_preferences(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<String>,
     Query(q): Query<DisplayPrefQuery>,
 ) -> Result<impl IntoResponse> {
-    let user = if let Some(user_id) = q.user_id {
-        db::User::get_by_id(
-            &state
-                .ctx
-                .db,
-            &user_id,
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("User not found"))?
-    } else {
-        session.user
-    };
-
     let result = db::JellyfinDisplayPrefs::get_by_filter(
         &state
             .ctx
@@ -169,24 +155,11 @@ pub async fn get_display_preferences(
 #[post("/displaypreferences/{id}")]
 pub async fn update_display_preferences(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<String>,
     Query(q): Query<DisplayPrefQuery>,
     Json(payload): Json<api::DisplayPreferencesDto>,
 ) -> Result<impl IntoResponse> {
-    let user = if let Some(user_id) = q.user_id {
-        db::User::get_by_id(
-            &state
-                .ctx
-                .db,
-            &user_id,
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("User not found"))?
-    } else {
-        session.user
-    };
-
     let prefs = db::JellyfinDisplayPrefs {
         id: id.clone(),
         user_id: user.id,
@@ -2621,6 +2594,75 @@ mod e2e_tests {
         assert_eq!(body["ScrollDirection"], "Horizontal");
         assert_eq!(body["SortOrder"], "Ascending");
         assert_eq!(body["CustomPrefs"]["chromecastVersion"], "stable");
+    }
+
+    /// `userId` names whose display preferences are read or written: an admin
+    /// may name anyone, a regular user only themselves.
+    #[tokio::test]
+    async fn display_preferences_belong_to_the_named_user() {
+        let (server, _guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let admin = get_user_id(&server, &admin_auth).await;
+        let (kid, kid_token) = regular_user(&server, &admin_auth, "kid").await;
+        let kid_auth = auth_header_with_token(&kid_token);
+        let prefs = |sort_by: &str| {
+            json!({
+                "Id": "usersettings",
+                "SortBy": sort_by,
+                "RememberIndexing": false,
+                "PrimaryImageHeight": 250,
+                "PrimaryImageWidth": 250,
+                "ScrollDirection": "Horizontal",
+                "ShowBackdrop": true,
+                "RememberSorting": false,
+                "SortOrder": "Ascending",
+                "ShowSidebar": false,
+                "Client": "emby",
+                "CustomPrefs": {}
+            })
+        };
+
+        server
+            .post("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", kid.as_str()), ("client", "emby")])
+            .json(&prefs("DateCreated"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let own = server
+            .get("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("client", "emby")])
+            .await;
+        assert_eq!(own.json::<serde_json::Value>()["SortBy"], "DateCreated");
+
+        let read = server
+            .get("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", admin.as_str()), ("client", "emby")])
+            .expect_failure()
+            .await;
+        read.assert_status(StatusCode::FORBIDDEN);
+        let write = server
+            .post("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", admin.as_str()), ("client", "emby")])
+            .json(&prefs("Random"))
+            .expect_failure()
+            .await;
+        write.assert_status(StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
