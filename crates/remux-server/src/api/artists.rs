@@ -12,15 +12,16 @@ use crate::{AppState, OptionExt, api, api::items::get_items, db, db::auth};
 
 async fn artists_response(
     state: AppState,
-    session: auth::AuthSession,
+    user: &db::User,
+    device: &auth::Device,
     mut q: api::GetItemsQuery,
-) -> Result<impl IntoResponse> {
+) -> Result<Json<serde_json::Value>> {
     q.include_item_types = Some(vec![api::MediaType::MusicArtist]);
     q.recursive = true;
     let start_index = q
         .start_index
         .unwrap_or_default();
-    let result = get_items(state, session, q, true)
+    let result = get_items(state, user, device, q, true)
         .await?
         .with_client_patches()
         .build();
@@ -36,9 +37,10 @@ async fn artists_response(
 pub async fn get_artists(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     ExtraQuery(q): ExtraQuery<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    artists_response(state, session, q).await
+    artists_response(state, &user, &session.device, q).await
 }
 
 /// `/Artists/{name}` — returns a single artist item by display name.
@@ -71,7 +73,8 @@ pub async fn get_artist_by_name(
 pub async fn get_album_artists(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     ExtraQuery(q): ExtraQuery<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    artists_response(state, session, q).await
+    artists_response(state, &user, &session.device, q).await
 }

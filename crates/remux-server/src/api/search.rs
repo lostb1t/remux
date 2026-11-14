@@ -9,6 +9,7 @@ use axum_anyhow::ApiResult as Result;
 pub async fn search_hints(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::SearchHintsQuery>,
 ) -> Result<impl IntoResponse> {
     let term = q
@@ -34,10 +35,11 @@ pub async fn search_hints(
         ..Default::default()
     };
 
-    let result = super::items::get_items(state, session, items_query, true)
-        .await?
-        .with_client_patches()
-        .build();
+    let result =
+        super::items::get_items(state, &user, &session.device, items_query, true)
+            .await?
+            .with_client_patches()
+            .build();
 
     let total = result.total_count;
     let hints: Vec<api::SearchHint> = result

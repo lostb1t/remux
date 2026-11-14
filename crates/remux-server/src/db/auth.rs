@@ -421,10 +421,28 @@ pub struct AuthSession {
 impl FromRequestParts<AppState> for AuthSession {
     type Rejection = ApiError;
 
+    /// Resolved once per request: a handler that also takes [`TargetUser`]
+    /// extracts the session twice, and each resolve touches the device row.
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(session) = parts
+            .extensions
+            .get::<AuthSession>()
+        {
+            return Ok(session.clone());
+        }
+        let session = Self::resolve(parts, state).await?;
+        parts
+            .extensions
+            .insert(session.clone());
+        Ok(session)
+    }
+}
+
+impl AuthSession {
+    async fn resolve(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let jfauth = JellyfinAuthHeader::from_request_parts(parts, state).await?;
         let token = jfauth
             .token
