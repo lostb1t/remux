@@ -6,12 +6,11 @@ use axum_extra::extract::Query;
 use remux_macros::{get, query};
 use uuid::Uuid;
 
-use crate::{AppState, api, db, db::auth::AuthSession};
+use crate::{AppState, api, db, db::auth::TargetUser};
 
 #[query]
 #[derive(Debug, Default)]
 pub struct GetMovieRecommendationsQuery {
-    pub user_id: Option<Uuid>,
     pub parent_id: Option<Uuid>,
     pub category_limit: Option<u32>,
     pub item_limit: Option<u32>,
@@ -20,21 +19,14 @@ pub struct GetMovieRecommendationsQuery {
 #[get("/movies/recommendations")]
 pub async fn movies_recommendations(
     State(state): State<AppState>,
-    session: AuthSession,
+    TargetUser(user): TargetUser,
     Query(q): Query<GetMovieRecommendationsQuery>,
 ) -> Result<impl IntoResponse> {
-    let user_id = q
-        .user_id
-        .unwrap_or(
-            session
-                .user
-                .id,
-        );
     let categories = build_recommendations(
         &state
             .ctx
             .db,
-        user_id,
+        user.id,
         q.parent_id,
         db::MediaKind::Movie,
         q.category_limit

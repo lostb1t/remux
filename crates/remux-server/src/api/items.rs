@@ -84,7 +84,10 @@ enum ItemsSource {
 pub struct ItemsQueryResultBuilder {
     items: ItemsSource,
     total_count: i64,
-    session: auth::AuthSession,
+    /// The user the list is for, whose permissions `with_permissions` applies.
+    user: db::User,
+    /// The calling device, whose client `with_client_patches` patches for.
+    device: auth::Device,
     apply_permissions: bool,
     hide_sources: bool,
     /// Per-client override for CollectionType::Mixed. None = leave as Mixed.
@@ -94,14 +97,16 @@ pub struct ItemsQueryResultBuilder {
 
 impl ItemsQueryResultBuilder {
     pub fn with_items(
-        session: auth::AuthSession,
+        user: &db::User,
+        device: &auth::Device,
         media: Vec<db::Media>,
         total_count: i64,
     ) -> Self {
         Self {
             items: ItemsSource::Raw(media),
             total_count,
-            session,
+            user: user.clone(),
+            device: device.clone(),
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
@@ -110,14 +115,16 @@ impl ItemsQueryResultBuilder {
     }
 
     pub fn with_dtos(
-        session: auth::AuthSession,
+        user: &db::User,
+        device: &auth::Device,
         dtos: Vec<api::BaseItemDto>,
         total_count: i64,
     ) -> Self {
         Self {
             items: ItemsSource::Dtos(dtos),
             total_count,
-            session,
+            user: user.clone(),
+            device: device.clone(),
             apply_permissions: false,
             hide_sources: false,
             mixed_collection_type: None,
@@ -143,7 +150,6 @@ impl ItemsQueryResultBuilder {
 
     pub fn with_client_patches(mut self) -> Self {
         let client = self
-            .session
             .device
             .jellyfin_client();
         self.hide_sources = client.hide_sources();
@@ -167,12 +173,7 @@ impl ItemsQueryResultBuilder {
                     let mut dto =
                         api::db_media_to_item_for_list(m, self.hide_sources, fields);
                     if self.apply_permissions {
-                        apply_permissions(
-                            &mut dto,
-                            &self
-                                .session
-                                .user,
-                        );
+                        apply_permissions(&mut dto, &self.user);
                     }
                     dto
                 })
@@ -181,12 +182,7 @@ impl ItemsQueryResultBuilder {
                 if self.apply_permissions {
                     dtos.into_iter()
                         .map(|mut dto| {
-                            apply_permissions(
-                                &mut dto,
-                                &self
-                                    .session
-                                    .user,
-                            );
+                            apply_permissions(&mut dto, &self.user);
                             dto
                         })
                         .collect()
@@ -306,19 +302,20 @@ fn exclude_episodes_from_search(q: &mut api::GetItemsQuery) {
 /// (Deezer `album_kind`). Applies to both live addon results and library hits.
 pub async fn get_items(
     state: AppState,
-    session: auth::AuthSession,
+    user: &db::User,
+    device: &auth::Device,
     mut q: api::GetItemsQuery,
     want_count: bool,
 ) -> Result<ItemsQueryResultBuilder> {
     exclude_episodes_from_search(&mut q);
+    // User data and user-state filters are always the listed user's.
+    q.user_id = Some(user.id);
     if !want_count {
         q.enable_total_record_count = Some(false);
     }
     // Used only by pre-converting paths (search, playlist) that use with_dtos().
     // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
-    let client = session
-        .device
-        .jellyfin_client();
+    let client = device.jellyfin_client();
     let hide_sources = client.hide_sources();
 
     let parent = if let Some(parent_id) = q
@@ -416,8 +413,7 @@ pub async fn get_items(
                 .into_iter()
                 .partition(|k| is_remote_enabled(&cfg, k));
 
-            let user_remote_enabled = session
-                .user
+            let user_remote_enabled = user
                 .policy
                 .as_ref()
                 .map(|p| p.enable_remote_search)
@@ -440,11 +436,7 @@ pub async fn get_items(
                             s,
                             kind_limit(k, fetch_limit),
                             &state.ctx,
-                            Some(
-                                session
-                                    .user
-                                    .id,
-                            ),
+                            Some(user.id),
                         )
                 })
                 .collect();
@@ -499,7 +491,7 @@ pub async fn get_items(
                         .db,
                     &local_q,
                     false,
-                    Some(&session.user),
+                    Some(user),
                     Some(&server_config),
                     None,
                     None,
@@ -537,7 +529,8 @@ pub async fn get_items(
                 .collect();
 
             return Ok(ItemsQueryResultBuilder::with_dtos(
-                session,
+                user,
+                device,
                 paged_items,
                 total_count,
             )
@@ -613,11 +606,13 @@ pub async fn get_items(
                     }
                 }
             }
-            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total)
-                .with_fields(
-                    q.fields
-                        .clone(),
-                ));
+            return Ok(
+                ItemsQueryResultBuilder::with_dtos(user, device, items, total)
+                    .with_fields(
+                        q.fields
+                            .clone(),
+                    ),
+            );
         }
 
         // collection browse
@@ -629,25 +624,21 @@ pub async fn get_items(
                 q.parent_id = Some(parent.id);
                 q.include_item_types = Some(vec![api::MediaType::BoxSet]);
                 q.include_childless = Some(true);
-                q.user_id = Some(
-                    session
-                        .user
-                        .id,
-                );
                 let result = db::Media::get_by_jellyfin_filter(
                     &state
                         .ctx
                         .db,
                     &q,
                     true,
-                    Some(&session.user),
+                    Some(user),
                     Some(&server_config),
                     None,
                     None,
                 )
                 .await?;
                 return Ok(ItemsQueryResultBuilder::with_items(
-                    session,
+                    user,
+                    device,
                     result.records,
                     result.total_count as i64,
                 )
@@ -665,11 +656,6 @@ pub async fn get_items(
                 q.parent_id = None;
                 q.include_item_types = Some(vec![api::MediaType::BoxSet]);
                 q.include_childless = Some(true);
-                q.user_id = Some(
-                    session
-                        .user
-                        .id,
-                );
                 let smart_filter = parent.parse_smart_filter();
                 let result = db::Media::get_by_jellyfin_filter(
                     &state
@@ -677,14 +663,15 @@ pub async fn get_items(
                         .db,
                     &q,
                     true,
-                    Some(&session.user),
+                    Some(user),
                     Some(&server_config),
                     smart_filter,
                     None,
                 )
                 .await?;
                 return Ok(ItemsQueryResultBuilder::with_items(
-                    session,
+                    user,
+                    device,
                     result.records,
                     result.total_count as i64,
                 )
@@ -696,25 +683,21 @@ pub async fn get_items(
 
             // Manual collections: use media_relations JOIN via the pre-fetched parent.
             if parent.collection_kind == Some(db::CollectionKind::Manual) {
-                q.user_id = Some(
-                    session
-                        .user
-                        .id,
-                );
                 let result = db::Media::get_by_jellyfin_filter(
                     &state
                         .ctx
                         .db,
                     &q,
                     true,
-                    Some(&session.user),
+                    Some(user),
                     Some(&server_config),
                     None,
                     Some(&parent),
                 )
                 .await?;
                 return Ok(ItemsQueryResultBuilder::with_items(
-                    session,
+                    user,
+                    device,
                     result.records,
                     result.total_count as i64,
                 )
@@ -793,12 +776,6 @@ pub async fn get_items(
             {
                 q.limit = Some(250);
             }
-            q.user_id = Some(
-                session
-                    .user
-                    .id
-                    .clone(),
-            );
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
@@ -829,7 +806,7 @@ pub async fn get_items(
                 &q,
                 q.enable_total_record_count
                     .unwrap_or(true),
-                Some(&session.user),
+                Some(user),
                 Some(&server_config),
                 smart_filter,
                 Some(&parent),
@@ -854,7 +831,8 @@ pub async fn get_items(
             }
 
             return Ok(ItemsQueryResultBuilder::with_items(
-                session,
+                user,
+                device,
                 result.records,
                 result.total_count as i64,
             )
@@ -877,17 +855,6 @@ pub async fn get_items(
             .take();
     }
 
-    // Always provide user_id so user-state filters work
-    if q.user_id
-        .is_none()
-    {
-        q.user_id = Some(
-            session
-                .user
-                .id,
-        );
-    }
-
     let want_total = q
         .enable_total_record_count
         .unwrap_or(true);
@@ -897,7 +864,7 @@ pub async fn get_items(
             .db,
         &q,
         want_total,
-        Some(&session.user),
+        Some(user),
         Some(&server_config),
         None,
         parent.as_ref(),
@@ -938,7 +905,7 @@ pub async fn get_items(
                     .db,
                 &q,
                 want_total,
-                Some(&session.user),
+                Some(user),
                 Some(&server_config),
                 None,
                 parent.as_ref(),
@@ -950,26 +917,33 @@ pub async fn get_items(
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 && !q.strict_item_filters {
-            let media = item(
+            let media = item_for_user(
                 state,
-                session.clone(),
+                user,
+                device,
                 ids[0],
                 q.fields
                     .as_deref(),
             )
             .await?;
             if let Some(media) = media {
-                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1)
-                    .with_fields(
-                        q.fields
-                            .clone(),
-                    ));
+                return Ok(ItemsQueryResultBuilder::with_dtos(
+                    user,
+                    device,
+                    vec![media],
+                    1,
+                )
+                .with_fields(
+                    q.fields
+                        .clone(),
+                ));
             }
         }
     }
 
     Ok(ItemsQueryResultBuilder::with_items(
-        session,
+        user,
+        device,
         result.records,
         result.total_count as i64,
     )
@@ -994,6 +968,7 @@ fn countdown_label(days: i64) -> String {
 pub async fn items_flat(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // Jellyfin ignores the MediaTypes query parameter for this request.
@@ -1020,12 +995,6 @@ pub async fn items_flat(
                     filters.push(api::ItemFilter::IsUnplayed);
                 }
                 q.filters = Some(filters);
-                q.user_id = Some(
-                    session
-                        .user
-                        .id
-                        .clone(),
-                );
             }
             if parent.collection_latest_sort_digital == Some(true) {
                 q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
@@ -1048,7 +1017,7 @@ pub async fn items_flat(
         q.sort_by = Some(vec![api::ItemSortBy::DateCreated]);
         q.sort_order = Some(vec![api::SortOrder::Descending]);
     }
-    let items = get_items(state.clone(), session.clone(), q, false)
+    let items = get_items(state.clone(), &user, &session.device, q, false)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -1060,6 +1029,7 @@ pub async fn items_flat(
 pub async fn items(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // Jellyfin lists the root (the user's views) when nothing narrows the query,
@@ -1076,19 +1046,20 @@ pub async fn items(
         && q.media_types
             .is_none()
     {
-        return Ok(super::users::userviews(
-            State(state),
-            session,
-            Query(super::users::UserViewsQuery {
+        return Ok(super::users::user_views(
+            &state,
+            &user,
+            &session.device,
+            super::users::UserViewsQuery {
                 include_hidden: None,
-            }),
+            },
         )
         .await?
         .into_response());
     }
 
     //trace!(?q);
-    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+    let items = get_items(state.clone(), &user, &session.device, q.clone(), true)
         .await?
         .preload_playlist_runtimes(
             &state
@@ -1760,15 +1731,6 @@ pub async fn items_counts(
     Ok(Json(item_counts))
 }
 
-pub async fn item(
-    state: AppState,
-    session: auth::AuthSession,
-    id: Uuid,
-    fields: Option<&[api::ItemFields]>,
-) -> Result<Option<api::BaseItemDto>> {
-    item_for_user(state, session, id, fields, None).await
-}
-
 async fn rank_item_sources(
     db: &sqlx::SqlitePool,
     sources: &mut [db::Media],
@@ -1800,12 +1762,14 @@ async fn rank_item_sources(
     .await;
 }
 
-async fn item_for_user(
+/// The item as `user` sees it (user data, policy, preferences), with its
+/// sources ranked for the calling `device`.
+pub async fn item_for_user(
     state: AppState,
-    session: auth::AuthSession,
+    user: &db::User,
+    device: &auth::Device,
     id: Uuid,
     fields: Option<&[api::ItemFields]>,
-    target_user_id: Option<Uuid>,
 ) -> Result<Option<api::BaseItemDto>> {
     let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
@@ -1873,13 +1837,7 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    UserId(
-                        target_user_id.unwrap_or(
-                            session
-                                .user
-                                .id,
-                        ),
-                    ),
+                    UserId(user.id),
                     StreamGroupId(m.id),
                 )
                 .context_not_found("stream group not yet associated with an item")?
@@ -1910,13 +1868,7 @@ async fn item_for_user(
             include_child_count: true,
             include_recursive_item_count: fields
                 .is_some_and(|f| f.contains(&api::ItemFields::RecursiveItemCount)),
-            user_id: Some(
-                target_user_id.unwrap_or(
-                    session
-                        .user
-                        .id,
-                ),
-            ),
+            user_id: Some(user.id),
             ..Default::default()
         },
     )
@@ -1931,7 +1883,7 @@ async fn item_for_user(
             &state
                 .ctx
                 .db,
-            &session.user,
+            user,
         )
         .await?
     {
@@ -1957,9 +1909,7 @@ async fn item_for_user(
         &state
             .ctx
             .db,
-        &session
-            .user
-            .id,
+        &user.id,
         &media.id,
     )
     .await;
@@ -1974,8 +1924,7 @@ async fn item_for_user(
     // pass further down use the same user config — language defaults must apply
     // even when the user has never saved a configuration (NULL for brand-new
     // users), so the server's global metadata language is the fallback.
-    let user_cfg = session
-        .user
+    let user_cfg = user
         .configuration
         .as_ref()
         .map(|c| {
@@ -1984,20 +1933,15 @@ async fn item_for_user(
         .unwrap_or_default();
     let persisted_device_profile =
         crate::jellyfin_client::merge_device_profile_subtitles(
-            &session.device,
-            session
-                .device
-                .parsed_device_profile(),
+            device,
+            device.parsed_device_profile(),
         );
     let ranking_ctx = SourceRankingContext {
         mode: server_config
             .sort_media_sources
             .unwrap_or_default(),
         device_profile: persisted_device_profile.as_ref(),
-        is_4k_capable: session
-            .device
-            .is_4k_capable
-            == Some(true),
+        is_4k_capable: device.is_4k_capable == Some(true),
         subtitle_mode,
         explicit_subtitle_index: None,
         // MaxStaticBitrate is the most this device takes of a file as it is,
@@ -2032,21 +1976,12 @@ async fn item_for_user(
         let _ = state
             .ctx
             .addons
-            .refresh_streams(
-                &mut media,
-                &state.ctx,
-                Some(
-                    session
-                        .user
-                        .id,
-                ),
-            )
+            .refresh_streams(&mut media, &state.ctx, Some(user.id))
             .await
             .log_err("failed to refresh sources");
     }
 
-    let user_stream_filter = session
-        .user
+    let user_stream_filter = user
         .policy
         .as_ref()
         .and_then(|p| {
@@ -2124,11 +2059,7 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    UserId(
-                        session
-                            .user
-                            .id,
-                    ),
+                    UserId(user.id),
                     StreamGroupId(gid),
                     ItemId(media.id),
                 );
@@ -2201,7 +2132,7 @@ async fn item_for_user(
                 &state
                     .ctx
                     .db,
-                &session.user,
+                user,
             )
             .await?;
     } else if want_streams && media.kind == db::MediaKind::Track {
@@ -2251,11 +2182,7 @@ async fn item_for_user(
                     &state
                         .ctx
                         .store,
-                    UserId(
-                        session
-                            .user
-                            .id,
-                    ),
+                    UserId(user.id),
                     StreamGroupId(gid),
                     ItemId(media.id),
                 );
@@ -2293,7 +2220,7 @@ async fn item_for_user(
                 &state
                     .ctx
                     .db,
-                &session.user,
+                user,
             )
             .await?;
     }
@@ -2415,10 +2342,7 @@ async fn item_for_user(
                     .sort_media_sources
                     .unwrap_or_default(),
                 device_profile: Some(device_profile),
-                is_4k_capable: session
-                    .device
-                    .is_4k_capable
-                    == Some(true),
+                is_4k_capable: device.is_4k_capable == Some(true),
                 subtitle_mode,
                 explicit_subtitle_index: None,
                 max_bitrate: device_profile.max_streaming_bitrate,
@@ -2550,8 +2474,7 @@ async fn item_for_user(
             "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
             media.id,
             media.id,
-            session
-                .device
+            device
                 .access_token
                 .expose()
         );
@@ -2680,7 +2603,7 @@ async fn item_for_user(
         base_item.can_download = Some(false);
     }
 
-    apply_permissions(&mut base_item, &session.user);
+    apply_permissions(&mut base_item, user);
     Ok(Some(base_item))
 }
 
@@ -2695,18 +2618,18 @@ pub async fn items_livetv(_session: auth::AuthSession) -> Result<impl IntoRespon
 pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    auth::TargetUser(target): auth::TargetUser,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<Uuid>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(
         item_for_user(
             state,
-            session,
+            &user,
+            &session.device,
             id,
             q.fields
                 .as_deref(),
-            Some(target.id),
         )
         .await?
         .context_not_found("item not found")?,
@@ -2740,10 +2663,11 @@ pub async fn items_suggestions(
 pub async fn persons(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     q.include_item_types = Some(vec![api::MediaType::Person]);
-    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+    let items = get_items(state.clone(), &user, &session.device, q.clone(), true)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -3500,7 +3424,6 @@ pub async fn items_metadata_editor(
 #[query]
 #[derive(Debug, Default)]
 pub struct GetSimilarItemsQuery {
-    pub user_id: Option<Uuid>,
     pub limit: Option<u32>,
     pub start_index: Option<u32>,
     pub fields: Option<Vec<api::ItemFields>>,
@@ -3509,7 +3432,7 @@ pub struct GetSimilarItemsQuery {
 #[get("/items/{id}/similar")]
 pub async fn items_similar(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     PlayableItemId { id, .. }: PlayableItemId,
     Query(q): Query<GetSimilarItemsQuery>,
 ) -> Result<impl IntoResponse> {
@@ -3526,7 +3449,7 @@ pub async fn items_similar(
             .ctx
             .db,
         &id,
-        &session.user,
+        &user,
         limit,
         offset,
     )
@@ -3547,13 +3470,7 @@ pub async fn items_similar(
         .collect();
     let filter = db::MediaFilter {
         id: Some(ids),
-        user_id: q
-            .user_id
-            .or(Some(
-                session
-                    .user
-                    .id,
-            )),
+        user_id: Some(user.id),
         include_user_state: true,
         include_relations: api::fields_include_relations(
             q.fields

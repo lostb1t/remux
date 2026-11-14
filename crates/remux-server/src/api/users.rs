@@ -30,7 +30,7 @@ use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
 
 use super::{
-    items::{ItemsQueryResultBuilder, get_items, item, items, items_flat},
+    items::{ItemsQueryResultBuilder, get_items, items, items_flat, items_get},
     mock_items,
     shows::{livetv_view_item, next_up_candidates},
 };
@@ -99,30 +99,16 @@ pub async fn user_configuration_legacy(
 
 #[derive(Deserialize)]
 pub struct DisplayPrefQuery {
-    user_id: Option<Uuid>,
     client: String,
 }
 
 #[get("/displaypreferences/{id}")]
 pub async fn get_display_preferences(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<String>,
     Query(q): Query<DisplayPrefQuery>,
 ) -> Result<impl IntoResponse> {
-    let user = if let Some(user_id) = q.user_id {
-        db::User::get_by_id(
-            &state
-                .ctx
-                .db,
-            &user_id,
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("User not found"))?
-    } else {
-        session.user
-    };
-
     let result = db::JellyfinDisplayPrefs::get_by_filter(
         &state
             .ctx
@@ -169,24 +155,11 @@ pub async fn get_display_preferences(
 #[post("/displaypreferences/{id}")]
 pub async fn update_display_preferences(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Path(id): Path<String>,
     Query(q): Query<DisplayPrefQuery>,
     Json(payload): Json<api::DisplayPreferencesDto>,
 ) -> Result<impl IntoResponse> {
-    let user = if let Some(user_id) = q.user_id {
-        db::User::get_by_id(
-            &state
-                .ctx
-                .db,
-            &user_id,
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("User not found"))?
-    } else {
-        session.user
-    };
-
     let prefs = db::JellyfinDisplayPrefs {
         id: id.clone(),
         user_id: user.id,
@@ -1411,39 +1384,31 @@ pub async fn users_get_by_id(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Path((_user_id, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(
-        item(
-            state,
-            session,
-            id,
-            q.fields
-                .as_deref(),
-        )
-        .await?
-        .context_not_found("item not found")?,
-    )
-    .into_response());
+    items_get(State(state), session, target, Path(id), Query(q)).await
 }
 
 #[get("/users/{user_id}/items")]
 pub async fn users_items(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    items(State(state), session, Query(q)).await
+    items(State(state), session, target, Query(q)).await
 }
 
 #[get("/users/{user_id}/items/latest")]
 pub async fn users_items_latest(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    items_flat(State(state), session, Query(q)).await
+    items_flat(State(state), session, target, Query(q)).await
 }
 
 #[query]
@@ -1695,14 +1660,23 @@ async fn normalize_ordered_views(
 pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
-    let config = session
-        .user
+    user_views(&state, &user, &session.device, q).await
+}
+
+/// `user`'s library views, patched for the calling `device`'s client.
+pub(crate) async fn user_views(
+    state: &AppState,
+    user: &db::User,
+    device: &auth::Device,
+    q: UserViewsQuery,
+) -> Result<Json<api::BaseItemDtoQueryResult>> {
+    let config = user
         .configuration
         .as_deref();
-    let policy = session
-        .user
+    let policy = user
         .policy
         .as_deref();
 
@@ -1731,9 +1705,7 @@ pub async fn userviews(
         &state
             .ctx
             .db,
-        session
-            .user
-            .id,
+        user.id,
         policy,
         excluded_view_ids.as_deref(),
     )
@@ -1777,7 +1749,7 @@ pub async fn userviews(
     }
 
     let count = items.len() as i64;
-    let result = ItemsQueryResultBuilder::with_dtos(session, items, count)
+    let result = ItemsQueryResultBuilder::with_dtos(user, device, items, count)
         .with_client_patches()
         .build();
     Ok(Json(api::BaseItemDtoQueryResult {
@@ -1822,21 +1794,18 @@ pub async fn userviews_groupingoptions(
 pub async fn users_views(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    target: auth::TargetUser,
     Query(q): Query<UserViewsQuery>,
 ) -> Result<impl IntoResponse> {
-    userviews(State(state), session, Query(q)).await
+    userviews(State(state), session, target, Query(q)).await
 }
 
 async fn resume_items(
     state: AppState,
-    session: auth::AuthSession,
+    user: &db::User,
+    device: &auth::Device,
     mut q: api::GetItemsQuery,
-) -> Result<impl IntoResponse> {
-    q.user_id = Some(
-        session
-            .user
-            .id,
-    );
+) -> Result<Json<serde_json::Value>> {
     q.filters = Some(vec![api::ItemFilter::IsResumable]);
     let limit = *q
         .limit
@@ -1867,7 +1836,7 @@ async fn resume_items(
         query.sort_by = Some(vec![api::ItemSortBy::DatePlayed]);
         query.sort_order = Some(vec![api::SortOrder::Descending]);
     }
-    let result = get_items(state.clone(), session.clone(), query, true)
+    let result = get_items(state.clone(), user, device, query, true)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -1879,15 +1848,13 @@ async fn resume_items(
             &state
                 .ctx
                 .db,
-            session
-                .user
-                .id,
+            user.id,
         )
         .await?;
         let mut query = q.clone();
         query.enable_resumable = Some(false);
         let now = chrono::Utc::now();
-        let candidates = next_up_candidates(&state, &session, &query).await?;
+        let candidates = next_up_candidates(&state, user.id, &query).await?;
         let activity: HashMap<Uuid, chrono::DateTime<chrono::Utc>> = candidates
             .into_iter()
             .filter(|(media, _)| {
@@ -1928,7 +1895,7 @@ async fn resume_items(
                     *term = format!("local:{term}");
                 }
             }
-            let next_up = get_items(state, session, query, false)
+            let next_up = get_items(state, user, device, query, false)
                 .await?
                 .with_permissions()
                 .with_client_patches()
@@ -1971,9 +1938,10 @@ async fn resume_items(
 pub async fn users_items_resume(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    resume_items(state, session, q).await
+    resume_items(state, &user, &session.device, q).await
 }
 
 #[get("/users/{user_id}/items/similar")]
@@ -2005,9 +1973,10 @@ pub async fn users_items_intros(
 pub async fn useritems_resume(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    resume_items(state, session, q).await
+    resume_items(state, &user, &session.device, q).await
 }
 
 #[post("/users/forgotpassword")]
@@ -2625,6 +2594,75 @@ mod e2e_tests {
         assert_eq!(body["ScrollDirection"], "Horizontal");
         assert_eq!(body["SortOrder"], "Ascending");
         assert_eq!(body["CustomPrefs"]["chromecastVersion"], "stable");
+    }
+
+    /// `userId` names whose display preferences are read or written: an admin
+    /// may name anyone, a regular user only themselves.
+    #[tokio::test]
+    async fn display_preferences_belong_to_the_named_user() {
+        let (server, _guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let admin = get_user_id(&server, &admin_auth).await;
+        let (kid, kid_token) = regular_user(&server, &admin_auth, "kid").await;
+        let kid_auth = auth_header_with_token(&kid_token);
+        let prefs = |sort_by: &str| {
+            json!({
+                "Id": "usersettings",
+                "SortBy": sort_by,
+                "RememberIndexing": false,
+                "PrimaryImageHeight": 250,
+                "PrimaryImageWidth": 250,
+                "ScrollDirection": "Horizontal",
+                "ShowBackdrop": true,
+                "RememberSorting": false,
+                "SortOrder": "Ascending",
+                "ShowSidebar": false,
+                "Client": "emby",
+                "CustomPrefs": {}
+            })
+        };
+
+        server
+            .post("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", kid.as_str()), ("client", "emby")])
+            .json(&prefs("DateCreated"))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let own = server
+            .get("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("client", "emby")])
+            .await;
+        assert_eq!(own.json::<serde_json::Value>()["SortBy"], "DateCreated");
+
+        let read = server
+            .get("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", admin.as_str()), ("client", "emby")])
+            .expect_failure()
+            .await;
+        read.assert_status(StatusCode::FORBIDDEN);
+        let write = server
+            .post("/displaypreferences/usersettings")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&kid_auth).unwrap(),
+            )
+            .add_query_params(&[("userId", admin.as_str()), ("client", "emby")])
+            .json(&prefs("Random"))
+            .expect_failure()
+            .await;
+        write.assert_status(StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -5723,6 +5761,287 @@ mod e2e_tests {
             ids.contains(&watched_col.id),
             "Watched collection missing after user2 watches an item"
         );
+    }
+
+    /// Creates a regular user and logs them in, returning `(id, token)`.
+    async fn regular_user(
+        server: &axum_test::TestServer,
+        admin_auth: &str,
+        name: &str,
+    ) -> (String, String) {
+        let created = server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": name, "Password": "pw" }))
+            .await;
+        created.assert_status_ok();
+        let id = created.json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let login = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": name, "Pw": "pw" }))
+            .await;
+        let token = login.json::<serde_json::Value>()["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (id, token)
+    }
+
+    fn item_ids(items: &serde_json::Value) -> Vec<String> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                i["Id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// An API key authenticates as the first admin. As on Jellyfin, a
+    /// `{userId}` path segment or `userId` query names the user the lists are
+    /// for: their resume points, next up, favourites, latest and views.
+    #[tokio::test]
+    async fn an_api_key_reads_the_named_users_lists() {
+        use crate::api::shows::test::{insert_series_with_episodes, insert_state};
+        use remux_sdks::remux::{CollectionFilter, FilterGroup, FilterRule};
+
+        let (server, guard, admin_token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let (kid, _) = regular_user(&server, &admin_auth, "kid").await;
+        let kid_uuid: Uuid = kid
+            .parse()
+            .unwrap();
+
+        let resp = server
+            .post("/auth/keys?app=companion")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let key = resp
+            .json::<crate::api::AuthenticationInfo>()
+            .access_token
+            .expect("a new key returns its token");
+        let get = |path: String| {
+            server
+                .get(&path)
+                .add_header("X-Emby-Token", HeaderValue::from_str(&key).unwrap())
+        };
+
+        let now = chrono::Utc::now().naive_utc();
+        let external_ids = db::ExternalIds {
+            imdb: db::NonEmptyString::try_new("tt4400001".to_string()).ok(),
+            ..Default::default()
+        };
+        let mut movie = db::Media {
+            title: "Half Watched".into(),
+            kind: db::MediaKind::Movie,
+            external_ids,
+            released_at: Some(now - chrono::Duration::days(365)),
+            ..Default::default()
+        };
+        movie
+            .save(db)
+            .await
+            .unwrap();
+        insert_state(db, kid_uuid, movie.id, 0, 100, Some(now), Some(now)).await;
+        let (_, episodes) =
+            insert_series_with_episodes(db, "KidSeries", &["Ep1", "Ep2"]).await;
+        insert_state(db, kid_uuid, episodes[0].id, 1, 0, Some(now), Some(now)).await;
+        server
+            .post(&format!("/users/{kid}/favoriteitems/{}", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .await
+            .assert_status_ok();
+        // Lists only for a user who has watched something: the kid.
+        let mut watched = db::Media {
+            title: "Watched".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            promoted: true,
+            collection_smart_filter: Some(CollectionFilter {
+                groups: vec![FilterGroup {
+                    rules: vec![FilterRule::Played { value: true }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        watched
+            .save(db)
+            .await
+            .unwrap();
+        let simple = |id: Uuid| {
+            id.simple()
+                .to_string()
+        };
+        let movie_id = simple(movie.id);
+
+        let resume = get(format!("/users/{kid}/items/resume")).await;
+        resume.assert_status_ok();
+        assert_eq!(
+            item_ids(&resume.json::<serde_json::Value>()["Items"]),
+            [movie_id.clone()]
+        );
+        let resume = get(format!("/useritems/resume?userId={kid}")).await;
+        assert_eq!(
+            item_ids(&resume.json::<serde_json::Value>()["Items"]),
+            [movie_id.clone()]
+        );
+
+        let next_up = get(format!("/shows/nextup?userId={kid}")).await;
+        next_up.assert_status_ok();
+        assert_eq!(
+            item_ids(&next_up.json::<serde_json::Value>()["Items"]),
+            [simple(episodes[1].id)]
+        );
+
+        for path in [
+            format!("/users/{kid}/items?Recursive=true&Filters=IsFavorite"),
+            format!("/items?userId={kid}&Recursive=true&Filters=IsFavorite"),
+        ] {
+            let favourites = get(path.clone()).await;
+            favourites.assert_status_ok();
+            assert_eq!(
+                item_ids(&favourites.json::<serde_json::Value>()["Items"]),
+                [movie_id.clone()],
+                "{path}"
+            );
+        }
+
+        // Latest of an auto-unplayed collection leaves out what the kid played.
+        let mut seen = db::Media {
+            title: "Seen".into(),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt4400002".to_string()).ok(),
+                ..Default::default()
+            },
+            released_at: Some(now - chrono::Duration::days(365)),
+            ..Default::default()
+        };
+        seen.save(db)
+            .await
+            .unwrap();
+        insert_state(db, kid_uuid, seen.id, 1, 0, Some(now), Some(now)).await;
+        let mut unplayed = db::Media {
+            title: "Unplayed".to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Manual),
+            collection_latest_auto_unplayed: Some(true),
+            ..Default::default()
+        };
+        unplayed
+            .save(db)
+            .await
+            .unwrap();
+        db::MediaRelation::add_collection_items(db, &unplayed.id, &[movie.id, seen.id])
+            .await
+            .unwrap();
+        let latest = get(format!(
+            "/users/{kid}/items/latest?parentId={}",
+            unplayed.id
+        ))
+        .await;
+        latest.assert_status_ok();
+        assert_eq!(item_ids(&latest.json()), [movie_id.clone()]);
+        let own = get(format!("/items/latest?parentId={}", unplayed.id)).await;
+        assert_eq!(item_ids(&own.json()).len(), 2);
+
+        let views = get(format!("/users/{kid}/views")).await;
+        views.assert_status_ok();
+        assert!(
+            item_ids(&views.json::<serde_json::Value>()["Items"])
+                .contains(&simple(watched.id))
+        );
+
+        let single = get(format!("/users/{kid}/items/{}", movie.id)).await;
+        single.assert_status_ok();
+        let single: serde_json::Value = single.json();
+        assert_eq!(single["UserData"]["IsFavorite"], true);
+        assert_eq!(single["UserData"]["PlaybackPositionTicks"], 1_000_000_000);
+
+        // Without a user named, the key still reads the admin's own lists.
+        let own = get("/useritems/resume".to_string()).await;
+        assert!(item_ids(&own.json::<serde_json::Value>()["Items"]).is_empty());
+        let own = get("/items?Recursive=true&Filters=IsFavorite".to_string()).await;
+        assert!(item_ids(&own.json::<serde_json::Value>()["Items"]).is_empty());
+        let own = get("/userviews".to_string()).await;
+        assert!(
+            !item_ids(&own.json::<serde_json::Value>()["Items"])
+                .contains(&simple(watched.id))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_cannot_read_someone_elses_lists() {
+        let (server, _guard, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+        let admin = get_user_id(&server, &admin_auth).await;
+        let (me, token) = regular_user(&server, &admin_auth, "regular").await;
+        let auth = auth_header_with_token(&token);
+
+        for path in [
+            format!("/users/{admin}/items/resume"),
+            format!("/useritems/resume?userId={admin}"),
+            format!("/shows/nextup?userId={admin}"),
+            format!("/users/{admin}/items?Recursive=true&Filters=IsFavorite"),
+            format!("/items?userId={admin}&Recursive=true&Filters=IsFavorite"),
+            format!("/users/{admin}/items/latest"),
+            format!("/users/{admin}/views"),
+            format!("/userviews?userId={admin}"),
+            format!("/movies/recommendations?userId={admin}"),
+        ] {
+            let resp = server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .expect_failure()
+                .await;
+            assert_eq!(resp.status_code(), http::StatusCode::FORBIDDEN, "{path}");
+        }
+
+        // Naming yourself is fine.
+        for path in [
+            format!("/users/{me}/items/resume"),
+            format!("/shows/nextup?userId={me}"),
+            format!("/items?userId={me}&Recursive=true&Filters=IsFavorite"),
+            format!("/users/{me}/views"),
+        ] {
+            server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .await
+                .assert_status_ok();
+        }
     }
 }
 

@@ -35,6 +35,7 @@ pub fn livetv_view_item() -> api::BaseItemDto {
 pub async fn shows_seasons(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
@@ -46,7 +47,7 @@ pub async fn shows_seasons(
         q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
         q.sort_order = Some(vec![api::SortOrder::Ascending]);
     }
-    let items = get_items(state, session.clone(), q.clone(), true)
+    let items = get_items(state, &user, &session.device, q.clone(), true)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -63,6 +64,7 @@ pub async fn shows_seasons(
 pub async fn shows_episodes(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     ResolvedItem(item): ResolvedItem,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
@@ -108,11 +110,7 @@ pub async fn shows_episodes(
         // picked version's id after a version pick: start at its episode.
         let start_id = crate::services::MediaResolveService::playable_item_id(
             &state.ctx,
-            UserId(
-                session
-                    .user
-                    .id,
-            ),
+            UserId(user.id),
             start_id,
         )
         .await;
@@ -122,7 +120,7 @@ pub async fn shows_episodes(
             let mut all_q = q.clone();
             all_q.limit = None;
             all_q.start_index = None;
-            let all = get_items(state.clone(), session.clone(), all_q, false)
+            let all = get_items(state.clone(), &user, &session.device, all_q, false)
                 .await?
                 .with_client_patches()
                 .build();
@@ -135,7 +133,7 @@ pub async fn shows_episodes(
             }
         }
     }
-    let items = get_items(state, session.clone(), q.clone(), true)
+    let items = get_items(state, &user, &session.device, q.clone(), true)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -152,6 +150,7 @@ pub async fn shows_episodes(
 pub async fn shows_nextup(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // Home-screen call: no seriesId — return one next-up episode per in-progress series.
@@ -179,7 +178,7 @@ pub async fn shows_nextup(
             })
             .into_response());
         }
-        return shows_nextup_all(state, session, q)
+        return shows_nextup_all(state, &user, &session.device, q)
             .await
             .map(IntoResponse::into_response);
     }
@@ -193,9 +192,7 @@ pub async fn shows_nextup(
     let enable_resumable = q
         .enable_resumable
         .unwrap_or(true);
-    let user_id = session
-        .user
-        .id;
+    let user_id = user.id;
 
     let server_config = db::Settings::get_config_or_default(
         &state
@@ -329,12 +326,9 @@ pub async fn shows_nextup(
 /// Select the next episode per started series, with its release-aware sort key.
 pub(crate) async fn next_up_candidates(
     state: &AppState,
-    session: &auth::AuthSession,
+    user_id: Uuid,
     q: &api::GetItemsQuery,
 ) -> Result<Vec<(db::Media, chrono::DateTime<chrono::Utc>)>> {
-    let user_id = session
-        .user
-        .id;
     let enable_resumable = q
         .enable_resumable
         .unwrap_or(true);
@@ -543,10 +537,11 @@ pub(crate) async fn next_up_candidates(
 
 async fn shows_nextup_all(
     state: AppState,
-    session: auth::AuthSession,
+    user: &db::User,
+    device: &auth::Device,
     q: api::GetItemsQuery,
-) -> Result<impl IntoResponse> {
-    let candidates = next_up_candidates(&state, &session, &q).await?;
+) -> Result<Json<serde_json::Value>> {
+    let candidates = next_up_candidates(&state, user.id, &q).await?;
     if candidates.is_empty() {
         return Ok(Json(serde_json::json!({
             "Items": [],
@@ -570,7 +565,7 @@ async fn shows_nextup_all(
     query.strict_item_filters = true;
     query.start_index = None;
     query.limit = Some(order.len() as u32);
-    let mut items = get_items(state, session, query, false)
+    let mut items = get_items(state, user, device, query, false)
         .await?
         .with_permissions()
         .with_client_patches()
@@ -602,16 +597,10 @@ async fn shows_nextup_all(
 #[get("/shows/upcoming")]
 pub async fn shows_upcoming(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let user_id = q
-        .user_id
-        .unwrap_or(
-            session
-                .user
-                .id,
-        );
+    let user_id = user.id;
 
     // Use the current instant so episodes stored at midnight UTC cannot fill the
     // page after they have already aired. Jellyfin's date-only grace period is
@@ -656,8 +645,7 @@ pub async fn shows_upcoming(
         }
     }
 
-    let policy = session
-        .user
+    let policy = user
         .policy
         .as_ref();
     let result = db::Media::get_by_filter(
@@ -743,7 +731,6 @@ pub async fn shows_upcoming(
 #[query]
 #[derive(Debug, Default)]
 pub struct GetShowRecommendationsQuery {
-    pub user_id: Option<Uuid>,
     pub parent_id: Option<Uuid>,
     pub category_limit: Option<u32>,
     pub item_limit: Option<u32>,
@@ -752,21 +739,14 @@ pub struct GetShowRecommendationsQuery {
 #[get("/shows/recommendations")]
 pub async fn shows_recommendations(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    auth::TargetUser(user): auth::TargetUser,
     Query(q): Query<GetShowRecommendationsQuery>,
 ) -> Result<impl IntoResponse> {
-    let user_id = q
-        .user_id
-        .unwrap_or(
-            session
-                .user
-                .id,
-        );
     let categories = super::movies::build_recommendations(
         &state
             .ctx
             .db,
-        user_id,
+        user.id,
         q.parent_id,
         db::MediaKind::Series,
         q.category_limit
@@ -2310,10 +2290,7 @@ pub(crate) mod test {
             .unwrap();
 
         let resp = server
-            .get(&format!(
-                "/shows/{}/seasons?userId={}",
-                series.id, series.id
-            ))
+            .get(&format!("/shows/{}/seasons", series.id))
             .add_header(
                 http::header::AUTHORIZATION,
                 HeaderValue::from_str(&auth).unwrap(),
