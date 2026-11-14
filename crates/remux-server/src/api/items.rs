@@ -1060,8 +1060,15 @@ pub async fn items_flat(
 pub async fn items(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Query(q): Query<api::GetItemsQuery>,
+    target: auth::TargetUser,
+    Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    let session = session.acting_for(target);
+    q.user_id = Some(
+        session
+            .user
+            .id,
+    );
     // Jellyfin lists the root (the user's views) when nothing narrows the query,
     // instead of walking the whole library.
     if !q.recursive
