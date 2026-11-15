@@ -5757,10 +5757,7 @@ mod tests {
                     grandparent_id: Some(series.id),
                     parent_idx: Some(1),
                     idx: Some(n),
-                    released_at: Some(
-                        now + chrono::Duration::days(offset)
-                            + chrono::Duration::hours(1),
-                    ),
+                    released_at: Some(now + chrono::Duration::days(offset)),
                     ..Default::default()
                 };
                 ep.save(db)
