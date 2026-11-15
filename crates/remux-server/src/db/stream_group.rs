@@ -473,7 +473,7 @@ impl StreamGroup {
                             .media_streams
                             .iter()
                             .any(|s| {
-                                s.type_ == Some(MediaStreamType::Audio)
+                                s.type_ == MediaStreamType::Audio
                                     && s.language
                                         .as_deref()
                                         .map_or(false, |l| {
@@ -524,7 +524,7 @@ impl StreamGroup {
                         pd.media_streams
                             .iter()
                             .any(|s| {
-                                s.type_ == Some(MediaStreamType::Subtitle)
+                                s.type_ == MediaStreamType::Subtitle
                                     && s.language
                                         .as_deref()
                                         .is_some_and(&is_wanted)
@@ -1194,7 +1194,7 @@ mod tests {
         let media_streams = langs
             .iter()
             .map(|l| MediaStream {
-                type_: Some(MediaStreamType::Audio),
+                type_: MediaStreamType::Audio,
                 language: Some(l.to_string()),
                 ..Default::default()
             })
@@ -1587,7 +1587,7 @@ mod tests {
     fn probe_with_tracks(audio: &[&str], subs: &[&str]) -> crate::api::MediaSourceInfo {
         use crate::api::MediaStream;
         let track = |type_, lang: &&str| MediaStream {
-            type_: Some(type_),
+            type_,
             language: Some(lang.to_string()),
             ..Default::default()
         };

@@ -572,7 +572,7 @@ fn apply_video_bitrate_fallback(
         .iter()
         .enumerate()
         .filter(|(_, s)| {
-            matches!(s.type_, Some(api::MediaStreamType::Video))
+            matches!(s.type_, api::MediaStreamType::Video)
                 && s.bit_rate
                     .is_none()
         })
@@ -585,13 +585,11 @@ fn apply_video_bitrate_fallback(
     // audioBitratesKnown check: all audio streams must have a known bitrate.
     let non_video: Vec<&api::MediaStream> = streams
         .iter()
-        .filter(|s| {
-            !matches!(s.type_, Some(api::MediaStreamType::Video)) && !s.is_external
-        })
+        .filter(|s| !matches!(s.type_, api::MediaStreamType::Video) && !s.is_external)
         .collect();
     let audio_all_known = non_video
         .iter()
-        .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+        .filter(|s| matches!(s.type_, api::MediaStreamType::Audio))
         .all(|s| {
             s.bit_rate
                 .is_some()
@@ -930,7 +928,7 @@ pub fn probe_media_with(
                             .and_then(bit_depth_from_pix_fmt)
                     });
                 streams.push(api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     index: s.index,
                     codec: Some(codec.clone()),
                     codec_tag: s
@@ -956,7 +954,7 @@ pub fn probe_media_with(
                     real_frame_rate: fps
                         .map(|f| f as f32)
                         .and_then(nonzero),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
                     is_avc: s
                         .is_avc
@@ -1051,7 +1049,7 @@ pub fn probe_media_with(
                 };
 
                 streams.push(api::MediaStream {
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     index: s.index,
                     codec: Some(codec.clone()),
                     channels,
@@ -1062,7 +1060,7 @@ pub fn probe_media_with(
                     profile: s
                         .profile
                         .clone(),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
                     is_original: s
                         .disposition
@@ -1134,10 +1132,10 @@ pub fn probe_media_with(
                 };
 
                 let mut stream = api::MediaStream {
-                    type_: Some(api::MediaStreamType::Subtitle),
+                    type_: api::MediaStreamType::Subtitle,
                     index: s.index,
                     codec: Some(codec.clone()),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
                     is_hearing_impaired,
                     is_original: s
@@ -1656,13 +1654,20 @@ mod probe_tests {
     use super::*;
 
     #[test]
-    fn media_stream_always_reports_is_original() {
-        // Jellyfin 12 clients (SDK 1.9) fail to decode a MediaStream without it.
+    fn media_stream_always_reports_its_required_fields() {
+        // Jellyfin 12 clients (SDK 1.9) fail to decode a MediaStream without them.
         let value = serde_json::to_value(api::MediaStream::default()).unwrap();
-        assert_eq!(
-            value.get("IsOriginal"),
-            Some(&serde_json::Value::Bool(false))
-        );
+        for field in ["IsOriginal", "IsDefault"] {
+            assert_eq!(
+                value.get(field),
+                Some(&serde_json::Value::Bool(false)),
+                "{field}"
+            );
+        }
+        assert_eq!(value.get("Type"), Some(&serde_json::json!("Audio")));
+        // A stored stream saved without a type reads back as data.
+        let stored: api::MediaStream = serde_json::from_str(r#"{"Index":2}"#).unwrap();
+        assert_eq!(stored.type_, api::MediaStreamType::Data);
     }
 
     #[test]
@@ -1728,7 +1733,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_accepts_real_probe_with_video() {
         let real = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1792,7 +1797,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_accepts_remuxdb_match_with_video() {
         let remuxdb = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1815,7 +1820,7 @@ mod probe_tests {
         ] {
             let incomplete = api::MediaSourceInfo {
                 media_streams: vec![api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     codec: Some(codec.to_string()),
                     ref_frames,
                     ..Default::default()
@@ -1837,7 +1842,7 @@ mod probe_tests {
     fn failed_refresh_can_fall_back_to_real_but_stale_probe_data() {
         let stale = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("h264".to_string()),
                 ..Default::default()
             }],
@@ -1858,7 +1863,7 @@ mod probe_tests {
 
         let local_probe = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("h264".to_string()),
                 ..Default::default()
             }],
@@ -1878,7 +1883,7 @@ mod probe_tests {
         // a completed probe, or a real ffprobe never runs for this source.
         let guess = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("hevc".to_string()),
                 ..Default::default()
             }],
@@ -1895,7 +1900,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_rejects_no_video_stream() {
         let audio_only = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1953,7 +1958,7 @@ mod probe_tests {
         Ok((
             api::MediaSourceInfo {
                 media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -2190,7 +2195,7 @@ mod probe_tests {
             api::MediaSourceInfo {
                 run_time_ticks: Some(short_ticks),
                 media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     ..Default::default()
                 }],
                 ..Default::default()

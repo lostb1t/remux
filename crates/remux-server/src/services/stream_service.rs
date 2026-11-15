@@ -1398,7 +1398,7 @@ impl StreamService {
                     index: s.index,
                     kind: s
                         .type_
-                        .clone()?,
+                        .clone(),
                     language: s
                         .language
                         .clone(),
@@ -1448,7 +1448,7 @@ impl StreamService {
             .probe_data?
             .media_streams
             .into_iter()
-            .find(|s| s.type_ == Some(kind.clone()) && s.index == index)?
+            .find(|s| s.type_ == kind && s.index == index)?
             .language?;
         remux_sdks::remux::lang_to_two_letter(&language)
     }
@@ -1926,7 +1926,7 @@ mod tests {
             .media_streams
             .push(api::MediaStream {
                 codec: Some("pgssub".to_string()),
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index: 2,
                 language: Some("eng".to_string()),
                 ..Default::default()
@@ -1990,7 +1990,7 @@ mod tests {
             .media_streams
             .push(api::MediaStream {
                 codec: Some("pgssub".to_string()),
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index: 2,
                 language: Some("eng".to_string()),
                 ..Default::default()

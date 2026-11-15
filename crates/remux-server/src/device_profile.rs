@@ -139,7 +139,7 @@ pub(crate) fn keeps_embedded_subtitle(
     allow_extraction: bool,
     subtitle_mode: EmbeddedSubtitleHandling,
 ) -> bool {
-    if !matches!(stream.type_, Some(MediaStreamType::Subtitle)) || stream.is_external {
+    if !matches!(stream.type_, MediaStreamType::Subtitle) || stream.is_external {
         return true;
     }
     let codec = SubtitleCodec::from_codec_name(
@@ -725,7 +725,7 @@ fn condition_property_value(
             media_source
                 .media_streams
                 .iter()
-                .filter(|stream| matches!(stream.type_, Some(MediaStreamType::Audio)))
+                .filter(|stream| matches!(stream.type_, MediaStreamType::Audio))
                 .count()
                 .to_string(),
         ),
@@ -733,7 +733,7 @@ fn condition_property_value(
             media_source
                 .media_streams
                 .iter()
-                .filter(|stream| matches!(stream.type_, Some(MediaStreamType::Video)))
+                .filter(|stream| matches!(stream.type_, MediaStreamType::Video))
                 .count()
                 .to_string(),
         ),
@@ -850,7 +850,7 @@ fn failed_condition_reason(
             Some(TranscodeReason::StreamCountExceedsLimit(detail))
         }
         ProfileConditionProperty::Bitrate => {
-            if matches!(stream.type_, Some(MediaStreamType::Audio)) {
+            if matches!(stream.type_, MediaStreamType::Audio) {
                 Some(TranscodeReason::AudioBitrateNotSupported(detail))
             } else {
                 Some(TranscodeReason::VideoBitrateNotSupported(detail))
@@ -875,7 +875,7 @@ fn selected_audio_stream(source: &MediaSourceInfo) -> Option<&MediaStream> {
                 .iter()
                 .find(|stream| {
                     stream.index == index
-                        && matches!(stream.type_, Some(MediaStreamType::Audio))
+                        && matches!(stream.type_, MediaStreamType::Audio)
                 })
         })
         .or_else(|| source.audio_stream())
@@ -889,8 +889,7 @@ fn is_secondary_audio(source: &MediaSourceInfo, stream: &MediaStream) -> Option<
         .media_streams
         .iter()
         .find(|candidate| {
-            matches!(candidate.type_, Some(MediaStreamType::Audio))
-                && !candidate.is_external
+            matches!(candidate.type_, MediaStreamType::Audio) && !candidate.is_external
         })
         .map(|primary| primary.index != stream.index)
 }
@@ -1243,9 +1242,7 @@ pub fn subtitle_burn_reason(
     let stream = source
         .media_streams
         .iter()
-        .find(|s| {
-            s.index == idx && matches!(s.type_, Some(MediaStreamType::Subtitle))
-        })?;
+        .find(|s| s.index == idx && matches!(s.type_, MediaStreamType::Subtitle))?;
     if stream.is_external || stream.is_text_subtitle_stream() {
         return None;
     }
@@ -1465,7 +1462,7 @@ fn primary_video_stream(source: &MediaSourceInfo) -> Option<&MediaStream> {
     source
         .media_streams
         .iter()
-        .find(|s| matches!(s.type_, Some(MediaStreamType::Video)))
+        .find(|s| matches!(s.type_, MediaStreamType::Video))
 }
 
 fn hdr_tier(stream: Option<&MediaStream>) -> u8 {
@@ -1859,19 +1856,19 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     index: 0,
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("hdmv_pgs_subtitle".to_string()),
-                    type_: Some(MediaStreamType::Subtitle),
+                    type_: MediaStreamType::Subtitle,
                     index: 2,
                     ..Default::default()
                 },
@@ -1910,19 +1907,19 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     index: 0,
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("hdmv_pgs_subtitle".to_string()),
-                    type_: Some(MediaStreamType::Subtitle),
+                    type_: MediaStreamType::Subtitle,
                     index: 2,
                     ..Default::default()
                 },
@@ -1970,14 +1967,14 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     index: 0,
                     profile: Some(profile.to_string()),
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },
@@ -2064,7 +2061,7 @@ mod tests {
         let video = source
             .media_streams
             .iter_mut()
-            .find(|stream| matches!(stream.type_, Some(MediaStreamType::Video)))
+            .find(|stream| matches!(stream.type_, MediaStreamType::Video))
             .expect("video stream");
         video.width = Some(width);
         video.ref_frames = ref_frames;
@@ -2159,7 +2156,7 @@ mod tests {
             .media_streams
             .push(MediaStream {
                 codec: Some("aac".to_string()),
-                type_: Some(MediaStreamType::Audio),
+                type_: MediaStreamType::Audio,
                 index: 2,
                 ..Default::default()
             });
@@ -2198,7 +2195,7 @@ mod tests {
         let source = MediaSourceInfo {
             media_streams: vec![MediaStream {
                 codec: Some("hevc".to_string()),
-                type_: Some(MediaStreamType::Video),
+                type_: MediaStreamType::Video,
                 video_range_type: Some(VideoRangeType::Hdr10Plus),
                 ..Default::default()
             }],
@@ -2225,11 +2222,11 @@ mod tests {
     #[test]
     fn failed_conditions_map_to_precise_transcode_reasons() {
         let video = MediaStream {
-            type_: Some(MediaStreamType::Video),
+            type_: MediaStreamType::Video,
             ..Default::default()
         };
         let audio = MediaStream {
-            type_: Some(MediaStreamType::Audio),
+            type_: MediaStreamType::Audio,
             ..Default::default()
         };
         let cases = [
@@ -2380,7 +2377,7 @@ mod tests {
             .media_streams
             .push(MediaStream {
                 codec: Some("aac".to_string()),
-                type_: Some(MediaStreamType::Audio),
+                type_: MediaStreamType::Audio,
                 index: 2,
                 ..Default::default()
             });
@@ -2425,7 +2422,7 @@ mod tests {
             .media_streams
             .push(MediaStream {
                 codec: Some("aac".to_string()),
-                type_: Some(MediaStreamType::Audio),
+                type_: MediaStreamType::Audio,
                 index: 2,
                 ..Default::default()
             });
@@ -2470,14 +2467,14 @@ mod tests {
             media_streams: vec![
                 MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     index: 0,
                     profile: Some("High".to_string()),
                     ..Default::default()
                 },
                 MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 1,
                     channels: Some(6),
                     ..Default::default()
@@ -2526,7 +2523,7 @@ mod tests {
             media_streams: vec![MediaStream {
                 codec: Some("hevc".to_string()),
                 codec_tag: tag.map(str::to_string),
-                type_: Some(MediaStreamType::Video),
+                type_: MediaStreamType::Video,
                 index: 0,
                 ..Default::default()
             }],
@@ -2637,7 +2634,7 @@ mod tests {
         video_range_type: Option<VideoRangeType>,
     ) -> MediaStream {
         MediaStream {
-            type_: Some(MediaStreamType::Video),
+            type_: MediaStreamType::Video,
             index: 0,
             width: Some(width),
             video_range_type,
@@ -2647,7 +2644,7 @@ mod tests {
 
     fn audio_stream(codec: &str, channels: i64) -> MediaStream {
         MediaStream {
-            type_: Some(MediaStreamType::Audio),
+            type_: MediaStreamType::Audio,
             index: 1,
             codec: Some(codec.to_string()),
             channels: Some(channels),
@@ -3384,7 +3381,7 @@ mod tests {
         MediaSourceInfo {
             default_subtitle_stream_index: Some(index),
             media_streams: vec![MediaStream {
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index,
                 codec: Some(codec.to_string()),
                 is_external,
@@ -3453,7 +3450,7 @@ mod tests {
     fn keeps_embedded_subtitle_drops_text_subs_on_remote_sources_without_extraction() {
         let srt = MediaStream {
             index: 2,
-            type_: Some(MediaStreamType::Subtitle),
+            type_: MediaStreamType::Subtitle,
             codec: Some("subrip".to_string()),
             ..Default::default()
         };
@@ -3477,7 +3474,7 @@ mod tests {
         // `.sup` file: Burn keeps the track to burn it in, Strip drops it.
         let pgs = MediaStream {
             index: 2,
-            type_: Some(MediaStreamType::Subtitle),
+            type_: MediaStreamType::Subtitle,
             codec: Some("pgssub".to_string()),
             ..Default::default()
         };
@@ -3581,7 +3578,7 @@ mod tests {
         source
             .media_streams
             .push(MediaStream {
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index: 1,
                 codec: Some("pgssub".to_string()),
                 ..Default::default()
@@ -3932,7 +3929,7 @@ mod tests {
             let video = source
                 .media_streams
                 .iter()
-                .find(|stream| stream.type_ == Some(MediaStreamType::Video));
+                .find(|stream| stream.type_ == MediaStreamType::Video);
             println!(
                 "#{:02} key={:?} decision={} video={:?} {}x{} bitrate={:?} reasons={:?} name={name}",
                 position + 1,

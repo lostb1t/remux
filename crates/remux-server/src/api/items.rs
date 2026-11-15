@@ -2368,7 +2368,7 @@ async fn item_for_user(
             for source in sources.iter_mut() {
                 source
                     .media_streams
-                    .retain(|s| s.type_ != Some(api::MediaStreamType::Subtitle));
+                    .retain(|s| s.type_ != api::MediaStreamType::Subtitle);
                 source.default_subtitle_stream_index = None;
             }
         }
@@ -2434,7 +2434,7 @@ async fn item_for_user(
                     if let Some(video) = source
                         .media_streams
                         .iter_mut()
-                        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+                        .find(|s| matches!(s.type_, api::MediaStreamType::Video))
                     {
                         crate::device_profile::annotate_video_display_title(
                             video,
@@ -2570,7 +2570,7 @@ async fn item_for_user(
                     .media_streams
                     .clone();
                 for s in &mut streams {
-                    if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
+                    if matches!(s.type_, api::MediaStreamType::Subtitle) {
                         s.is_text_subtitle_stream = s.is_text_subtitle_stream();
                     }
                 }
@@ -2579,10 +2579,10 @@ async fn item_for_user(
             .unwrap_or_else(|| {
                 vec![api::MediaStream {
                     index: 0,
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     codec: Some("aac".to_string()),
                     channels: Some(2),
-                    is_default: Some(true),
+                    is_default: true,
                     display_title: Some("Audio".to_string()),
                     ..Default::default()
                 }]
@@ -6805,7 +6805,7 @@ mod tests {
             media_streams: vec![
                 crate::api::MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(crate::api::MediaStreamType::Video),
+                    type_: crate::api::MediaStreamType::Video,
                     index: 0,
                     width: Some(1920),
                     height: Some(1080),
@@ -6813,13 +6813,13 @@ mod tests {
                 },
                 crate::api::MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(crate::api::MediaStreamType::Audio),
+                    type_: crate::api::MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },
                 crate::api::MediaStream {
                     codec: Some("subrip".to_string()),
-                    type_: Some(crate::api::MediaStreamType::Subtitle),
+                    type_: crate::api::MediaStreamType::Subtitle,
                     index: 2,
                     language: Some("fra".to_string()),
                     is_text_subtitle_stream: true,
@@ -6827,7 +6827,7 @@ mod tests {
                 },
                 crate::api::MediaStream {
                     codec: Some("subrip".to_string()),
-                    type_: Some(crate::api::MediaStreamType::Subtitle),
+                    type_: crate::api::MediaStreamType::Subtitle,
                     index: 3,
                     language: Some("eng".to_string()),
                     is_text_subtitle_stream: true,
@@ -7286,7 +7286,7 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     index: 0,
                     width: Some(1920),
                     height: Some(1080),
@@ -7294,7 +7294,7 @@ mod tests {
                 },
                 api::MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },

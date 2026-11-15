@@ -219,9 +219,9 @@ impl TorznabAddon {
                     probe_data: Some(api::MediaSourceInfo {
                         media_streams: vec![api::MediaStream {
                             index: 0,
-                            type_: Some(api::MediaStreamType::Audio),
+                            type_: api::MediaStreamType::Audio,
                             codec,
-                            is_default: Some(true),
+                            is_default: true,
                             ..Default::default()
                         }],
                         ..Default::default()
