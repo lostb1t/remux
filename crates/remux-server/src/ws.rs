@@ -63,6 +63,9 @@ struct LibraryUpdateInfo {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct UserDataChangeInfo {
+    /// Jellyfin's dash-less form: jellyfin-web compares it to its current user
+    /// id as a string and ignores the message otherwise.
+    #[serde(with = "remux_utils::uuid_serde")]
     user_id: Uuid,
     user_data_list: Vec<api::UserItemDataDto>,
 }
@@ -426,7 +429,12 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(value["UserId"], user_id.to_string());
+        assert_eq!(
+            value["UserId"],
+            user_id
+                .simple()
+                .to_string()
+        );
         assert_eq!(
             value["UserDataList"][0]["ItemId"],
             item_id
