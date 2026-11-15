@@ -1,3 +1,14 @@
+## [0.41.1](https://github.com/lostb1t/remux/compare/v0.41.0...v0.41.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* always send MediaStream.IsDefault and Type ([b628406](https://github.com/lostb1t/remux/commit/b628406963a8ff637b44d8cd6275e443168f7a1d))
+* always send MediaStream.IsOriginal ([#710](https://github.com/lostb1t/remux/issues/710)) ([c6d3d01](https://github.com/lostb1t/remux/commit/c6d3d01998befb825b9bc74c3d91c97da19fe520))
+* **hls:** size the playlist from the file's probed duration ([#705](https://github.com/lostb1t/remux/issues/705)) ([919bb6c](https://github.com/lostb1t/remux/commit/919bb6cef0dc05882cf1181d36820ed3377a9247))
+* **ws:** send UserDataChanged's UserId without dashes ([#706](https://github.com/lostb1t/remux/issues/706)) ([fc6a331](https://github.com/lostb1t/remux/commit/fc6a331c4da180b6492c72a482fdca3ae3a31174))
+* **ws:** send UserDeleted's user id without dashes ([46eddba](https://github.com/lostb1t/remux/commit/46eddbac44c012ea3f39d8e0f643416596926e27))
+
 # [0.41.0](https://github.com/lostb1t/remux/compare/v0.40.0...v0.41.0) (2026-11-14)
 
 
