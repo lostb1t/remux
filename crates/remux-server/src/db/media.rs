@@ -1904,24 +1904,28 @@ impl Media {
                 .await
                 .unwrap_or_default();
 
-        // Build a synthetic Media stub from a ParentRow + its images.
-        let make_stub =
-            |row: &ParentRow, images: super::image::MediaImages| -> Arc<Media> {
+        // One stub per parent, shared by every record that points at it: a
+        // season's parent and grandparent are the same series, and a page of
+        // episodes shares one season and one series. Handing each parent's
+        // images out once (by removing them) left every later record with an
+        // image-less series stub, so seasons and most episodes went out
+        // without `SeriesPrimaryImageTag` and clients could not fall back to
+        // the series poster.
+        let stubs: HashMap<Uuid, Arc<Media>> = parent_map
+            .into_iter()
+            .map(|(id, row)| {
                 let mut m = Media::default();
                 m.id = row.id;
-                m.title = row
-                    .title
-                    .clone();
-                m.kind = row
-                    .kind
-                    .clone();
+                m.title = row.title;
+                m.kind = row.kind;
                 m.channel_number = row.channel_number;
-                m.external_ids = row
-                    .external_ids
-                    .clone();
-                m.images = images;
-                Arc::new(m)
-            };
+                m.external_ids = row.external_ids;
+                m.images = parent_images
+                    .remove(&id)
+                    .unwrap_or_default();
+                (id, Arc::new(m))
+            })
+            .collect();
 
         for media in records.iter_mut() {
             if !matches!(
@@ -1935,13 +1939,11 @@ impl Media {
                 continue;
             }
 
-            if let Some(pid) = media.parent_id {
-                if let Some(row) = parent_map.get(&pid) {
-                    let imgs = parent_images
-                        .remove(&pid)
-                        .unwrap_or_default();
-                    media.parent = Some(make_stub(row, imgs));
-                }
+            if let Some(stub) = media
+                .parent_id
+                .and_then(|pid| stubs.get(&pid))
+            {
+                media.parent = Some(stub.clone());
             }
 
             // For episodes grandparent_id points to the series;
@@ -1952,13 +1954,8 @@ impl Media {
                     .or(media.parent_id),
                 _ => media.grandparent_id,
             };
-            if let Some(gid) = gp_id {
-                if let Some(row) = parent_map.get(&gid) {
-                    let imgs = parent_images
-                        .remove(&gid)
-                        .unwrap_or_default();
-                    media.grandparent = Some(make_stub(row, imgs));
-                }
+            if let Some(stub) = gp_id.and_then(|gid| stubs.get(&gid)) {
+                media.grandparent = Some(stub.clone());
             }
         }
     }
@@ -13673,6 +13670,83 @@ mod tests {
         assert!(
             elapsed.as_millis() < 150,
             "query took {elapsed:?}, expected < 150 ms — correlated subquery regression?"
+        );
+    }
+
+    /// Every season and episode of a series must see the series' images:
+    /// they all share one series (and the episodes one season), and the
+    /// series poster is what Jellyfin clients fall back to when a season has
+    /// none of its own (`SeriesPrimaryImageTag`).
+    #[tokio::test]
+    async fn preload_parents_gives_every_child_the_shared_parents_images() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let mut series = Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Series,
+            title: "Show".into(),
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt7000001".to_string()).ok(),
+                ..Default::default()
+            },
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        series.set_image(ImageKind::Primary, "https://img/series.jpg".into());
+        series
+            .save(&db)
+            .await
+            .unwrap();
+        let child = |kind: MediaKind, parent: Uuid, idx: i64| Media {
+            id: Uuid::new_v4(),
+            kind,
+            title: format!("{idx}"),
+            parent_id: Some(parent),
+            grandparent_id: Some(series.id),
+            idx: Some(idx),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        let mut season1 = child(MediaKind::Season, series.id, 1);
+        season1.set_image(ImageKind::Primary, "https://img/s1.jpg".into());
+        let season2 = child(MediaKind::Season, series.id, 2);
+        let episodes: Vec<Media> = (1..=2)
+            .map(|e| child(MediaKind::Episode, season2.id, e))
+            .collect();
+        let mut records = vec![season1.clone(), season2.clone()];
+        records.extend(episodes);
+        for m in records.iter_mut() {
+            m.save(&db)
+                .await
+                .unwrap();
+        }
+
+        Media::preload_parents(&db, &mut records).await;
+
+        let series_tag = |m: &Media| {
+            crate::api::models::db_media_to_item(m.clone(), true)
+                .series_primary_image_tag
+        };
+        let expected = series_tag(&records[0]);
+        assert!(expected.is_some(), "season 1 has no series poster tag");
+        for m in &records {
+            assert_eq!(series_tag(m), expected, "{:?} {:?}", m.kind, m.idx);
+        }
+        // Season 2 has no poster of its own: clients show the series poster.
+        let season2_dto =
+            crate::api::models::db_media_to_item(records[1].clone(), true);
+        assert!(
+            season2_dto
+                .image_tags
+                .and_then(|t| t.primary)
+                .is_none()
         );
     }
 }
