@@ -1579,7 +1579,10 @@ pub(crate) struct StreamSelection {
 const MIN_RUNTIME_RATIO: f64 = 2.0 / 3.0;
 const MAX_RUNTIME_RATIO: f64 = 2.0;
 
-fn implausible_runtime(runtime_secs: Option<i64>, probed_ticks: Option<i64>) -> bool {
+pub(crate) fn implausible_runtime(
+    runtime_secs: Option<i64>,
+    probed_ticks: Option<i64>,
+) -> bool {
     let (Some(runtime), Some(probed)) = (
         runtime_secs
             .filter(|&s| s > 0)
