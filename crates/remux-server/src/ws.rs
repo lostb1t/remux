@@ -184,7 +184,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                         }
                     }
                     Ok(WsEvent::UserDeleted(user_id)) => {
-                        if !send_msg(&mut socket, SessionMessageType::UserDeleted, Some(user_id.to_string())).await {
+                        if !send_msg(&mut socket, SessionMessageType::UserDeleted, Some(user_id.simple().to_string())).await {
                             return;
                         }
                     }
