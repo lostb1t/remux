@@ -199,15 +199,13 @@ fn extractable_subtitles(
     let mut embedded: Vec<&api::MediaStream> = probe
         .media_streams
         .iter()
-        .filter(|s| {
-            matches!(s.type_, Some(api::MediaStreamType::Subtitle)) && !s.is_external
-        })
+        .filter(|s| matches!(s.type_, api::MediaStreamType::Subtitle) && !s.is_external)
         .collect();
     embedded.sort_by_key(|s| s.index);
     let video_size = probe
         .media_streams
         .iter()
-        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+        .find(|s| matches!(s.type_, api::MediaStreamType::Video))
         .and_then(|s| match (s.width, s.height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
             _ => None,
@@ -1014,10 +1012,7 @@ async fn subtitles_stream_inner(
                     .clone()
                     .map(|mut probe| {
                         for stream in &mut probe.media_streams {
-                            if matches!(
-                                stream.type_,
-                                Some(api::MediaStreamType::Subtitle)
-                            ) {
+                            if matches!(stream.type_, api::MediaStreamType::Subtitle) {
                                 stream.is_text_subtitle_stream =
                                     stream.is_text_subtitle_stream();
                             }
@@ -1144,7 +1139,7 @@ async fn subtitles_stream_inner(
             let mut sub_indexes: Vec<i64> = probe
                 .media_streams
                 .iter()
-                .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
+                .filter(|s| matches!(s.type_, api::MediaStreamType::Subtitle))
                 .map(|s| s.index)
                 .collect();
             sub_indexes.sort_unstable();
@@ -1420,7 +1415,7 @@ pub(crate) fn append_external_subtitles(
                         )
                 });
             if wants_default && i == 0 && in_preferred_language {
-                stream.is_default = Some(true);
+                stream.is_default = true;
                 source.default_subtitle_stream_index = Some(next_idx);
             }
             source
@@ -1463,7 +1458,7 @@ fn has_supported_embedded_subtitle(
         .media_streams
         .iter()
         .any(|stream| {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+            if stream.type_ != api::MediaStreamType::Subtitle
                 || stream.is_external
                 || stream
                     .delivery_method
@@ -1527,9 +1522,7 @@ pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
     source
         .media_streams
         .retain(|stream| {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle)
-                || stream.is_external
-            {
+            if stream.type_ != api::MediaStreamType::Subtitle || stream.is_external {
                 return true;
             }
             let Some(codec) = stream
@@ -1712,12 +1705,12 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     index: 0,
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     ..Default::default()
                 },
                 api::MediaStream {
                     index: 2,
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     ..Default::default()
                 },
             ],
@@ -1774,7 +1767,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1822,12 +1815,12 @@ mod tests {
         let existing = vec![
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 ..Default::default()
             },
@@ -1920,7 +1913,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("eng".into()),
                 ..Default::default()
@@ -2038,7 +2031,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("PGSSUB".into()),
                 language: Some("nld".into()),
                 ..Default::default()
@@ -2091,7 +2084,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("eng".into()),
                 ..Default::default()
@@ -2173,7 +2166,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("dut".into()),
                 ..Default::default()
@@ -2288,7 +2281,7 @@ mod tests {
     fn requested_ass_output_is_planned_for_an_srt_track() {
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 2,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("subrip".into()),
             is_external: false,
             ..Default::default()
@@ -2317,35 +2310,35 @@ mod tests {
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 5,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 1,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("mov_text".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 3,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 is_external: true,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("hdmv_pgs_subtitle".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 codec: Some("aac".into()),
                 ..Default::default()
             },
@@ -2379,7 +2372,7 @@ mod tests {
     fn is_known_text_codec_rejects_unknown_and_missing_codecs() {
         let sub = |index: i64, codec: Option<&str>| api::MediaStream {
             index,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: codec.map(Into::into),
             ..Default::default()
         };
@@ -2404,7 +2397,7 @@ mod tests {
         // ever get a .ass file, and such a request would 404 forever.
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("ass".into()),
             ..Default::default()
         }]);
@@ -2454,19 +2447,19 @@ mod tests {
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 ..Default::default()
             },
             api::MediaStream {
                 index: 1,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("ass".into()),
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("hdmv_pgs_subtitle".into()),
                 ..Default::default()
             },
@@ -2569,7 +2562,7 @@ mod tests {
     fn sub_stream(index: i64, codec: &str) -> api::MediaStream {
         api::MediaStream {
             index,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some(codec.into()),
             ..Default::default()
         }
@@ -2578,7 +2571,7 @@ mod tests {
     fn video_stream(width: Option<i64>, height: Option<i64>) -> api::MediaStream {
         api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Video),
+            type_: api::MediaStreamType::Video,
             codec: Some("h264".into()),
             width,
             height,
@@ -2707,7 +2700,7 @@ mod tests {
         let data_dir = std::path::Path::new("/tmp/remux-subtitle-test");
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("subrip".into()),
             ..Default::default()
         }]);

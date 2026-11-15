@@ -497,10 +497,7 @@ impl TryFrom<&MediaStream> for TrackPayload {
     type Error = ();
 
     fn try_from(ms: &MediaStream) -> Result<Self, ()> {
-        match ms
-            .type_
-            .ok_or(())?
-        {
+        match ms.type_ {
             MediaStreamType::Video => Ok(TrackPayload::Video(VideoTrackPayload {
                 idx: ms.index as i32,
                 codec: ms
@@ -559,7 +556,7 @@ impl TryFrom<&MediaStream> for TrackPayload {
                 rotation: ms
                     .rotation
                     .map(|r| r as i32),
-                is_default: ms.is_default,
+                is_default: Some(ms.is_default),
                 is_forced: Some(ms.is_forced),
                 is_external: Some(ms.is_external),
                 is_hearing_impaired: Some(ms.is_hearing_impaired),
@@ -634,7 +631,7 @@ impl TryFrom<&MediaStream> for TrackPayload {
                 language: ms
                     .language
                     .clone(),
-                is_default: ms.is_default,
+                is_default: Some(ms.is_default),
                 is_forced: Some(ms.is_forced),
                 is_external: Some(ms.is_external),
                 is_hearing_impaired: Some(ms.is_hearing_impaired),
@@ -654,7 +651,7 @@ impl TryFrom<&MediaStream> for TrackPayload {
                     comment: ms
                         .comment
                         .clone(),
-                    is_default: ms.is_default,
+                    is_default: Some(ms.is_default),
                     is_forced: Some(ms.is_forced),
                     is_external: Some(ms.is_external),
                     is_hearing_impaired: Some(ms.is_hearing_impaired),
@@ -671,10 +668,10 @@ impl From<&TrackDetail> for MediaStream {
             .kind
             .as_str()
         {
-            "video" => Some(MediaStreamType::Video),
-            "audio" => Some(MediaStreamType::Audio),
-            "subtitle" => Some(MediaStreamType::Subtitle),
-            _ => None,
+            "video" => MediaStreamType::Video,
+            "audio" => MediaStreamType::Audio,
+            "subtitle" => MediaStreamType::Subtitle,
+            _ => MediaStreamType::Data,
         };
         let range_type = if let Some(dv) = t.dv_profile {
             if dv > 0 {
@@ -722,7 +719,7 @@ impl From<&TrackDetail> for MediaStream {
             language: t
                 .language
                 .clone(),
-            is_default: Some(t.is_default),
+            is_default: t.is_default,
             is_forced: t.is_forced,
             is_external: t.is_external,
             is_hearing_impaired: t.is_hearing_impaired,

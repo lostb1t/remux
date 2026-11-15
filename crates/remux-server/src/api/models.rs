@@ -32,7 +32,7 @@ pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     source
         .media_streams
         .push(MediaStream {
-            type_: Some(MediaStreamType::Lyric),
+            type_: MediaStreamType::Lyric,
             index: next_idx,
             is_external: true,
             ..Default::default()
