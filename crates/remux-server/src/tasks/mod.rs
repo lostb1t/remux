@@ -18,6 +18,7 @@ use remux_sdks::remux::TaskTriggerInfoType;
 use strum_macros::{Display, EnumString};
 
 pub(crate) mod catalog_import_shared;
+mod clean_subtitle_cache;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
@@ -34,6 +35,7 @@ mod refresh_iptv;
 mod refresh_library;
 mod refresh_popularity;
 pub use crate::common::ProgressReporter;
+use clean_subtitle_cache::CleanSubtitleCacheTask;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
@@ -297,6 +299,9 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(CleanTranscodeFolderTask))
+            .await?;
+        service
+            .register_task(Arc::new(CleanSubtitleCacheTask))
             .await?;
         service
             .register_task(Arc::new(RefreshLibraryTask))
