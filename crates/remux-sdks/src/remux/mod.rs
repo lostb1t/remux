@@ -3869,6 +3869,10 @@ pub struct MediaStream {
     pub is_hearing_impaired: bool,
     #[serde(default)]
     pub is_interlaced: bool,
+    /// Jellyfin 12 marks the track in the title's original language. Its
+    /// clients' models require the field, so it is always sent.
+    #[serde(default)]
+    pub is_original: bool,
     #[serde(default, skip_deserializing)]
     pub is_text_subtitle_stream: bool,
     pub language: Option<String>,

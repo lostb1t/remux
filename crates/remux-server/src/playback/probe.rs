@@ -351,6 +351,8 @@ struct FfprobeDisposition {
     #[serde(default)]
     hearing_impaired: i64,
     #[serde(default)]
+    original: i64,
+    #[serde(default)]
     attached_pic: i64,
 }
 
@@ -1062,6 +1064,10 @@ pub fn probe_media_with(
                         .clone(),
                     is_default: Some(is_default),
                     is_forced,
+                    is_original: s
+                        .disposition
+                        .original
+                        != 0,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Other),
@@ -1134,6 +1140,10 @@ pub fn probe_media_with(
                     is_default: Some(is_default),
                     is_forced,
                     is_hearing_impaired,
+                    is_original: s
+                        .disposition
+                        .original
+                        != 0,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Other),
@@ -1644,6 +1654,25 @@ where
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[test]
+    fn media_stream_always_reports_is_original() {
+        // Jellyfin 12 clients (SDK 1.9) fail to decode a MediaStream without it.
+        let value = serde_json::to_value(api::MediaStream::default()).unwrap();
+        assert_eq!(
+            value.get("IsOriginal"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn ffprobe_original_disposition_is_read() {
+        let disposition: FfprobeDisposition =
+            serde_json::from_str(r#"{"default":0,"original":1}"#).unwrap();
+        assert_eq!(disposition.original, 1);
+        let missing: FfprobeDisposition = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.original, 0);
+    }
 
     #[test]
     fn bit_depth_from_pix_fmt_known_formats() {
