@@ -418,11 +418,10 @@ impl From<db::Media> for api::MediaSourceInfo {
         let media_attachments = source
             .probe_data
             .as_ref()
-            .map(|p| {
+            .and_then(|p| {
                 p.media_attachments
                     .clone()
-            })
-            .unwrap_or_default();
+            });
         let mut media_streams = source
             .probe_data
             .map(|mut p| {

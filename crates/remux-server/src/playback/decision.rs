@@ -716,21 +716,20 @@ pub(crate) fn apply_subtitle_delivery(
     // Container attachments (MKV fonts for ASS/SSA): jellyfin-web loads every
     // font one into its libass renderer. They're read from the source like an
     // embedded subtitle, so they're only offered when that's allowed —
-    // otherwise drop them rather than advertise URLs that would 404.
+    // otherwise drop them rather than advertise URLs that would 404. Always
+    // sent as a list, like Jellyfin.
+    let attachments = source
+        .media_attachments
+        .get_or_insert_default();
     if allow_extraction {
-        for attachment in source
-            .media_attachments
-            .iter_mut()
-        {
+        for attachment in attachments.iter_mut() {
             let index = attachment.index;
             attachment.delivery_url = Some(format!(
                 "/Videos/{item_id}/{source_id}/Attachments/{index}?ApiKey={access_token}",
             ));
         }
     } else {
-        source
-            .media_attachments
-            .clear();
+        attachments.clear();
     }
 }
 

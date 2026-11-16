@@ -1204,7 +1204,7 @@ pub fn probe_media_with(
     Ok((
         api::MediaSourceInfo {
             media_streams: streams,
-            media_attachments: attachments,
+            media_attachments: Some(attachments),
             container,
             run_time_ticks,
             bitrate: overall_bitrate,
@@ -1772,6 +1772,15 @@ mod probe_tests {
     }
 
     #[test]
+    fn a_probe_stored_without_attachments_reads_as_unknown() {
+        // RemuxDB records and probes from before attachments were recorded
+        // carry no list: that's "never read", not "the file has none".
+        let stored: api::MediaSourceInfo =
+            serde_json::from_str(r#"{"MediaStreams":[]}"#).unwrap();
+        assert_eq!(stored.media_attachments, None);
+    }
+
+    #[test]
     fn probe_lists_mkv_attachments() {
         // Needs ffmpeg/ffprobe on PATH; skip where they aren't.
         let ffmpeg = crate::tools::ffmpeg();
@@ -1807,12 +1816,11 @@ mod probe_tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            info.media_attachments
-                .len(),
-            1
-        );
-        let a = &info.media_attachments[0];
+        let attachments = info
+            .media_attachments
+            .expect("an ffprobe result records its attachments");
+        assert_eq!(attachments.len(), 1);
+        let a = &attachments[0];
         assert_eq!(a.index, 1);
         assert_eq!(
             a.file_name

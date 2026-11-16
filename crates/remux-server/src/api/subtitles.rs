@@ -938,6 +938,23 @@ async fn ensure_attachment_cached(
     }
 }
 
+/// The `Content-Type` to serve an attachment as. Its `mimetype` tag comes from
+/// the file, so only a font type is passed on: anything else (a crafted
+/// `text/html` attachment) would otherwise run on this origin when opened.
+fn attachment_content_type(mime_type: Option<&str>) -> &str {
+    match mime_type.map(str::trim) {
+        Some(mime)
+            if mime.starts_with("font/")
+                || mime.starts_with("application/x-font-")
+                || mime.starts_with("application/font-")
+                || mime == "application/vnd.ms-opentype" =>
+        {
+            mime
+        }
+        _ => "application/octet-stream",
+    }
+}
+
 /// A container attachment (Jellyfin `GET /Videos/{id}/{mediaSourceId}/Attachments/{index}`),
 /// e.g. a font an ASS/SSA subtitle needs. Advertised in PlaybackInfo's
 /// `MediaAttachments` (see `apply_subtitle_delivery`).
@@ -974,7 +991,7 @@ pub async fn attachment_stream(
     let attachments = media
         .probe_data
         .as_ref()
-        .map(|p| {
+        .and_then(|p| {
             p.media_attachments
                 .clone()
         })
@@ -1038,13 +1055,17 @@ pub async fn attachment_stream(
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|e| anyhow!("failed to read cached attachment: {e}"))?;
-    let content_type = attachment
-        .mime_type
-        .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_string());
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", content_type)
+        .header(
+            "Content-Type",
+            attachment_content_type(
+                attachment
+                    .mime_type
+                    .as_deref(),
+            ),
+        )
+        .header("X-Content-Type-Options", "nosniff")
         .header("Cache-Control", "public, max-age=86400")
         .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(bytes))
@@ -3234,6 +3255,26 @@ mod tests {
         assert!(pos("-dump_attachment:9") < pos("-i"));
         assert_eq!(args[pos("-i") + 1], "/media/x.mkv");
         assert_eq!(&args[args.len() - 5..], ["-t", "0", "-f", "null", "-"]);
+    }
+
+    #[test]
+    fn only_font_attachments_keep_their_content_type() {
+        for font in [
+            "font/ttf",
+            "font/otf",
+            "application/x-font-ttf",
+            "application/font-sfnt",
+            "application/vnd.ms-opentype",
+        ] {
+            assert_eq!(attachment_content_type(Some(font)), font);
+        }
+        for other in [Some("text/html"), Some("image/svg+xml"), Some(""), None] {
+            assert_eq!(
+                attachment_content_type(other),
+                "application/octet-stream",
+                "{other:?}"
+            );
+        }
     }
 
     #[test]

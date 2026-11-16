@@ -2745,9 +2745,10 @@ pub struct MediaSourceInfo {
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
     /// Files attached to the container (MKV fonts for ASS/SSA subtitles).
-    /// jellyfin-web loads the font ones into its libass renderer.
-    #[default(vec![])]
-    pub media_attachments: Vec<MediaAttachment>,
+    /// jellyfin-web loads the font ones into its libass renderer. `None` in a
+    /// stored probe means they were never read (a RemuxDB record, or a probe
+    /// from before they were recorded); `Some([])` means the file has none.
+    pub media_attachments: Option<Vec<MediaAttachment>>,
     #[default(vec![])]
     pub media_streams: Vec<MediaStream>,
     pub name: Option<String>,
