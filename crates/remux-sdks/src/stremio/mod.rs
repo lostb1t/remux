@@ -390,14 +390,127 @@ pub struct Subtitle {
     pub ai_translated: Option<bool>,
 }
 
+/// A legacy `trailers` entry: `{source, type}` with `source` a YouTube id.
+/// Stremio also accepts a YouTube stream (`{ytId}`) here.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Trailer {
     pub source: Option<String>,
+    pub yt_id: Option<String>,
     pub name: Option<String>,
+    pub title: Option<String>,
     pub lang: Option<String>,
     pub r#type: Option<String>,
+}
+
+/// A `trailerStreams` entry: a stream, of which a YouTube id or a URL plays
+/// as a trailer.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrailerStream {
+    pub yt_id: Option<String>,
+    pub url: Option<String>,
+    pub name: Option<String>,
+    pub title: Option<String>,
+}
+
+/// A `links` entry. Stremio's are `{name, category, url}`; Trailerio sends
+/// `{trailers, provider}` with `trailers` a direct video URL.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Link {
+    pub name: Option<String>,
+    pub category: Option<String>,
+    pub url: Option<String>,
+    pub trailers: Option<String>,
+    pub provider: Option<String>,
+}
+
+/// Where a trailer plays from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrailerSource {
+    YouTube(String),
+    Url(String),
+}
+
+/// A trailer a meta lists, read the way stremio-core reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetaTrailer {
+    pub source: TrailerSource,
+    pub name: Option<String>,
+}
+
+impl TrailerStream {
+    fn to_trailer(&self) -> Option<MetaTrailer> {
+        let source = match (non_empty(&self.yt_id), non_empty(&self.url)) {
+            (Some(id), _) => TrailerSource::YouTube(id),
+            (None, Some(url)) => TrailerSource::Url(url),
+            (None, None) => return None,
+        };
+        Some(MetaTrailer {
+            source,
+            name: non_empty(&self.name).or_else(|| non_empty(&self.title)),
+        })
+    }
+}
+
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// A list whose malformed entries are dropped instead of failing the whole
+/// meta: trailers are a nice-to-have, never a reason to lose an item.
+fn deserialize_lenient_list<'de, D, T>(de: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(de)? {
+        Some(serde_json::Value::Array(items)) => Some(
+            items
+                .into_iter()
+                .filter_map(|item| serde_json::from_value(item).ok())
+                .collect(),
+        ),
+        _ => None,
+    })
+}
+
+/// The trailers in `trailer_streams`, or, without it, in the legacy
+/// `trailers` (only those of type `Trailer`, as stremio-core does).
+fn read_trailers(
+    trailer_streams: Option<&[TrailerStream]>,
+    legacy: Option<&[Trailer]>,
+) -> Vec<MetaTrailer> {
+    if let Some(streams) = trailer_streams {
+        return streams
+            .iter()
+            .filter_map(TrailerStream::to_trailer)
+            .collect();
+    }
+    legacy
+        .unwrap_or_default()
+        .iter()
+        .filter(|t| {
+            t.r#type
+                .as_deref()
+                .is_none_or(|kind| kind.eq_ignore_ascii_case("trailer"))
+        })
+        .filter_map(|t| {
+            Some(MetaTrailer {
+                source: TrailerSource::YouTube(
+                    non_empty(&t.source).or_else(|| non_empty(&t.yt_id))?,
+                ),
+                name: non_empty(&t.name).or_else(|| non_empty(&t.title)),
+            })
+        })
+        .collect()
 }
 
 #[derive(
@@ -539,7 +652,13 @@ pub struct Meta {
     //pub year: String,
     pub moviedb_id: Option<u64>,
 
+    /// Legacy trailers; see [`Meta::trailers`].
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
     pub trailers: Option<Vec<Trailer>>,
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
+    pub trailer_streams: Option<Vec<TrailerStream>>,
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
+    pub links: Option<Vec<Link>>,
 
     pub background: Option<String>,
     pub logo: Option<String>,
@@ -562,8 +681,6 @@ pub struct Meta {
 
     // #[serde(rename = "videos")]
     pub videos: Option<Vec<Episode>>,
-    // pub trailer_streams: Option<Vec<String>>,
-    // pub links: Option<Vec<Link>>,
     #[serde(
         default,
         rename = "app_extras",
@@ -573,6 +690,29 @@ pub struct Meta {
 }
 
 impl Meta {
+    /// The meta's trailers: `trailerStreams`, or the legacy `trailers` without
+    /// it, followed by the direct videos Trailerio lists in `links`.
+    pub fn trailers(&self) -> Vec<MetaTrailer> {
+        let mut trailers = read_trailers(
+            self.trailer_streams
+                .as_deref(),
+            self.trailers
+                .as_deref(),
+        );
+        trailers.extend(
+            self.links
+                .iter()
+                .flatten()
+                .filter_map(|link| {
+                    Some(MetaTrailer {
+                        source: TrailerSource::Url(non_empty(&link.trailers)?),
+                        name: non_empty(&link.provider),
+                    })
+                }),
+        );
+        trailers
+    }
+
     /// Fetch the full meta from AIO and replace `self` with it.
     /// Catalog responses are often partial (missing `imdb_id` etc.); calling
     /// this upgrades the item to complete metadata before DB conversion.
@@ -870,8 +1010,18 @@ pub struct Episode {
     pub directors: Option<Vec<String>>,
     pub writers: Option<Vec<String>>,
     pub cast: Option<Vec<CastMember>>,
+    #[serde(default, deserialize_with = "deserialize_lenient_list")]
+    pub trailer_streams: Option<Vec<TrailerStream>>,
 }
 impl Episode {
+    pub fn trailers(&self) -> Vec<MetaTrailer> {
+        read_trailers(
+            self.trailer_streams
+                .as_deref(),
+            None,
+        )
+    }
+
     pub fn get_name(&self) -> Option<String> {
         self.name
             .clone()
@@ -1149,10 +1299,106 @@ mod tests {
     }
 
     use super::{
-        Endpoint, MediaType, Meta, MetaResponse, ReleaseInfo, Stream,
-        SubtitlesEndpoint, parse_duration_lossy,
+        Endpoint, Episode, MediaType, Meta, MetaResponse, MetaTrailer, ReleaseInfo,
+        Stream, SubtitlesEndpoint, TrailerSource, parse_duration_lossy,
     };
     use std::time::Duration;
+
+    fn meta(extra: serde_json::Value) -> Meta {
+        let mut body = serde_json::json!({"id": "tt1375666", "type": "movie", "name": "Inception"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(
+                extra
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        serde_json::from_value(body).unwrap()
+    }
+
+    fn youtube(id: &str, name: Option<&str>) -> MetaTrailer {
+        MetaTrailer {
+            source: TrailerSource::YouTube(id.into()),
+            name: name.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn trailer_streams_replace_the_legacy_trailers() {
+        // Cinemeta sends both; stremio-core reads only `trailerStreams` then.
+        let meta = meta(serde_json::json!({
+            "trailers": [{"source": "old", "type": "Trailer"}],
+            "trailerStreams": [
+                {"title": "Inception", "ytId": "cdx31ak4KbQ"},
+                {"url": "https://cdn.example/trailer.mp4", "name": "1080p"},
+                {"title": "neither a ytId nor a url"}
+            ]
+        }));
+        assert_eq!(
+            meta.trailers(),
+            [
+                youtube("cdx31ak4KbQ", Some("Inception")),
+                MetaTrailer {
+                    source: TrailerSource::Url(
+                        "https://cdn.example/trailer.mp4".into()
+                    ),
+                    name: Some("1080p".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_trailers_keep_only_trailers() {
+        let meta = meta(serde_json::json!({
+            "trailers": [
+                {"source": "a", "type": "Trailer"},
+                {"source": "b", "type": "Clip"},
+                {"ytId": "c"}
+            ]
+        }));
+        assert_eq!(meta.trailers(), [youtube("a", None), youtube("c", None)]);
+    }
+
+    #[test]
+    fn trailerio_links_are_direct_trailers() {
+        let meta = meta(serde_json::json!({
+            "links": [
+                {"name": "8.8", "category": "imdb", "url": "https://imdb.com/title/tt1375666"},
+                {"trailers": "https://video.fandango.com/inception.mp4", "provider": "Rotten Tomatoes 1080p"}
+            ]
+        }));
+        assert_eq!(
+            meta.trailers(),
+            [MetaTrailer {
+                source: TrailerSource::Url(
+                    "https://video.fandango.com/inception.mp4".into()
+                ),
+                name: Some("Rotten Tomatoes 1080p".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn malformed_trailer_entries_do_not_fail_the_meta() {
+        let meta = meta(serde_json::json!({
+            "trailers": ["not an object", {"source": "a", "type": "Trailer"}],
+            "trailerStreams": "not a list",
+            "links": [42]
+        }));
+        assert_eq!(meta.trailers(), [youtube("a", None)]);
+    }
+
+    #[test]
+    fn episodes_read_their_trailer_streams() {
+        let episode: Episode = serde_json::from_value(serde_json::json!({
+            "id": "tt0903747:1:1",
+            "trailerStreams": [{"ytId": "abc", "title": "Pilot"}]
+        }))
+        .unwrap();
+        assert_eq!(episode.trailers(), [youtube("abc", Some("Pilot"))]);
+    }
 
     #[test]
     fn meta_response_accepts_an_empty_body() {
