@@ -268,6 +268,142 @@ fn is_cached(path: &std::path::Path) -> bool {
     })
 }
 
+/// Cache path for a PGS stream, stream-copied into a raw `.sup` file. Next to
+/// the text caches, scoped per media source like `subtitle_cache_path`.
+fn pgs_cache_path(
+    data_dir: &std::path::Path,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+) -> std::path::PathBuf {
+    data_dir
+        .join("subtitle-cache")
+        .join(format!("{item_id}_{media_source_id}_{stream_index}.sup"))
+}
+
+/// Single-flight registry for PGS extractions, keyed by (item_id,
+/// media_source_id, stream_index). Same idea as
+/// `SUBTITLE_EXTRACTION_INFLIGHT`: the ffmpeg run lives in its own task, and
+/// a second request for the same track (jellyfin-web's PGS renderer fetches
+/// the `.sup` twice) joins it instead of reading the whole file again.
+static PGS_EXTRACTION_INFLIGHT: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            (Uuid, Uuid, i64),
+            Shared<BoxFuture<'static, ExtractionOutcome>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| {
+    tokio::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// Stream-copies one PGS track into `final_path` (via a temp file, renamed
+/// only once ffmpeg has finished, so a reader never sees a partial file).
+async fn extract_pgs_to_cache(
+    input_url: &str,
+    map_spec: &str,
+    final_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    if let Some(dir) = final_path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    }
+    let tmp = subtitle_cache_tmp_path(final_path);
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
+    cmd.hide_console();
+    cmd.kill_on_drop(true);
+    cmd.args(["-y", "-nostdin", "-copyts"]);
+    cmd.args(ffmpeg_http_input_args(input_url));
+    cmd.args(["-i", input_url]);
+    cmd.args(["-map", map_spec, "-an", "-vn", "-c:s", "copy", "-f", "sup"]);
+    cmd.arg(&tmp);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output =
+        match tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output()).await {
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                anyhow::bail!("subtitle extraction timed out");
+            }
+            Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
+            Ok(Ok(output)) => output,
+        };
+    if !output
+        .status
+        .success()
+    {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
+        anyhow::bail!("ffmpeg PGS extraction failed: {stderr}");
+    }
+    if !std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        anyhow::bail!("ffmpeg produced an empty PGS track");
+    }
+    tokio::fs::rename(&tmp, final_path)
+        .await
+        .map_err(|e| {
+            anyhow!("failed to move extracted PGS subtitle into cache: {e}")
+        })?;
+    Ok(())
+}
+
+/// Ensures the PGS track is cached as `.sup`, extracting it at most once per
+/// source and track. Previously every request re-read the whole (possibly
+/// remote) file.
+async fn ensure_pgs_cached(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    map_spec: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = pgs_cache_path(data_dir, item_id, media_source_id, stream_index);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        debug!(%item_id, stream_index, "PGS subtitle cache hit");
+        return Ok(path);
+    }
+    info!(%item_id, stream_index, "PGS subtitle cache miss — extracting on-demand");
+    let key = (item_id, media_source_id, stream_index);
+    let shared = {
+        let mut inflight = PGS_EXTRACTION_INFLIGHT
+            .lock()
+            .await;
+        if let Some(existing) = inflight.get(&key) {
+            existing.clone()
+        } else {
+            let input_url = input_url.to_string();
+            let map_spec = map_spec.to_string();
+            let final_path = path.clone();
+            let future: BoxFuture<'static, ExtractionOutcome> = Box::pin(async move {
+                let result = extract_pgs_to_cache(&input_url, &map_spec, &final_path)
+                    .await
+                    .map_err(|e| e.to_string());
+                PGS_EXTRACTION_INFLIGHT
+                    .lock()
+                    .await
+                    .remove(&key);
+                result
+            });
+            let shared = future.shared();
+            // Runs to completion even if the requesting client disconnects.
+            tokio::spawn(shared.clone());
+            inflight.insert(key, shared.clone());
+            shared
+        }
+    };
+    shared
+        .await
+        .map_err(|e| anyhow!(e))?;
+    Ok(path)
+}
+
 /// The path ffmpeg actually writes to for a given final cache path — never
 /// the final path itself. `extract_subtitles_to_cache` only renames a temp
 /// file into place after ffmpeg has fully closed it, so a reader can never
@@ -1152,44 +1288,40 @@ async fn subtitles_stream_inner(
 
     let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
 
-    // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
+    // Binary formats (PGS/SUP): stream-copied once into the cache, then served
+    // from there like the text formats.
     if is_binary {
-        let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
-        cmd.hide_console();
-        cmd.kill_on_drop(true);
-        cmd.args(["-copyts"]);
-        cmd.args(ffmpeg_http_input_args(&url));
-        cmd.args(["-i", &url]);
-        cmd.args([
-            "-map",
+        let cache_path = match ensure_pgs_cached(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            &url,
+            item_id,
+            media_source_id,
+            stream_index,
             &map_spec,
-            "-an",
-            "-vn",
-            "-c:s",
-            "copy",
-            "-f",
-            output_format.as_str(),
-            "-",
-        ]);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        let output = tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output())
-            .await
-            .map_err(|_| anyhow!("subtitle extraction timed out"))?
-            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
-        if !output
-            .status
-            .success()
+        )
+        .await
         {
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("subtitle extraction failed"))
-                .unwrap());
-        }
+            Ok(p) => p,
+            Err(e) => {
+                error!(%item_id, stream_index, %map_spec, "PGS subtitle extraction failed: {e}");
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("subtitle extraction failed"))
+                    .unwrap());
+            }
+        };
+        let bytes = tokio::fs::read(&cache_path)
+            .await
+            .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?;
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", content_type)
-            .body(Body::from(output.stdout))
+            .header("Cache-Control", "public, max-age=3600")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Body::from(bytes))
             .unwrap());
     }
 
@@ -1648,6 +1780,78 @@ mod tests {
                 .join(format!("{item_id}_{media_source_id}_2.ass"))
         );
         assert_ne!(srt, ass);
+    }
+
+    #[test]
+    fn pgs_cache_path_is_scoped_per_source_and_track() {
+        let data_dir = std::path::Path::new("/data");
+        let item = Uuid::nil();
+        let a = pgs_cache_path(data_dir, item, Uuid::from_u128(1), 3);
+        let b = pgs_cache_path(data_dir, item, Uuid::from_u128(2), 3);
+        let c = pgs_cache_path(data_dir, item, Uuid::from_u128(1), 4);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(
+            a.extension()
+                .and_then(|e| e.to_str()),
+            Some("sup")
+        );
+        assert_eq!(
+            a.parent(),
+            Some(
+                data_dir
+                    .join("subtitle-cache")
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_pgs_track_is_served_without_running_ffmpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = Uuid::from_u128(7);
+        let source = Uuid::from_u128(8);
+        let path = pgs_cache_path(dir.path(), item, source, 2);
+        std::fs::create_dir_all(
+            path.parent()
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&path, b"PG\x00\x01fake").unwrap();
+
+        // An unreachable input: any ffmpeg run would fail, so Ok proves the
+        // cache was used.
+        let got = ensure_pgs_cached(
+            dir.path(),
+            "http://127.0.0.1:9/never",
+            item,
+            source,
+            2,
+            "0:s:0",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, path);
+    }
+
+    #[tokio::test]
+    async fn failed_pgs_extraction_leaves_no_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = Uuid::from_u128(9);
+        let source = Uuid::from_u128(10);
+        let result = ensure_pgs_cached(
+            dir.path(),
+            "http://127.0.0.1:9/never",
+            item,
+            source,
+            2,
+            "0:s:0",
+        )
+        .await;
+        assert!(result.is_err());
+        let path = pgs_cache_path(dir.path(), item, source, 2);
+        assert!(!path.exists());
+        assert!(!subtitle_cache_tmp_path(&path).exists());
     }
 
     #[test]
