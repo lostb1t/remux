@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -10,28 +10,41 @@ use tracing::{info, warn};
 use super::{ProgressReporter, Task, TaskCategory, TaskService};
 use crate::AppContext;
 
-/// Extracted subtitles (and attachments) older than this are deleted. Same
-/// age Jellyfin's "Clean Cache Directory" task uses for its cache folder.
+/// Cached files older than this are deleted. Same age Jellyfin's "Clean
+/// Cache Directory" task uses for its cache folder.
 const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// A `.tmp` file is a half-written extraction; anything this old belongs to
 /// a run that died (extractions time out after 10 minutes).
-const MAX_TMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+pub(super) const MAX_TMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
-pub struct CleanSubtitleCacheTask;
+/// The on-disk caches whose files are rebuilt on demand: resized images, and
+/// extracted subtitles, PGS tracks and fonts. Not all of `cache/`: the
+/// torrent client keeps its data there too.
+pub(super) fn disk_cache_dirs(data_dir: &Path) -> [PathBuf; 2] {
+    [
+        data_dir
+            .join("cache")
+            .join("images"),
+        data_dir.join("subtitle-cache"),
+    ]
+}
+
+/// Jellyfin's "Clean Cache Directory" (same key), for remux's disk caches.
+pub struct CleanCacheDirectoryTask;
 
 #[async_trait]
-impl Task for CleanSubtitleCacheTask {
+impl Task for CleanCacheDirectoryTask {
     fn key(&self) -> &str {
-        "CleanSubtitleCache"
+        "DeleteCacheFiles"
     }
     fn name(&self) -> &str {
-        "Clean Subtitle Cache"
+        "Clean Cache Directory"
     }
     fn description(&self) -> &str {
-        "Deletes subtitles extracted from media files that haven't been re-extracted in 30 days. They are extracted again on demand."
+        "Deletes cached images and extracted subtitles and fonts that haven't been rewritten in 30 days. They are created again on demand."
     }
     fn short_description(&self) -> &str {
-        "Deletes extracted subtitles older than 30 days"
+        "Deletes cache files older than 30 days"
     }
     fn category(&self) -> TaskCategory {
         TaskCategory::Maintenance
@@ -43,15 +56,19 @@ impl Task for CleanSubtitleCacheTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let dir = ctx
-            .config
-            .data_dir
-            .join("subtitle-cache");
+        let dirs = disk_cache_dirs(
+            &ctx.config
+                .data_dir,
+        );
         let (removed, bytes) = tokio::task::spawn_blocking(move || {
-            clean_old_files(&dir, SystemTime::now(), MAX_AGE, MAX_TMP_AGE)
+            dirs.iter()
+                .map(|dir| {
+                    clean_old_files(dir, SystemTime::now(), MAX_AGE, MAX_TMP_AGE)
+                })
+                .fold((0, 0), |(n, b), (dn, db)| (n + dn, b + db))
         })
         .await?;
-        info!(removed, bytes, "cleaned subtitle cache");
+        info!(removed, bytes, "cleaned cache directory");
         progress.set(100.0);
         Ok(())
     }
@@ -59,7 +76,7 @@ impl Task for CleanSubtitleCacheTask {
 
 /// Deletes regular files in `dir` last written more than `max_age` before
 /// `now` (`max_tmp_age` for `.tmp` leftovers). Returns (files, bytes) removed.
-fn clean_old_files(
+pub(super) fn clean_old_files(
     dir: &Path,
     now: SystemTime,
     max_age: Duration,
@@ -99,7 +116,7 @@ fn clean_old_files(
                 bytes += meta.len();
             }
             Err(e) => warn!(
-                "failed to remove cached subtitle {}: {e}",
+                "failed to remove cached file {}: {e}",
                 entry
                     .path()
                     .display()
@@ -153,6 +170,22 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["fresh.ass", "running.sup.tmp", "subdir"]);
+    }
+
+    #[test]
+    fn the_torrent_cache_is_not_a_disk_cache() {
+        // The torrent client keeps its data in `cache/` itself; an age-based
+        // clean there could delete data a playing torrent still needs.
+        let data_dir = Path::new("/data");
+        let dirs = disk_cache_dirs(data_dir);
+        assert!(
+            dirs.iter()
+                .all(|d| d != &data_dir.join("cache"))
+        );
+        assert!(
+            dirs.iter()
+                .all(|d| d.starts_with(data_dir))
+        );
     }
 
     #[test]
