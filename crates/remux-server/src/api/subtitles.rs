@@ -766,6 +766,291 @@ pub async fn subtitles_stream_tickless(
     .await
 }
 
+/// Cache path for one container attachment (e.g. an MKV font), next to the
+/// subtitle caches and scoped per media source like them.
+fn attachment_cache_path(
+    data_dir: &std::path::Path,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    index: i64,
+) -> std::path::PathBuf {
+    data_dir
+        .join("subtitle-cache")
+        .join(format!("{item_id}_{media_source_id}_attachment_{index}"))
+}
+
+/// Single-flight registry for attachment dumps, keyed by (item_id,
+/// media_source_id). jellyfin-web requests all fonts of a source at once;
+/// one ffmpeg run dumps every attachment, the other requests join it.
+static ATTACHMENT_EXTRACTION_INFLIGHT: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            (Uuid, Uuid),
+            Shared<BoxFuture<'static, ExtractionOutcome>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| {
+    tokio::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// ffmpeg arguments that dump every attachment in `indexes` to its temp path.
+/// Attachments live in the container header, so ffmpeg reads the start of the
+/// file (plus a seek if the muxer put them at the end), not the whole file;
+/// `-t 0 -f null -` gives it an output so it exits right after opening.
+fn build_attachment_dump_args(
+    input_url: &str,
+    targets: &[(i64, std::path::PathBuf)],
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["-y".into(), "-nostdin".into()];
+    for (index, tmp) in targets {
+        args.push(format!("-dump_attachment:{index}").into());
+        args.push(
+            tmp.clone()
+                .into_os_string(),
+        );
+    }
+    args.extend(
+        ffmpeg_http_input_args(input_url)
+            .iter()
+            .map(|a| std::ffi::OsString::from(*a)),
+    );
+    args.extend(["-i".into(), input_url.into(), "-t".into(), "0".into()]);
+    args.extend(["-f".into(), "null".into(), "-".into()]);
+    args
+}
+
+async fn dump_attachments_to_cache(
+    input_url: &str,
+    targets: &[(i64, std::path::PathBuf)],
+) -> anyhow::Result<()> {
+    let Some(dir) = targets
+        .first()
+        .and_then(|(_, p)| p.parent())
+    else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    let tmp_targets: Vec<(i64, std::path::PathBuf)> = targets
+        .iter()
+        .map(|(i, p)| (*i, subtitle_cache_tmp_path(p)))
+        .collect();
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
+    cmd.hide_console();
+    cmd.kill_on_drop(true);
+    cmd.args(build_attachment_dump_args(input_url, &tmp_targets));
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| anyhow!("attachment extraction timed out"))?
+        .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+    // Move whatever ffmpeg wrote, even if it exited non-zero: a single
+    // unreadable attachment shouldn't cost the others.
+    let mut moved = 0;
+    for ((_, tmp), (_, final_path)) in tmp_targets
+        .iter()
+        .zip(targets)
+    {
+        if std::fs::metadata(tmp).is_ok_and(|m| m.len() > 0)
+            && tokio::fs::rename(tmp, final_path)
+                .await
+                .is_ok()
+        {
+            moved += 1;
+        } else {
+            let _ = tokio::fs::remove_file(tmp).await;
+        }
+    }
+    if moved == 0 {
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
+        anyhow::bail!("ffmpeg attachment extraction produced nothing: {stderr}");
+    }
+    Ok(())
+}
+
+/// Ensures attachment `index` is cached, dumping every not-yet-cached
+/// attachment of the source in one ffmpeg run if needed.
+async fn ensure_attachment_cached(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    attachments: &[api::MediaAttachment],
+    index: i64,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = attachment_cache_path(data_dir, item_id, media_source_id, index);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        return Ok(path);
+    }
+    let key = (item_id, media_source_id);
+    let shared = {
+        let mut inflight = ATTACHMENT_EXTRACTION_INFLIGHT
+            .lock()
+            .await;
+        if let Some(existing) = inflight.get(&key) {
+            existing.clone()
+        } else {
+            let targets: Vec<(i64, std::path::PathBuf)> = attachments
+                .iter()
+                .map(|a| {
+                    (
+                        a.index,
+                        attachment_cache_path(
+                            data_dir,
+                            item_id,
+                            media_source_id,
+                            a.index,
+                        ),
+                    )
+                })
+                .filter(|(_, p)| !std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
+                .collect();
+            info!(%item_id, count = targets.len(), "attachment cache miss — extracting on-demand");
+            let input_url = input_url.to_string();
+            let future: BoxFuture<'static, ExtractionOutcome> = Box::pin(async move {
+                let result = dump_attachments_to_cache(&input_url, &targets)
+                    .await
+                    .map_err(|e| e.to_string());
+                ATTACHMENT_EXTRACTION_INFLIGHT
+                    .lock()
+                    .await
+                    .remove(&key);
+                result
+            });
+            let shared = future.shared();
+            tokio::spawn(shared.clone());
+            inflight.insert(key, shared.clone());
+            shared
+        }
+    };
+    shared
+        .await
+        .map_err(|e| anyhow!(e))?;
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        Ok(path)
+    } else {
+        Err(anyhow!("attachment {index} could not be extracted"))
+    }
+}
+
+/// A container attachment (Jellyfin `GET /Videos/{id}/{mediaSourceId}/Attachments/{index}`),
+/// e.g. a font an ASS/SSA subtitle needs. Advertised in PlaybackInfo's
+/// `MediaAttachments` (see `apply_subtitle_delivery`).
+#[get("/videos/{item_id}/{media_source_id}/attachments/{index}")]
+pub async fn attachment_stream(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((item_id, media_source_id, index)): Path<(Uuid, Uuid, i64)>,
+) -> Result<impl IntoResponse> {
+    let selected_id = crate::services::StreamService::device_selected_stream_for(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        item_id,
+        media_source_id,
+    )
+    .unwrap_or(media_source_id);
+    let Ok(media) = crate::services::StreamService::lookup(
+        &state.ctx,
+        item_id,
+        Some(selected_id),
+        None,
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    else {
+        return Ok((StatusCode::NOT_FOUND, "stream not found").into_response());
+    };
+    let attachments = media
+        .probe_data
+        .as_ref()
+        .map(|p| {
+            p.media_attachments
+                .clone()
+        })
+        .unwrap_or_default();
+    let Some(attachment) = attachments
+        .iter()
+        .find(|a| a.index == index)
+    else {
+        return Ok((StatusCode::NOT_FOUND, "attachment not found").into_response());
+    };
+    // Same gate as embedded subtitles: never read a source we may not read.
+    if !media
+        .allows_subtitle_extraction(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+    {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            "subtitle extraction is disabled for this source",
+        )
+            .into_response());
+    }
+    let url = media
+        .stream_info
+        .as_ref()
+        .map(|si| {
+            si.descriptor
+                .server_input(
+                    media.id,
+                    state
+                        .ctx
+                        .config
+                        .port,
+                )
+        })
+        .context_not_found("media source has no URL")?;
+    let path = match ensure_attachment_cached(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        &url,
+        item_id,
+        media_source_id,
+        &attachments,
+        index,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(%item_id, index, "attachment extraction failed: {e}");
+            return Ok(
+                (StatusCode::NOT_FOUND, "attachment not available").into_response()
+            );
+        }
+    };
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| anyhow!("failed to read cached attachment: {e}"))?;
+    let content_type = attachment
+        .mime_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "public, max-age=86400")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(Body::from(bytes))
+        .unwrap())
+}
+
 /// Fetch the raw bytes of an external subtitle URL through our stream proxy.
 /// A refused/corrupt upstream response (flaky subtitle CDN) is treated as
 /// "subtitle unavailable", not a server error: the caller logs it and answers
@@ -2922,6 +3207,104 @@ mod tests {
         assert!(
             !args.contains(&"-reconnect".to_string()),
             "a local path should not get http reconnect args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn attachment_dump_args_name_each_index_and_exit_after_opening() {
+        let targets = vec![
+            (5, std::path::PathBuf::from("/c/a_5.tmp")),
+            (9, std::path::PathBuf::from("/c/a_9.tmp")),
+        ];
+        let args: Vec<String> = build_attachment_dump_args("/media/x.mkv", &targets)
+            .into_iter()
+            .map(|a| {
+                a.into_string()
+                    .unwrap()
+            })
+            .collect();
+        let pos = |needle: &str| {
+            args.iter()
+                .position(|a| a == needle)
+                .unwrap()
+        };
+        assert_eq!(args[pos("-dump_attachment:5") + 1], "/c/a_5.tmp");
+        assert_eq!(args[pos("-dump_attachment:9") + 1], "/c/a_9.tmp");
+        // -dump_attachment is an input option: it must come before -i.
+        assert!(pos("-dump_attachment:9") < pos("-i"));
+        assert_eq!(args[pos("-i") + 1], "/media/x.mkv");
+        assert_eq!(&args[args.len() - 5..], ["-t", "0", "-f", "null", "-"]);
+    }
+
+    #[test]
+    fn attachment_cache_path_is_scoped_per_source() {
+        let data_dir = std::path::Path::new("/data");
+        let a = attachment_cache_path(data_dir, Uuid::nil(), Uuid::from_u128(1), 5);
+        let b = attachment_cache_path(data_dir, Uuid::nil(), Uuid::from_u128(2), 5);
+        assert_ne!(a, b);
+        assert_eq!(
+            a.parent(),
+            Some(
+                data_dir
+                    .join("subtitle-cache")
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn attachments_are_dumped_from_a_real_mkv() {
+        // Needs ffmpeg on PATH; skip quietly where it isn't (like CI images
+        // without it).
+        let ffmpeg = crate::tools::ffmpeg();
+        if std::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let font = dir
+            .path()
+            .join("font.ttf");
+        std::fs::write(&font, b"not really a font, just bytes").unwrap();
+        let mkv = dir
+            .path()
+            .join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args([
+                "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+            ])
+            .arg("-attach")
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=font/ttf", "-c:a", "pcm_s16le"])
+            .arg(&mkv)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let item = Uuid::from_u128(3);
+        let source = Uuid::from_u128(4);
+        let attachments = vec![api::MediaAttachment {
+            index: 1,
+            mime_type: Some("font/ttf".into()),
+            ..Default::default()
+        }];
+        let path = ensure_attachment_cached(
+            dir.path(),
+            mkv.to_str()
+                .unwrap(),
+            item,
+            source,
+            &attachments,
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            b"not really a font, just bytes"
         );
     }
 }

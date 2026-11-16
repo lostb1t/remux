@@ -818,6 +818,7 @@ pub fn probe_media_with(
 
     let mut streams: Vec<api::MediaStream> = Vec::new();
     let mut video_idx: i64 = 0;
+    let mut attachments: Vec<api::MediaAttachment> = Vec::new();
 
     for s in &probe.streams {
         let codec_type = s
@@ -1162,6 +1163,30 @@ pub fn probe_media_with(
                 stream.is_text_subtitle_stream = stream.is_text_subtitle_stream();
                 streams.push(stream);
             }
+            "attachment" => {
+                attachments.push(api::MediaAttachment {
+                    index: s.index,
+                    codec: s
+                        .codec_name
+                        .clone(),
+                    codec_tag: s
+                        .codec_tag_string
+                        .clone(),
+                    file_name: s
+                        .tags
+                        .get("filename")
+                        .cloned(),
+                    mime_type: s
+                        .tags
+                        .get("mimetype")
+                        .cloned(),
+                    comment: s
+                        .tags
+                        .get("comment")
+                        .cloned(),
+                    ..Default::default()
+                });
+            }
             _ => {}
         }
     }
@@ -1179,6 +1204,7 @@ pub fn probe_media_with(
     Ok((
         api::MediaSourceInfo {
             media_streams: streams,
+            media_attachments: attachments,
             container,
             run_time_ticks,
             bitrate: overall_bitrate,
@@ -1743,6 +1769,67 @@ mod probe_tests {
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&real));
+    }
+
+    #[test]
+    fn probe_lists_mkv_attachments() {
+        // Needs ffmpeg/ffprobe on PATH; skip where they aren't.
+        let ffmpeg = crate::tools::ffmpeg();
+        if std::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let font = dir
+            .path()
+            .join("Gandhi Sans.ttf");
+        std::fs::write(&font, b"font bytes").unwrap();
+        let mkv = dir
+            .path()
+            .join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args([
+                "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+            ])
+            .arg("-attach")
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=font/ttf", "-c:a", "pcm_s16le"])
+            .arg(&mkv)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let (info, _) = probe_media(
+            mkv.to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            info.media_attachments
+                .len(),
+            1
+        );
+        let a = &info.media_attachments[0];
+        assert_eq!(a.index, 1);
+        assert_eq!(
+            a.file_name
+                .as_deref(),
+            Some("Gandhi Sans.ttf")
+        );
+        assert_eq!(
+            a.mime_type
+                .as_deref(),
+            Some("font/ttf")
+        );
+        // Attachments are not media streams.
+        assert!(
+            info.media_streams
+                .iter()
+                .all(|s| s.index != 1)
+        );
     }
 
     #[test]
