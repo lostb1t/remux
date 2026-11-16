@@ -1211,7 +1211,9 @@ async fn stremio_meta_fetch(
 /// 1. the video carrying our TVDB episode id, when we have one;
 /// 2. the video at the same number, if its title matches ours;
 /// 3. the first video in the season whose title matches ours, ignoring part
-///    suffixes like "(1)" (a merged episode maps to its first part);
+///    suffixes like "(1)" (a merged episode maps to its first part). It has
+///    to agree with our air date too, unless it is the only video in the
+///    season with that title;
 /// 4. the first video that aired on our air date, but only when the video at
 ///    our number is clearly a different airing and the season's dates are
 ///    actually distinct (some addons stamp a whole season with one date);
@@ -1288,12 +1290,26 @@ fn match_episode_video<'a>(
         // A title match elsewhere still has to agree with the air date when
         // there is one to check against, so repeated placeholder titles
         // ("TBA") can't pull an episode onto a different airing.
-        let matches: Vec<_> = in_season
+        //
+        // A real title that only one video in the season carries needs no
+        // such backing. Sources can disagree on air dates for a whole season
+        // (each following a different country's run, for instance), and
+        // insisting on the date there throws away every title match and pins
+        // the video at our number, which is a different episode.
+        let titled: Vec<_> = in_season
             .iter()
             .copied()
             .filter(|v| title_of(v) == key)
+            .collect();
+        let unique_title = titled.len() == 1 && is_distinctive_title(title);
+        let matches: Vec<_> = titled
+            .into_iter()
             .filter(|v| {
-                !dates_usable || aired.is_none() || video_date(v).is_none() || near(v)
+                unique_title
+                    || !dates_usable
+                    || aired.is_none()
+                    || video_date(v).is_none()
+                    || near(v)
             })
             .collect();
         if let Some(v) = first(matches) {
@@ -1369,6 +1385,38 @@ fn episode_title_key(title: &str) -> String {
         words.retain(|w| !is_article(w));
     }
     words.concat()
+}
+
+/// Whether a title says which episode it is, rather than being a name a
+/// source hands out until the real one is known ("TBA", "Episode 7",
+/// "Folge 12"). Each source numbers those by itself, so they say nothing
+/// about which episode is which.
+///
+/// There is no list of such names to keep complete: a title is judged by its
+/// shape. Without a number it needs four letters; with one it needs three
+/// words besides the number. That turns away a few real titles too ("24
+/// Hours", "Us"), which only costs them what depends on this.
+fn is_distinctive_title(title: &str) -> bool {
+    let (numbers, words): (Vec<&str>, Vec<&str>) = title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .partition(|token| {
+            token
+                .chars()
+                .any(|c| c.is_numeric())
+        });
+    if numbers.is_empty() {
+        let letters: usize = words
+            .iter()
+            .map(|word| {
+                word.chars()
+                    .count()
+            })
+            .sum();
+        letters >= 4
+    } else {
+        words.len() >= 3
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2651,6 +2699,121 @@ mod tests {
         let v = match_episode_video(&videos, 1, 2, "", None, None).unwrap();
         assert_eq!(v.episode, Some(2));
         assert!(match_episode_video(&videos, 2, 1, "Pilot", None, None).is_none());
+    }
+
+    /// A season as a metadata addon lists it.
+    const REORDERED_SEASON_VIDEOS: &[(i64, &str, &str)] = &[
+        (1, "The Vellum Room", "2031-09-12"),
+        (2, "Salt on the Ledger", "2031-09-12"),
+        (3, "A Quiet Tariff", "2031-09-19"),
+        (4, "The Ninth Lantern", "2031-09-26"),
+        (5, "Ashes for the Surveyor", "2031-10-03"),
+        (6, "Paper Orchard", "2031-10-10"),
+        (7, "The Borrowed Winter", "2031-10-10"),
+        (8, "Harbour Without Tides", "2031-10-17"),
+        (9, "The Tin Meridian", "2031-10-24"),
+        (10, "A Lesson in Rust", "2031-11-07"),
+        (11, "Copper Sundays", "2031-11-07"),
+    ];
+
+    /// The same season as our own source lists it: another order, other air
+    /// dates throughout, and two episodes (5 and 6) the addon files elsewhere.
+    const REORDERED_SEASON_OURS: &[(i64, &str, &str)] = &[
+        (1, "The Vellum Room", "2031-08-25"),
+        (2, "Salt on the Ledger", "2031-08-25"),
+        (3, "The Ninth Lantern", "2031-09-01"),
+        (4, "A Quiet Tariff", "2031-09-08"),
+        (5, "The Pale Ferryman", "2031-09-15"),
+        (6, "Understudy to the Rain", "2031-09-15"),
+        (7, "The Paper Orchard", "2031-09-22"),
+        (8, "Harbour Without Tides", "2031-09-29"),
+        (9, "Ashes for the Surveyor", "2031-10-06"),
+        (10, "The Borrowed Winter", "2031-10-13"),
+        (11, "The Tin Meridian", "2031-10-20"),
+        (12, "A Lesson in Rust", "2031-10-27"),
+        (13, "Copper Sundays", "2031-10-27"),
+    ];
+
+    /// Expected addon episode for each of our episodes 1..=13. Episodes 5 and
+    /// 6 have no video of their title in this season, so their number stands.
+    const REORDERED_SEASON_EXPECTED: [i64; 13] =
+        [1, 2, 4, 3, 5, 6, 6, 8, 5, 7, 9, 10, 11];
+
+    #[test]
+    fn match_episode_video_follows_a_unique_title_when_air_dates_disagree() {
+        let videos = season_videos(5, REORDERED_SEASON_VIDEOS);
+        for ((idx, title, aired), expected) in REORDERED_SEASON_OURS
+            .iter()
+            .zip(REORDERED_SEASON_EXPECTED)
+        {
+            let v = match_episode_video(&videos, 5, *idx, title, date(aired), None)
+                .unwrap();
+            assert_eq!(v.episode, Some(expected), "S05E{idx:02} {title}");
+        }
+    }
+
+    #[test]
+    fn match_episode_video_keeps_the_date_check_for_repeated_and_generated_titles() {
+        let videos = season_videos(
+            1,
+            &[
+                (1, "Pilot", "2034-09-07"),
+                (2, "Clip Show", "2034-09-14"),
+                (3, "The Storm", "2034-09-21"),
+                (4, "Clip Show", "2034-09-28"),
+                (5, "Episode 6", "2034-10-05"),
+                (6, "The Calm", "2034-10-12"),
+            ],
+        );
+        // Two videos carry the title, so the air date still picks between them.
+        let v =
+            match_episode_video(&videos, 1, 3, "Clip Show", date("2034-09-28"), None)
+                .unwrap();
+        assert_eq!(v.episode, Some(4));
+        // Neither aired on our date, so the title decides nothing.
+        let v =
+            match_episode_video(&videos, 1, 3, "Clip Show", date("2034-11-30"), None)
+                .unwrap();
+        assert_eq!(v.episode, Some(3));
+        // "Episode 6" is the only video of that name, but it's a name the
+        // addon made from its own numbering, not a title to follow.
+        let v =
+            match_episode_video(&videos, 1, 6, "Episode 6", date("2034-10-12"), None)
+                .unwrap();
+        assert_eq!(v.episode, Some(6));
+    }
+
+    #[test]
+    fn is_distinctive_title_turns_away_generated_names_in_any_language() {
+        for title in [
+            "TBA",
+            "tbd",
+            "Episode 7",
+            "Épisode 12",
+            "Folge 3",
+            "Odcinek 5",
+            "Серия 3",
+            "第7話",
+            "Season 2 Episode 5",
+            "#12",
+            "7",
+            "",
+        ] {
+            assert!(!is_distinctive_title(title), "{title:?}");
+        }
+        for title in [
+            "Pilot",
+            "The Vellum Room",
+            "Chapter 7: The Reckoning",
+            "Episode of the Year",
+        ] {
+            assert!(is_distinctive_title(title), "{title:?}");
+        }
+        // Real titles of the same shape are turned away too; they keep the
+        // air date check, as before.
+        for title in ["24 Hours", "Catch-22", "Us"] {
+            assert!(!is_distinctive_title(title), "{title:?}");
+        }
     }
 
     #[tokio::test]
