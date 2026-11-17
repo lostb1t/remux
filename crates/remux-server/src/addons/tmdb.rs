@@ -1139,6 +1139,7 @@ fn watch_provider_tags(
 /// Without `include_image_language`, TMDB restricts `images.backdrops`/
 /// `logos` to the request's `language` plus untagged entries, so an "en"
 /// entry never comes back unless the configured language already is "en".
+/// Videos are requested in the same languages, for the same reason.
 fn thumb_and_logo_languages(preferred_language: Option<&str>) -> String {
     let mut langs = vec!["en", "null"];
     if let Some(primary) = preferred_language.and_then(|l| {
@@ -1150,6 +1151,38 @@ fn thumb_and_logo_languages(preferred_language: Option<&str>) -> String {
         langs.insert(0, primary);
     }
     langs.join(",")
+}
+
+/// At most this many TMDB trailers per item; the rest are mostly the same
+/// trailer in other cuts or languages.
+const MAX_TMDB_TRAILERS: usize = 5;
+
+/// The YouTube trailers of a movie or series, best first. `None` when TMDB
+/// sent no videos, so the trailers other addons found are kept.
+fn tmdb_trailers(
+    videos: Option<&sdks::tmdb::Videos>,
+    preferred_language: Option<&str>,
+) -> Option<Vec<db::Trailer>> {
+    let language = preferred_language.and_then(|l| {
+        l.split('-')
+            .next()
+    });
+    Some(
+        videos?
+            .youtube_trailers(language)
+            .into_iter()
+            .take(MAX_TMDB_TRAILERS)
+            .map(|v| db::Trailer {
+                source: db::TrailerSource::Youtube(
+                    v.key
+                        .clone(),
+                ),
+                name: v
+                    .name
+                    .clone(),
+            })
+            .collect(),
+    )
 }
 
 async fn fetch_tmdb_meta(
@@ -1189,6 +1222,11 @@ async fn fetch_tmdb_meta(
                                 .clone(),
                         )
                         .with_image_languages(thumb_and_logo_languages(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
+                        .with_videos(thumb_and_logo_languages(
                             config
                                 .preferred_metadata_language
                                 .as_deref(),
@@ -1303,6 +1341,14 @@ async fn fetch_tmdb_meta(
                             .original_language
                             .clone(),
                     ),
+                    trailers: tmdb_trailers(
+                        movie_details
+                            .videos
+                            .as_ref(),
+                        config
+                            .preferred_metadata_language
+                            .as_deref(),
+                    ),
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
@@ -1371,6 +1417,11 @@ async fn fetch_tmdb_meta(
                                 .clone(),
                         )
                         .with_image_languages(thumb_and_logo_languages(
+                            config
+                                .preferred_metadata_language
+                                .as_deref(),
+                        ))
+                        .with_videos(thumb_and_logo_languages(
                             config
                                 .preferred_metadata_language
                                 .as_deref(),
@@ -1491,6 +1542,14 @@ async fn fetch_tmdb_meta(
                     ),
                     status,
                     end_date,
+                    trailers: tmdb_trailers(
+                        tv_details
+                            .videos
+                            .as_ref(),
+                        config
+                            .preferred_metadata_language
+                            .as_deref(),
+                    ),
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
@@ -2208,6 +2267,36 @@ async fn tmdb_remote_images(
 mod tests {
     use super::*;
     use remux_sdks::Endpoint;
+
+    #[test]
+    fn tmdb_trailers_are_youtube_trailers_and_absent_without_videos() {
+        assert!(tmdb_trailers(None, Some("en-US")).is_none());
+        let videos: sdks::tmdb::Videos = serde_json::from_value(serde_json::json!({"results": [
+            {"key": "abc", "site": "YouTube", "type": "Trailer", "name": "Official Trailer"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            tmdb_trailers(Some(&videos), Some("en-US")),
+            Some(vec![db::Trailer {
+                source: db::TrailerSource::Youtube("abc".to_string()),
+                name: Some("Official Trailer".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn detail_requests_ask_for_videos_in_the_image_languages() {
+        let endpoint = sdks::tmdb::MovieEndpoint::new(1, Some("de-DE".to_string()))
+            .with_videos(thumb_and_logo_languages(Some("de-DE")));
+        let query = serde_json::to_value(endpoint.query_params()).unwrap();
+        assert_eq!(query["include_video_language"], "de,en,null");
+        assert!(
+            query["append_to_response"]
+                .as_str()
+                .unwrap()
+                .ends_with(",videos")
+        );
+    }
 
     #[test]
     fn season_and_episode_external_ids_are_mapped() {
