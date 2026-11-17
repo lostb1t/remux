@@ -884,22 +884,27 @@ async fn cinemeta_episodes(
     }
 }
 
-/// Gives each episode with a TVDB id the Stremio id stream addons know it
-/// by: the series' IMDb id with the season and episode in TVDB's aired order,
-/// as Cinemeta lists it. Ours are TMDB's, which can differ (PAW Patrol's
-/// S2E14 is their S2E9), and asking by them gets another episode's streams.
-/// Set even when the numbers agree, so a stored one can't go stale.
+/// Gives each episode the Stremio id stream addons know it by: the series'
+/// IMDb id with the season and episode in TVDB's aired order, as Cinemeta
+/// lists it. Ours are TMDB's, which can differ (PAW Patrol's S2E14 is their
+/// S2E9), and asking by them gets another episode's streams. Found by TVDB
+/// id, or for an episode TMDB has none for, by a title no other episode
+/// shares, ignoring case. Set even when the numbers agree, so a stored one
+/// can't go stale.
 fn add_stremio_ids(
     cinemeta: &sdks::cinemeta::SeriesEpisodes,
     series_imdb: &str,
     episodes: &mut [db::Media],
 ) {
     for episode in episodes.iter_mut() {
-        let Some(listed) = episode
+        let listed = match episode
             .external_ids
             .tvdb
-            .and_then(|id| cinemeta.by_tvdb_id(id))
-        else {
+        {
+            Some(id) => cinemeta.by_tvdb_id(id),
+            None => cinemeta.by_name(&episode.title),
+        };
+        let Some(listed) = listed else {
             continue;
         };
         episode
@@ -2420,11 +2425,13 @@ mod tests {
     fn episodes_get_the_stremio_id_of_their_tvdb_numbering() {
         let cinemeta: sdks::cinemeta::SeriesEpisodes =
             serde_json::from_value(serde_json::json!({"meta": {"videos": [
-                {"season": 2, "episode": 9, "tvdb_id": 5050934}
+                {"season": 2, "episode": 9, "tvdb_id": 5050934},
+                {"season": 12, "episode": 1, "name": "Pups Save a Pop Star", "tvdb_id": 11754905}
             ]}}))
             .unwrap();
-        let episode = |idx, tvdb| db::Media {
+        let episode = |idx, tvdb, title: &str| db::Media {
             kind: db::MediaKind::Episode,
+            title: title.to_string(),
             parent_idx: Some(2),
             idx: Some(idx),
             external_ids: db::ExternalIds {
@@ -2434,9 +2441,10 @@ mod tests {
             ..Default::default()
         };
         let mut episodes = vec![
-            episode(14, Some(5050934)),
-            episode(15, Some(1)),
-            episode(16, None),
+            episode(14, Some(5050934), "The New Pup"),
+            episode(15, Some(1), "Pups Save a Pop Star"),
+            episode(16, None, "Pups Save a Pop Star"),
+            episode(17, None, "Unknown"),
         ];
         add_stremio_ids(&cinemeta, "tt3121722", &mut episodes);
         let ids: Vec<_> = episodes
@@ -2447,7 +2455,10 @@ mod tests {
                     .as_deref()
             })
             .collect();
-        assert_eq!(ids, [Some("tt3121722:2:9"), None, None]);
+        assert_eq!(
+            ids,
+            [Some("tt3121722:2:9"), None, Some("tt3121722:12:1"), None]
+        );
     }
 
     #[test]

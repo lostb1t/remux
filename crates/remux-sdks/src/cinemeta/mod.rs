@@ -34,11 +34,12 @@ pub struct SeriesEpisodes {
 }
 
 /// An episode's place in TVDB's aired order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Episode {
     pub tvdb_id: i64,
     pub season: i64,
     pub episode: i64,
+    pub name: Option<String>,
 }
 
 impl SeriesEpisodes {
@@ -46,6 +47,25 @@ impl SeriesEpisodes {
         self.episodes
             .iter()
             .find(|e| e.tvdb_id == tvdb_id)
+    }
+
+    /// The one episode with this title, ignoring case. None when no episode
+    /// or more than one has it, so a shared title never picks a wrong one.
+    pub fn by_name(&self, name: &str) -> Option<&Episode> {
+        let name = name.to_lowercase();
+        let mut matches = self
+            .episodes
+            .iter()
+            .filter(|e| {
+                e.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase() == name)
+            });
+        let found = matches.next()?;
+        matches
+            .next()
+            .is_none()
+            .then_some(found)
     }
 }
 
@@ -69,6 +89,7 @@ struct Video {
     season: i64,
     episode: Option<i64>,
     number: Option<i64>,
+    name: Option<String>,
 }
 
 /// Keeps the videos that carry a TVDB id and both numbers, and drops any one
@@ -88,6 +109,7 @@ impl From<MetaResponse> for SeriesEpisodes {
                     episode: v
                         .episode
                         .or(v.number)?,
+                    name: v.name,
                 })
             })
             .collect();
@@ -132,7 +154,8 @@ mod tests {
             Some(&Episode {
                 tvdb_id: 5050934,
                 season: 2,
-                episode: 9
+                episode: 9,
+                name: Some("The New Pup".to_string()),
             })
         );
         assert_eq!(
@@ -144,6 +167,34 @@ mod tests {
         assert!(
             series
                 .by_tvdb_id(2)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_episode_is_found_by_its_title_only_when_no_other_shares_it() {
+        let series: SeriesEpisodes = serde_json::from_value(serde_json::json!({"meta": {
+            "videos": [
+                {"season": 12, "episode": 1, "name": "Pups Save a Pop Star", "tvdb_id": 1},
+                {"season": 1, "episode": 1, "name": "Pilot", "tvdb_id": 2},
+                {"season": 2, "episode": 1, "name": "Pilot", "tvdb_id": 3}
+            ]
+        }}))
+        .unwrap();
+        assert_eq!(
+            series
+                .by_name("pups save a POP star")
+                .map(|e| e.tvdb_id),
+            Some(1)
+        );
+        assert!(
+            series
+                .by_name("Pups Save a Pop")
+                .is_none()
+        );
+        assert!(
+            series
+                .by_name("Pilot")
                 .is_none()
         );
     }
