@@ -1480,16 +1480,47 @@ pub async fn library_refresh(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Stubs — Jellyfin clients call these; we return empty lists so they don't 404
-
+/// The item's direct-URL trailers, each a playable `Trailer` item. Its
+/// YouTube trailers are `RemoteTrailers` on the item itself.
 #[get("/items/{id}/localtrailers")]
 pub async fn items_local_trailers(
-    _state: State<AppState>,
-    _session: auth::AuthSession,
-    _path: Path<Uuid>,
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    PlayableItemId { id, .. }: PlayableItemId,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(Vec::<api::BaseItemDto>::new()))
+    local_trailers_inner(state, session, id).await
 }
+
+pub(crate) async fn local_trailers_inner(
+    state: AppState,
+    session: auth::AuthSession,
+    id: Uuid,
+) -> Result<Json<Vec<api::BaseItemDto>>> {
+    let db = &state
+        .ctx
+        .db;
+    let owner = db::Media::get_by_id(db, &id).await?;
+    let visible = match &owner {
+        Some(owner) => {
+            !owner
+                .is_hidden_by_policy(db, &session.user)
+                .await?
+        }
+        None => false,
+    };
+    let owner = owner
+        .filter(|_| visible)
+        .context_not_found("not found")?;
+    let trailers = db::Media::trailer_rows(db, &owner.id).await?;
+    Ok(Json(
+        trailers
+            .into_iter()
+            .map(|trailer| api::db_media_to_item(trailer, false))
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Stubs — Jellyfin clients call these; we return empty lists so they don't 404
 
 #[get("/items/{id}/specialfeatures")]
 pub async fn items_special_features(
@@ -5166,6 +5197,118 @@ mod tests {
             .await
             .expect("insert_smart_collection failed");
         c
+    }
+
+    async fn movie_with_trailers(db: &sqlx::SqlitePool) -> db::Media {
+        let mut movie =
+            insert_media(db, "Inception", db::MediaKind::Movie, "tt1375666").await;
+        movie.trailers = Some(vec![
+            db::Trailer {
+                source: db::TrailerSource::Youtube("cdx31ak4KbQ".into()),
+                name: Some("Official Trailer".into()),
+            },
+            db::Trailer {
+                source: db::TrailerSource::Url(
+                    "https://cdn.example/inception.mp4".into(),
+                ),
+                name: Some("Rotten Tomatoes 1080p".into()),
+            },
+        ]);
+        movie
+            .save(db)
+            .await
+            .unwrap();
+        movie
+    }
+
+    #[tokio::test]
+    async fn direct_trailers_are_local_trailers_and_youtube_ones_remote() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let movie = movie_with_trailers(
+            &guard
+                .0
+                .db,
+        )
+        .await;
+        let get = |path: String| {
+            server
+                .get(&path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+
+        let item: serde_json::Value = get(format!(
+            "/items/{}?fields=RemoteTrailers,LocalTrailerCount",
+            movie.id
+        ))
+        .await
+        .json();
+        assert_eq!(item["LocalTrailerCount"], 1);
+        assert_eq!(
+            item["RemoteTrailers"],
+            serde_json::json!([{"Name": "Official Trailer", "Url": "https://www.youtube.com/watch?v=cdx31ak4KbQ"}])
+        );
+
+        for path in [
+            format!("/items/{}/localtrailers", movie.id),
+            format!("/users/{}/items/{}/localtrailers", Uuid::new_v4(), movie.id),
+        ] {
+            let trailers: serde_json::Value = get(path)
+                .await
+                .json();
+            let trailers = trailers
+                .as_array()
+                .unwrap();
+            assert_eq!(trailers.len(), 1);
+            assert_eq!(trailers[0]["Name"], "Rotten Tomatoes 1080p");
+            assert_eq!(trailers[0]["Type"], "Trailer");
+            assert_eq!(trailers[0]["ExtraType"], "Trailer");
+            assert_eq!(trailers[0]["MediaType"], "Video");
+            assert_eq!(
+                trailers[0]["ParentId"],
+                movie
+                    .id
+                    .simple()
+                    .to_string()
+            );
+        }
+
+        // A trailer is not one of the movie's children or a library item.
+        for path in [
+            format!("/items?ParentId={}", movie.id),
+            format!("/items?ParentId={}&Recursive=true", movie.id),
+            "/items?Recursive=true".to_string(),
+            "/items?Recursive=true&IncludeItemTypes=Trailer".to_string(),
+        ] {
+            let items: serde_json::Value = get(path.clone())
+                .await
+                .json();
+            assert!(
+                items["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item["Type"] != "Trailer"),
+                "{path}: {items}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn local_trailers_of_an_unknown_item_are_not_found() {
+        let (server, _guard, token) = authenticated_server().await;
+        server
+            .get(&format!("/items/{}/localtrailers", Uuid::new_v4()))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .expect_failure()
+            .await
+            .assert_status(http::StatusCode::NOT_FOUND);
     }
 
     // Requests movies from a series-only smart collection; must return nothing.
