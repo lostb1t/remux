@@ -78,6 +78,16 @@ inventory::submit! {
 
 pub struct TmdbAddon;
 
+/// The path of a TMDB image file as a bitmap. A logo may be an SVG, which
+/// some clients cannot display; TMDB serves the same logo as a PNG when the
+/// path ends `.png`.
+fn tmdb_file(path: &str) -> std::borrow::Cow<'_, str> {
+    match path.strip_suffix(".svg") {
+        Some(stem) => format!("{stem}.png").into(),
+        None => path.into(),
+    }
+}
+
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
         db::ImageKind::Backdrop => "w1280",
@@ -85,7 +95,7 @@ fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
         db::ImageKind::Primary | db::ImageKind::Thumb => "w780",
     };
     path.filter(|p| !p.is_empty())
-        .map(|p| format!("https://image.tmdb.org/t/p/{}{}", size, p))
+        .map(|p| format!("https://image.tmdb.org/t/p/{}{}", size, tmdb_file(p)))
 }
 
 #[async_trait]
@@ -1960,8 +1970,9 @@ fn map_remote_image(
     type_label: &str,
     entry: &sdks::tmdb::ImageEntry,
 ) -> api::RemoteImageInfo {
-    let url = format!("https://image.tmdb.org/t/p/original{}", entry.file_path);
-    let thumb = format!("https://image.tmdb.org/t/p/w300{}", entry.file_path);
+    let file = tmdb_file(&entry.file_path);
+    let url = format!("https://image.tmdb.org/t/p/original{file}");
+    let thumb = format!("https://image.tmdb.org/t/p/w300{file}");
     api::RemoteImageInfo {
         provider_name: Some("TheMovieDb".to_string()),
         url: Some(url),
@@ -2414,6 +2425,36 @@ mod tests {
             iso_639_1: language.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_svg_logo_is_asked_for_as_png() {
+        assert_eq!(
+            tmdb_image(Some("/logo.svg"), db::ImageKind::Logo).as_deref(),
+            Some("https://image.tmdb.org/t/p/w500/logo.png")
+        );
+        assert_eq!(
+            tmdb_image(Some("/logo.png"), db::ImageKind::Logo).as_deref(),
+            Some("https://image.tmdb.org/t/p/w500/logo.png")
+        );
+        assert_eq!(
+            tmdb_image(Some("/poster.jpg"), db::ImageKind::Primary).as_deref(),
+            Some("https://image.tmdb.org/t/p/w780/poster.jpg")
+        );
+
+        let remote = map_remote_image("Logo", &image_entry("/logo.svg", Some("en")));
+        assert_eq!(
+            remote
+                .url
+                .as_deref(),
+            Some("https://image.tmdb.org/t/p/original/logo.png")
+        );
+        assert_eq!(
+            remote
+                .thumbnail_url
+                .as_deref(),
+            Some("https://image.tmdb.org/t/p/w300/logo.png")
+        );
     }
 
     #[test]
