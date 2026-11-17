@@ -308,10 +308,16 @@ pub async fn update_system_configuration(
 }
 
 /// Get encoding configuration
+///
+/// Readable by any signed-in user, like Jellyfin's `GET
+/// /System/Configuration/{key}`: jellyfin-web reads it before rendering an
+/// ASS/SSA subtitle (to check `EnableFallbackFont`) and gives up on the
+/// subtitle if the request fails, so a non-admin would never see one.
+/// Changing it stays admin-only.
 #[get("/system/configuration/encoding")]
 pub async fn get_encoding_configuration(
     State(state): State<AppState>,
-    _session: auth::AdminSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let opts = crate::db::Settings::get_encoding_config(
         &state
@@ -1147,6 +1153,64 @@ mod test {
             .await;
         resp2.assert_status_ok();
         resp2.assert_json_contains(&json!({ "ServerName": "TestUpdated" }));
+    }
+
+    // --- GET /system/configuration/encoding ---
+
+    #[tokio::test]
+    async fn encoding_configuration_is_readable_but_not_writable_by_non_admins() {
+        let (server, _ctx, admin_token) = authenticated_server().await;
+        let admin_auth = auth_header_with_token(&admin_token);
+
+        server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin_auth).unwrap(),
+            )
+            .json(&json!({ "Name": "regularuser", "Password": "pass1234" }))
+            .await
+            .assert_status_ok();
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(crate::integration_test::AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "regularuser", "Pw": "pass1234" }))
+            .await;
+        resp.assert_status_ok();
+        let regular_auth = auth_header_with_token(
+            resp.json::<serde_json::Value>()["AccessToken"]
+                .as_str()
+                .unwrap(),
+        );
+
+        let resp = server
+            .get("/system/configuration/encoding")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&regular_auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let config: serde_json::Value = resp.json();
+
+        server
+            .post("/system/configuration/encoding")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&regular_auth).unwrap(),
+            )
+            .json(&config)
+            .expect_failure()
+            .await;
+
+        server
+            .get("/system/configuration/encoding")
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     // --- GET /system/endpoint ---

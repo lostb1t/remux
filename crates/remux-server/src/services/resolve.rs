@@ -70,6 +70,7 @@ fn series_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::SeriesEndpoint {
         id: tmdb_id,
         language: None,
         include_image_language: None,
+        include_video_language: None,
         append_to_response: vec!["external_ids".to_string()],
     }
 }
@@ -79,6 +80,7 @@ fn movie_ids_endpoint(tmdb_id: i64) -> sdks::tmdb::MovieEndpoint {
         id: tmdb_id,
         language: None,
         include_image_language: None,
+        include_video_language: None,
         append_to_response: vec!["external_ids".to_string()],
     }
 }

@@ -486,7 +486,13 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         &source.original_language,
         replace,
     );
-    merge_option(&mut target.trailers, &source.trailers, replace);
+    // Joined rather than first-wins: one addon's YouTube trailers and another's
+    // direct videos are different trailers, not competing values.
+    match (&mut target.trailers, &source.trailers) {
+        (_, None) => {}
+        (Some(existing), Some(new)) if !replace => db::merge_trailers(existing, new),
+        (target, Some(new)) => *target = Some(new.clone()),
+    }
     merge_option(
         &mut target.digital_released_at,
         &source.digital_released_at,
@@ -3439,6 +3445,11 @@ impl AddonService {
         const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
+        // A trailer plays its own URL; no addon has streams for it.
+        if media.kind == db::MediaKind::Trailer {
+            return Ok(());
+        }
+
         // Fast path: TTL not expired — skip the lock entirely.
         let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
             refreshed.is_some_and(|r| {
@@ -4512,6 +4523,38 @@ mod tests {
             Some("Provider Overview"),
             "unlocked Overview must still be updated"
         );
+    }
+
+    #[test]
+    fn trailers_of_several_addons_are_joined() {
+        let youtube = db::Trailer {
+            source: db::TrailerSource::Youtube("cdx31ak4KbQ".into()),
+            name: None,
+        };
+        let direct = db::Trailer {
+            source: db::TrailerSource::Url("https://cdn.example/a.mp4".into()),
+            name: Some("A 1080p".into()),
+        };
+        let with = |trailers: Vec<db::Trailer>| db::Media {
+            trailers: Some(trailers),
+            ..Default::default()
+        };
+
+        let mut target = with(vec![youtube.clone()]);
+        merge_media(
+            &mut target,
+            &with(vec![youtube.clone(), direct.clone()]),
+            false,
+        );
+        assert_eq!(target.trailers, Some(vec![youtube.clone(), direct.clone()]));
+
+        // A forced refresh replaces them with what the addons list now.
+        merge_media(&mut target, &with(vec![direct.clone()]), true);
+        assert_eq!(target.trailers, Some(vec![direct.clone()]));
+
+        // An addon that says nothing about trailers keeps them.
+        merge_media(&mut target, &db::Media::default(), true);
+        assert_eq!(target.trailers, Some(vec![direct]));
     }
 
     #[tokio::test]

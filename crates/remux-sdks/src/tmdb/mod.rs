@@ -77,6 +77,59 @@ pub fn default_append_to_response() -> Vec<String> {
     ]
 }
 
+/// `append_to_response=videos`: trailers, teasers, clips and the like.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Videos {
+    #[serde(default)]
+    pub results: Vec<Video>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Video {
+    pub key: String,
+    pub site: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub official: bool,
+    pub iso_639_1: Option<String>,
+}
+
+impl Videos {
+    /// The YouTube trailers, best first: those in `language` (an ISO 639-1
+    /// code), then official ones, otherwise in TMDB's order. Teasers stand
+    /// in only when there is no trailer at all.
+    pub fn youtube_trailers(&self, language: Option<&str>) -> Vec<&Video> {
+        let youtube = |kind: &str| {
+            self.results
+                .iter()
+                .filter(|v| {
+                    v.site == "YouTube"
+                        && v.kind == kind
+                        && !v
+                            .key
+                            .is_empty()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut trailers = youtube("Trailer");
+        if trailers.is_empty() {
+            trailers = youtube("Teaser");
+        }
+        trailers.sort_by_key(|v| {
+            (
+                language.is_none()
+                    || v.iso_639_1
+                        .as_deref()
+                        != language,
+                !v.official,
+            )
+        });
+        trailers
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ImageEntry {
     pub file_path: String,
@@ -587,3 +640,42 @@ impl Endpoint for AllMovieWatchProvidersEndpoint {
 }
 
 //https://files.tmdb.org/p/exports/movie_ids_05_15_2024.json.gz
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn youtube_trailers_put_the_language_and_official_ones_first() {
+        let videos: Videos = serde_json::from_value(serde_json::json!({"results": [
+            {"key": "clip", "site": "YouTube", "type": "Clip", "official": true, "iso_639_1": "de"},
+            {"key": "vimeo", "site": "Vimeo", "type": "Trailer", "official": true, "iso_639_1": "de"},
+            {"key": "fan", "site": "YouTube", "type": "Trailer", "official": false, "iso_639_1": "en"},
+            {"key": "en", "site": "YouTube", "type": "Trailer", "official": true, "iso_639_1": "en"},
+            {"key": "de", "site": "YouTube", "type": "Trailer", "official": false, "iso_639_1": "de"},
+            {"key": "teaser", "site": "YouTube", "type": "Teaser", "official": true, "iso_639_1": "de"}
+        ]}))
+        .unwrap();
+        let keys = |language| {
+            videos
+                .youtube_trailers(language)
+                .into_iter()
+                .map(|v| {
+                    v.key
+                        .as_str()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(Some("de")), ["de", "en", "fan"]);
+        assert_eq!(keys(None), ["en", "fan", "de"]);
+    }
+
+    #[test]
+    fn teasers_stand_in_when_there_is_no_trailer() {
+        let videos: Videos = serde_json::from_value(serde_json::json!({"results": [
+            {"key": "teaser", "site": "YouTube", "type": "Teaser", "official": true}
+        ]}))
+        .unwrap();
+        assert_eq!(videos.youtube_trailers(None)[0].key, "teaser");
+    }
+}

@@ -415,6 +415,13 @@ impl From<db::Media> for api::MediaSourceInfo {
             .probe_data
             .as_ref()
             .and_then(|p| p.size);
+        let media_attachments = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| {
+                p.media_attachments
+                    .clone()
+            });
         let mut media_streams = source
             .probe_data
             .map(|mut p| {
@@ -504,6 +511,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             bitrate: probe_bitrate,
             size: probe_size,
             media_streams,
+            media_attachments,
             // `default_audio_stream_index` / `default_subtitle_stream_index` are
             // derived per request via `MediaSourceInfo::resolve_default_streams`;
             // stored probe data never carries them.

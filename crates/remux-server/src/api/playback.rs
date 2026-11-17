@@ -3612,6 +3612,35 @@ mod tests {
         }));
     }
 
+    /// A trailer row plays its own URL, like a source that is its own item.
+    #[tokio::test]
+    async fn a_trailer_plays_its_own_url() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let trailer = crate::integration_test::insert_test_source_of_kind(
+            &guard.0,
+            crate::db::MediaKind::Trailer,
+        )
+        .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", trailer.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{
+                "Id": trailer.id.simple().to_string(),
+                "SupportsDirectPlay": true,
+            }]
+        }));
+    }
+
     /// A client that changes audio track mid-playback asks PlaybackInfo again
     /// with the item id (the id auto-play handed out for source 0). That must
     /// stay on the release being played, not rank the releases anew, or the
