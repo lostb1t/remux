@@ -507,11 +507,26 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         .external_ids
         .merge(&source.external_ids, replace);
     if let Some(source_ratings) = &source.external_ratings {
-        target
+        let merged = target
             .external_ratings
-            .get_or_insert_default()
-            .merge(source_ratings, replace);
-        merge_option(&mut target.rating_audience, &source.rating_audience, true);
+            .get_or_insert_default();
+        merged.merge(source_ratings, replace);
+        // The RemuxDB average (IMDb, TMDB, Trakt, MAL, ...) is what the daily
+        // popularity sync shows as the audience rating. A metadata patch only
+        // carries its own provider's score, so it must not replace that
+        // average: otherwise every refresh drops the rating to the TMDB-only
+        // score until the next sync puts it back.
+        let remuxdb_average = merged
+            .remuxdb
+            .as_ref()
+            .and_then(|r| r.score_average)
+            .filter(|s| s.is_finite());
+        match remuxdb_average {
+            Some(average) => target.rating_audience = Some(average),
+            None => {
+                merge_option(&mut target.rating_audience, &source.rating_audience, true)
+            }
+        }
     }
 }
 
@@ -4387,6 +4402,66 @@ mod tests {
         };
         apply_title_format(&mut media);
         assert_eq!(media.title, "Tumbleton");
+    }
+
+    /// Re:Zero: RemuxDB averages IMDb 8.3, MAL 8.2, Trakt 8.3, ... to 8.3;
+    /// TMDB alone, weighted towards the 6.5 prior, gives 7.49. A refresh must
+    /// keep the average the daily sync set, also with "replace all metadata".
+    #[test]
+    fn refresh_keeps_the_remuxdb_audience_rating() {
+        let mut stored = db::Media {
+            rating_audience: Some(8.3),
+            external_ratings: Some(db::ExternalRatings {
+                tmdb: Some(db::Rating {
+                    score: 8.1,
+                    vote_count: Some(819),
+                }),
+                remuxdb: Some(db::RemuxDbRatings {
+                    score_average: Some(8.3),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let tmdb = db::ExternalRatings {
+            tmdb: Some(db::Rating {
+                score: 8.1,
+                vote_count: Some(822),
+            }),
+            ..Default::default()
+        };
+        let patch = db::Media {
+            rating_audience: tmdb.audience_rating(),
+            external_ratings: Some(tmdb),
+            ..Default::default()
+        };
+        for replace in [false, true] {
+            let mut item = stored.clone();
+            merge_media(&mut item, &patch, replace);
+            assert_eq!(item.rating_audience, Some(8.3), "replace={replace}");
+            assert_eq!(
+                item.external_ratings
+                    .as_ref()
+                    .and_then(|r| r
+                        .tmdb
+                        .as_ref())
+                    .and_then(|r| r.vote_count),
+                Some(if replace { 822 } else { 819 })
+            );
+        }
+
+        // Without a RemuxDB average the provider's score is used, as before.
+        stored.external_ratings = None;
+        stored.rating_audience = None;
+        merge_media(&mut stored, &patch, false);
+        assert!(
+            (stored
+                .rating_audience
+                .unwrap()
+                - 7.49)
+                .abs()
+                < 0.01
+        );
     }
 
     #[test]
