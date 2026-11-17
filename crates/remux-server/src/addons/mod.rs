@@ -486,7 +486,13 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         &source.original_language,
         replace,
     );
-    merge_option(&mut target.trailers, &source.trailers, replace);
+    // Joined rather than first-wins: one addon's YouTube trailers and another's
+    // direct videos are different trailers, not competing values.
+    match (&mut target.trailers, &source.trailers) {
+        (_, None) => {}
+        (Some(existing), Some(new)) if !replace => db::merge_trailers(existing, new),
+        (target, Some(new)) => *target = Some(new.clone()),
+    }
     merge_option(
         &mut target.digital_released_at,
         &source.digital_released_at,
@@ -506,6 +512,17 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
             .get_or_insert_default()
             .merge(source_ratings, replace);
         merge_option(&mut target.rating_audience, &source.rating_audience, true);
+    }
+    // A patch only carries its own provider's score (TMDB's, or a Stremio
+    // addon's imdbRating), so it must not replace the RemuxDB average the
+    // daily popularity sync set: otherwise every refresh drops the rating to
+    // that one score until the next sync puts it back.
+    if let Some(average) = target
+        .external_ratings
+        .as_ref()
+        .and_then(db::ExternalRatings::remuxdb_average)
+    {
+        target.rating_audience = Some(average);
     }
 }
 
@@ -3424,6 +3441,11 @@ impl AddonService {
         const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
+        // A trailer plays its own URL; no addon has streams for it.
+        if media.kind == db::MediaKind::Trailer {
+            return Ok(());
+        }
+
         // Fast path: TTL not expired — skip the lock entirely.
         let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
             refreshed.is_some_and(|r| {
@@ -4378,6 +4400,76 @@ mod tests {
         assert_eq!(media.title, "Tumbleton");
     }
 
+    /// Re:Zero: RemuxDB averages IMDb 8.3, MAL 8.2, Trakt 8.3, ... to 8.3;
+    /// TMDB alone, weighted towards the 6.5 prior, gives 7.49. A refresh must
+    /// keep the average the daily sync set, also with "replace all metadata".
+    #[test]
+    fn refresh_keeps_the_remuxdb_audience_rating() {
+        let mut stored = db::Media {
+            rating_audience: Some(8.3),
+            external_ratings: Some(db::ExternalRatings {
+                tmdb: Some(db::Rating {
+                    score: 8.1,
+                    vote_count: Some(819),
+                }),
+                remuxdb: Some(db::RemuxDbRatings {
+                    score_average: Some(8.3),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let tmdb = db::ExternalRatings {
+            tmdb: Some(db::Rating {
+                score: 8.1,
+                vote_count: Some(822),
+            }),
+            ..Default::default()
+        };
+        let patch = db::Media {
+            rating_audience: tmdb.audience_rating(),
+            external_ratings: Some(tmdb),
+            ..Default::default()
+        };
+        for replace in [false, true] {
+            let mut item = stored.clone();
+            merge_media(&mut item, &patch, replace);
+            assert_eq!(item.rating_audience, Some(8.3), "replace={replace}");
+            assert_eq!(
+                item.external_ratings
+                    .as_ref()
+                    .and_then(|r| r
+                        .tmdb
+                        .as_ref())
+                    .and_then(|r| r.vote_count),
+                Some(if replace { 822 } else { 819 })
+            );
+        }
+
+        // Nor may a Stremio addon's imdbRating when TMDB sent nothing, e.g.
+        // because it timed out.
+        let cinemeta = db::Media {
+            rating_audience: Some(7.9),
+            ..Default::default()
+        };
+        let mut item = stored.clone();
+        merge_media(&mut item, &cinemeta, true);
+        assert_eq!(item.rating_audience, Some(8.3));
+
+        // Without a RemuxDB average the provider's score is used, as before.
+        stored.external_ratings = None;
+        stored.rating_audience = None;
+        merge_media(&mut stored, &patch, false);
+        assert!(
+            (stored
+                .rating_audience
+                .unwrap()
+                - 7.49)
+                .abs()
+                < 0.01
+        );
+    }
+
     #[test]
     fn merge_media_respects_locked_name() {
         let mut target = db::Media {
@@ -4437,6 +4529,38 @@ mod tests {
             Some("Provider Overview"),
             "unlocked Overview must still be updated"
         );
+    }
+
+    #[test]
+    fn trailers_of_several_addons_are_joined() {
+        let youtube = db::Trailer {
+            source: db::TrailerSource::Youtube("cdx31ak4KbQ".into()),
+            name: None,
+        };
+        let direct = db::Trailer {
+            source: db::TrailerSource::Url("https://cdn.example/a.mp4".into()),
+            name: Some("A 1080p".into()),
+        };
+        let with = |trailers: Vec<db::Trailer>| db::Media {
+            trailers: Some(trailers),
+            ..Default::default()
+        };
+
+        let mut target = with(vec![youtube.clone()]);
+        merge_media(
+            &mut target,
+            &with(vec![youtube.clone(), direct.clone()]),
+            false,
+        );
+        assert_eq!(target.trailers, Some(vec![youtube.clone(), direct.clone()]));
+
+        // A forced refresh replaces them with what the addons list now.
+        merge_media(&mut target, &with(vec![direct.clone()]), true);
+        assert_eq!(target.trailers, Some(vec![direct.clone()]));
+
+        // An addon that says nothing about trailers keeps them.
+        merge_media(&mut target, &db::Media::default(), true);
+        assert_eq!(target.trailers, Some(vec![direct]));
     }
 
     #[tokio::test]

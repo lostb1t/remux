@@ -64,6 +64,7 @@ pub struct Series {
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
     pub content_ratings: Option<SeriesContentRatings>,
+    pub videos: Option<super::Videos>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -84,6 +85,7 @@ pub struct SeriesEndpoint {
     pub id: i64,
     pub language: Option<String>,
     pub include_image_language: Option<String>,
+    pub include_video_language: Option<String>,
     #[serde(
         skip_serializing_if = "Vec::is_empty",
         serialize_with = "serialize_comma"
@@ -97,12 +99,22 @@ impl SeriesEndpoint {
             id,
             language,
             include_image_language: None,
+            include_video_language: None,
             append_to_response: default_append_to_response(),
         }
     }
 
     pub fn with_image_languages(mut self, languages: impl Into<String>) -> Self {
         self.include_image_language = Some(languages.into());
+        self
+    }
+
+    /// Also fetches the videos in `languages`; without it TMDB only returns
+    /// the ones in the request's `language`.
+    pub fn with_videos(mut self, languages: impl Into<String>) -> Self {
+        self.append_to_response
+            .push("videos".to_string());
+        self.include_video_language = Some(languages.into());
         self
     }
 }

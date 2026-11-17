@@ -2744,7 +2744,11 @@ pub struct MediaSourceInfo {
     pub is_remote: bool,
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
-    //pub media_attachments: Option<Vec<MediaAttachment>>,
+    /// Files attached to the container (MKV fonts for ASS/SSA subtitles).
+    /// jellyfin-web loads the font ones into its libass renderer. `None` in a
+    /// stored probe means they were never read (a RemuxDB record, or a probe
+    /// from before they were recorded); `Some([])` means the file has none.
+    pub media_attachments: Option<Vec<MediaAttachment>>,
     #[default(vec![])]
     pub media_streams: Vec<MediaStream>,
     pub name: Option<String>,
@@ -3815,6 +3819,19 @@ pub struct UpdateUserPassword {
     pub current_pw: Option<String>,
     pub new_pw: Option<String>,
     pub reset_password: Option<bool>,
+}
+
+/// An attachment stream of a media source (Jellyfin `MediaAttachment`).
+#[dto]
+pub struct MediaAttachment {
+    pub codec: Option<String>,
+    pub codec_tag: Option<String>,
+    pub comment: Option<String>,
+    /// Container stream index (ffmpeg's absolute stream index).
+    pub index: i64,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub delivery_url: Option<String>,
 }
 
 #[dto]
