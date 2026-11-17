@@ -90,8 +90,9 @@ fn tmdb_file(path: &str) -> std::borrow::Cow<'_, str> {
 
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
-        db::ImageKind::Backdrop => "w1280",
-        db::ImageKind::Logo => "w500",
+        // A logo is proxied as is, never resized for the client, so it has
+        // to be sharp on a 4K screen: 500px was visibly soft there.
+        db::ImageKind::Backdrop | db::ImageKind::Logo => "w1280",
         db::ImageKind::Primary | db::ImageKind::Thumb => "w780",
     };
     path.filter(|p| !p.is_empty())
@@ -2431,11 +2432,11 @@ mod tests {
     fn an_svg_logo_is_asked_for_as_png() {
         assert_eq!(
             tmdb_image(Some("/logo.svg"), db::ImageKind::Logo).as_deref(),
-            Some("https://image.tmdb.org/t/p/w500/logo.png")
+            Some("https://image.tmdb.org/t/p/w1280/logo.png")
         );
         assert_eq!(
             tmdb_image(Some("/logo.png"), db::ImageKind::Logo).as_deref(),
-            Some("https://image.tmdb.org/t/p/w500/logo.png")
+            Some("https://image.tmdb.org/t/p/w1280/logo.png")
         );
         assert_eq!(
             tmdb_image(Some("/poster.jpg"), db::ImageKind::Primary).as_deref(),
