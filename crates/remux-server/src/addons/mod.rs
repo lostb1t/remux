@@ -507,26 +507,22 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         .external_ids
         .merge(&source.external_ids, replace);
     if let Some(source_ratings) = &source.external_ratings {
-        let merged = target
+        target
             .external_ratings
-            .get_or_insert_default();
-        merged.merge(source_ratings, replace);
-        // The RemuxDB average (IMDb, TMDB, Trakt, MAL, ...) is what the daily
-        // popularity sync shows as the audience rating. A metadata patch only
-        // carries its own provider's score, so it must not replace that
-        // average: otherwise every refresh drops the rating to the TMDB-only
-        // score until the next sync puts it back.
-        let remuxdb_average = merged
-            .remuxdb
-            .as_ref()
-            .and_then(|r| r.score_average)
-            .filter(|s| s.is_finite());
-        match remuxdb_average {
-            Some(average) => target.rating_audience = Some(average),
-            None => {
-                merge_option(&mut target.rating_audience, &source.rating_audience, true)
-            }
-        }
+            .get_or_insert_default()
+            .merge(source_ratings, replace);
+        merge_option(&mut target.rating_audience, &source.rating_audience, true);
+    }
+    // A patch only carries its own provider's score (TMDB's, or a Stremio
+    // addon's imdbRating), so it must not replace the RemuxDB average the
+    // daily popularity sync set: otherwise every refresh drops the rating to
+    // that one score until the next sync puts it back.
+    if let Some(average) = target
+        .external_ratings
+        .as_ref()
+        .and_then(db::ExternalRatings::remuxdb_average)
+    {
+        target.rating_audience = Some(average);
     }
 }
 
@@ -4449,6 +4445,16 @@ mod tests {
                 Some(if replace { 822 } else { 819 })
             );
         }
+
+        // Nor may a Stremio addon's imdbRating when TMDB sent nothing, e.g.
+        // because it timed out.
+        let cinemeta = db::Media {
+            rating_audience: Some(7.9),
+            ..Default::default()
+        };
+        let mut item = stored.clone();
+        merge_media(&mut item, &cinemeta, true);
+        assert_eq!(item.rating_audience, Some(8.3));
 
         // Without a RemuxDB average the provider's score is used, as before.
         stored.external_ratings = None;

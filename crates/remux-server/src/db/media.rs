@@ -1114,7 +1114,24 @@ impl ExternalRatings {
             .map(|r| r.score)
     }
 
+    /// RemuxDB's average over IMDb, TMDB, Trakt, MAL, ..., set by the daily
+    /// popularity sync.
+    pub fn remuxdb_average(&self) -> Option<f64> {
+        self.remuxdb
+            .as_ref()
+            .and_then(|r| r.score_average)
+            .filter(|s| s.is_finite())
+    }
+
+    /// The audience rating to show: the RemuxDB average when there is one,
+    /// since it covers every source, otherwise TMDB's score weighted towards
+    /// a prior so a handful of votes can't make a 10.
     pub fn audience_rating(&self) -> Option<f64> {
+        self.remuxdb_average()
+            .or_else(|| self.tmdb_audience_rating())
+    }
+
+    fn tmdb_audience_rating(&self) -> Option<f64> {
         const PRIOR: f64 = 6.5;
         const M: f64 = 500.0;
 
@@ -10036,6 +10053,35 @@ mod tests {
                 < 7.0
         );
         assert_eq!(tmdb_ratings(7.0, None).provider_rating(), Some(7.0));
+    }
+
+    #[test]
+    fn the_remuxdb_average_is_the_audience_rating() {
+        let mut ratings = tmdb_ratings(8.1, Some(822));
+        assert!(
+            (ratings
+                .audience_rating()
+                .unwrap()
+                - 7.49)
+                .abs()
+                < 0.01
+        );
+        ratings.remuxdb = Some(RemuxDbRatings {
+            score_average: Some(8.3),
+            ..Default::default()
+        });
+        assert_eq!(ratings.audience_rating(), Some(8.3));
+        ratings
+            .remuxdb
+            .as_mut()
+            .unwrap()
+            .score_average = Some(f64::NAN);
+        assert!(
+            ratings
+                .audience_rating()
+                .unwrap()
+                < 8.0
+        );
     }
 
     #[test]
