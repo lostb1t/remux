@@ -696,6 +696,9 @@ async fn tmdb_series_seasons(
                 .with_cache(Duration::from_secs(360)),
         )
         .await?;
+    // Fetched once here, before the seasons below list their episodes
+    // concurrently and would each miss the cache at the same time.
+    cinemeta_episodes(series, ctx).await;
 
     let series_key = series.series_canonical_key();
 
@@ -754,7 +757,7 @@ async fn tmdb_season_episodes(
         .await?;
 
     let anchor = gp.series_canonical_key();
-    let episodes: Vec<db::Media> = season_details
+    let mut episodes: Vec<db::Media> = season_details
         .episodes
         .unwrap_or_default()
         .into_iter()
@@ -767,11 +770,144 @@ async fn tmdb_season_episodes(
             stub
         })
         .collect::<Vec<_>>();
+    add_episode_external_ids(&client, series_tmdb_id, season_number, &mut episodes)
+        .await;
+    if let (Some(cinemeta), Some(imdb)) = (
+        cinemeta_episodes(gp, ctx).await,
+        gp.external_ids
+            .imdb
+            .as_deref(),
+    ) {
+        add_stremio_ids(&cinemeta, imdb, &mut episodes);
+    }
 
     if episodes.is_empty() {
         Ok(None)
     } else {
         Ok(Some(episodes))
+    }
+}
+
+/// Gives each episode of a season its own TVDB and IMDb id. TMDB's season
+/// listing has none, and they are what pins an episode to the right video of
+/// an addon that numbers the show differently (Cinemeta follows IMDb/TVDB):
+/// see `match_episode_video`. Asked [`MAX_APPENDS`] episodes per call rather
+/// than one call per episode, and cached for a day since they don't change.
+/// A failed call leaves those episodes without, to be matched by title.
+///
+/// [`MAX_APPENDS`]: sdks::tmdb::series::MAX_APPENDS
+async fn add_episode_external_ids(
+    client: &sdks::RestClient<sdks::BearerAuth>,
+    series_tmdb_id: i64,
+    season_number: i64,
+    episodes: &mut [db::Media],
+) {
+    let numbers: Vec<i64> = episodes
+        .iter()
+        .filter_map(|e| e.idx)
+        .collect();
+    let batches = futures::future::join_all(
+        numbers
+            .chunks(sdks::tmdb::series::MAX_APPENDS)
+            .map(|chunk| {
+                client.execute(
+                    sdks::tmdb::series::EpisodeExternalIdsBatchEndpoint {
+                        series_id: series_tmdb_id,
+                        season_number,
+                        episode_numbers: chunk.to_vec(),
+                    }
+                    .with_cache(Duration::from_secs(86400)),
+                )
+            }),
+    )
+    .await;
+    for batch in batches {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(e) => {
+                debug!(series_tmdb_id, season_number, error = %e, "episode external ids failed");
+                continue;
+            }
+        };
+        for episode in episodes.iter_mut() {
+            let Some(ids) = episode
+                .idx
+                .and_then(|idx| batch.get(season_number, idx))
+            else {
+                continue;
+            };
+            episode
+                .external_ids
+                .tvdb = ids.tvdb_id;
+            episode
+                .external_ids
+                .imdb = ids
+                .imdb_id
+                .clone()
+                .and_then(|s| db::NonEmptyString::try_new(s).ok());
+        }
+    }
+}
+
+/// Cinemeta's episodes of `series`, by its IMDb id: TVDB's aired order,
+/// which stream addons read episode ids in. `None` without an IMDb id or
+/// when Cinemeta can't be reached; the episodes are then asked for by our
+/// own numbers, as before.
+async fn cinemeta_episodes(
+    series: &db::Media,
+    ctx: &AppContext,
+) -> Option<Arc<sdks::cinemeta::SeriesEpisodes>> {
+    let imdb_id = series
+        .external_ids
+        .imdb
+        .as_deref()?
+        .to_string();
+    let client = sdks::cinemeta::client(
+        &ctx.config
+            .cinemeta_base_url,
+    )
+    .ok()?;
+    match client
+        .execute_arc(
+            sdks::cinemeta::SeriesEpisodesEndpoint {
+                imdb_id: imdb_id.clone(),
+            }
+            .with_cache(Duration::from_secs(6 * 3600)),
+        )
+        .await
+    {
+        Ok(episodes) => Some(episodes),
+        Err(e) => {
+            debug!(imdb_id, error = %e, "cinemeta episodes failed");
+            None
+        }
+    }
+}
+
+/// Gives each episode with a TVDB id the Stremio id stream addons know it
+/// by: the series' IMDb id with the season and episode in TVDB's aired order,
+/// as Cinemeta lists it. Ours are TMDB's, which can differ (PAW Patrol's
+/// S2E14 is their S2E9), and asking by them gets another episode's streams.
+/// Set even when the numbers agree, so a stored one can't go stale.
+fn add_stremio_ids(
+    cinemeta: &sdks::cinemeta::SeriesEpisodes,
+    series_imdb: &str,
+    episodes: &mut [db::Media],
+) {
+    for episode in episodes.iter_mut() {
+        let Some(listed) = episode
+            .external_ids
+            .tvdb
+            .and_then(|id| cinemeta.by_tvdb_id(id))
+        else {
+            continue;
+        };
+        episode
+            .external_ids
+            .custom_stremio_id = Some(format!(
+            "{series_imdb}:{}:{}",
+            listed.season, listed.episode
+        ));
     }
 }
 
@@ -2279,6 +2415,40 @@ async fn tmdb_remote_images(
 mod tests {
     use super::*;
     use remux_sdks::Endpoint;
+
+    #[test]
+    fn episodes_get_the_stremio_id_of_their_tvdb_numbering() {
+        let cinemeta: sdks::cinemeta::SeriesEpisodes =
+            serde_json::from_value(serde_json::json!({"meta": {"videos": [
+                {"season": 2, "episode": 9, "tvdb_id": 5050934}
+            ]}}))
+            .unwrap();
+        let episode = |idx, tvdb| db::Media {
+            kind: db::MediaKind::Episode,
+            parent_idx: Some(2),
+            idx: Some(idx),
+            external_ids: db::ExternalIds {
+                tvdb,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut episodes = vec![
+            episode(14, Some(5050934)),
+            episode(15, Some(1)),
+            episode(16, None),
+        ];
+        add_stremio_ids(&cinemeta, "tt3121722", &mut episodes);
+        let ids: Vec<_> = episodes
+            .iter()
+            .map(|e| {
+                e.external_ids
+                    .custom_stremio_id
+                    .as_deref()
+            })
+            .collect();
+        assert_eq!(ids, [Some("tt3121722:2:9"), None, None]);
+    }
 
     #[test]
     fn tmdb_trailers_are_youtube_trailers_and_absent_without_videos() {

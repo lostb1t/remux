@@ -319,9 +319,146 @@ impl Endpoint for EpisodeExternalIdsEndpoint {
     }
 }
 
+/// Most `append_to_response` sub-requests TMDB answers in one call; with one
+/// more it rejects the whole request.
+pub const MAX_APPENDS: usize = 20;
+
+/// The external ids of up to [`MAX_APPENDS`] episodes of one season in a
+/// single call. TMDB's season listing carries no ids per episode, and asking
+/// for them one episode at a time costs a call per episode. An episode TMDB
+/// doesn't have is left out of the answer rather than failing it.
+#[derive(Debug, Clone)]
+pub struct EpisodeExternalIdsBatchEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+    pub episode_numbers: Vec<i64>,
+}
+
+impl Endpoint for EpisodeExternalIdsBatchEndpoint {
+    type Output = EpisodeExternalIdsBatch;
+
+    fn path(&self) -> String {
+        format!("tv/{}", self.series_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        let appends = self
+            .episode_numbers
+            .iter()
+            .map(|e| format!("season/{}/episode/{e}/external_ids", self.season_number))
+            .collect::<Vec<_>>()
+            .join(",");
+        [("append_to_response", appends)]
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "std::collections::HashMap<String, serde_json::Value>")]
+pub struct EpisodeExternalIdsBatch {
+    pub episodes: Vec<EpisodeExternalIds>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpisodeExternalIds {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub ids: super::ExternalIds,
+}
+
+impl EpisodeExternalIdsBatch {
+    pub fn get(
+        &self,
+        season_number: i64,
+        episode_number: i64,
+    ) -> Option<&super::ExternalIds> {
+        self.episodes
+            .iter()
+            .find(|e| {
+                e.season_number == season_number && e.episode_number == episode_number
+            })
+            .map(|e| &e.ids)
+    }
+}
+
+/// Keeps only the appended `season/S/episode/E/external_ids` entries of the
+/// series response, not the series itself.
+impl From<std::collections::HashMap<String, serde_json::Value>>
+    for EpisodeExternalIdsBatch
+{
+    fn from(response: std::collections::HashMap<String, serde_json::Value>) -> Self {
+        let episodes = response
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let rest = key.strip_prefix("season/")?;
+                let (season, rest) = rest.split_once("/episode/")?;
+                let episode = rest.strip_suffix("/external_ids")?;
+                Some(EpisodeExternalIds {
+                    season_number: season
+                        .parse()
+                        .ok()?,
+                    episode_number: episode
+                        .parse()
+                        .ok()?,
+                    ids: serde_json::from_value(value).ok()?,
+                })
+            })
+            .collect();
+        Self { episodes }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn episode_id_batches_keep_only_the_appended_episodes() {
+        let endpoint = EpisodeExternalIdsBatchEndpoint {
+            series_id: 57532,
+            season_number: 2,
+            episode_numbers: vec![1, 2],
+        };
+        assert_eq!(endpoint.path(), "tv/57532");
+        let query = serde_json::to_value(endpoint.query_params()).unwrap();
+        assert_eq!(
+            query[0][1],
+            "season/2/episode/1/external_ids,season/2/episode/2/external_ids"
+        );
+
+        let batch: EpisodeExternalIdsBatch = serde_json::from_value(serde_json::json!({
+            "id": 57532,
+            "name": "PAW Patrol",
+            "external_ids": {"tvdb_id": 1},
+            "season/2/episode/1/external_ids": {"imdb_id": null, "tvdb_id": 4963614},
+            "season/2/episode/2/external_ids": {"imdb_id": "tt1", "tvdb_id": null}
+        }))
+        .unwrap();
+        assert_eq!(
+            batch
+                .episodes
+                .len(),
+            2
+        );
+        assert_eq!(
+            batch
+                .get(2, 1)
+                .and_then(|i| i.tvdb_id),
+            Some(4963614)
+        );
+        assert_eq!(
+            batch
+                .get(2, 2)
+                .and_then(|i| i
+                    .imdb_id
+                    .as_deref()),
+            Some("tt1")
+        );
+        assert!(
+            batch
+                .get(2, 3)
+                .is_none()
+        );
+    }
 
     #[test]
     fn external_id_endpoints_address_the_child_not_the_series() {

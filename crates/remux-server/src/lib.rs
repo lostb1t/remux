@@ -633,6 +633,10 @@ pub struct Config {
     /// Base URL for the TMDB API. Overridable for testing.
     #[serde(default = "default_tmdb_base_url")]
     pub tmdb_base_url: String,
+    /// Base URL for Cinemeta, the source of TVDB episode numbering for
+    /// stream ids. Overridable for testing.
+    #[serde(default = "default_cinemeta_base_url")]
+    pub cinemeta_base_url: String,
     /// Base URL for remuxdb. When set, probe results are submitted after each live probe.
     #[serde(default = "default_remuxdb_url")]
     pub remuxdb_url: Option<String>,
@@ -684,6 +688,10 @@ fn default_log_file_retention_days() -> u32 {
 
 fn default_tmdb_base_url() -> String {
     "https://api.themoviedb.org/3/".to_string()
+}
+
+fn default_cinemeta_base_url() -> String {
+    sdks::cinemeta::DEFAULT_BASE_URL.to_string()
 }
 
 fn default_bgutil_script_path() -> std::path::PathBuf {
@@ -802,6 +810,7 @@ impl Default for Config {
             torrent_peer_port: default_torrent_peer_port(),
             bgutil_script_path: default_bgutil_script_path(),
             tmdb_base_url: default_tmdb_base_url(),
+            cinemeta_base_url: default_cinemeta_base_url(),
             remuxdb_url: Some("https://remuxdb.1632022.xyz".to_string()),
             activity_log_retention_days: default_activity_log_retention_days(),
             jellyfin_version: default_jellyfin_version(),

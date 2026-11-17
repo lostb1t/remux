@@ -4539,6 +4539,10 @@ pub struct RemuxInfo {
     pub watchlist: Option<bool>,
     /// Whether the requesting user ignores this item.
     pub ignored: Option<bool>,
+    /// The id Stremio addons know this item by, when it has its own: for an
+    /// episode, what stream addons are asked for first (the series' IMDb id
+    /// with the season and episode in TVDB's order, e.g. `tt3121722:2:9`).
+    pub stremio_id: Option<String>,
 }
 
 /// A user's remux-only marks on one item, as returned by the watchlist and

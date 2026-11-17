@@ -1189,6 +1189,32 @@ async fn stremio_meta_fetch(
             // came from (e.g. TMDB vs IMDb double episodes). Keep our own
             // numbering; only the video id and metadata come from the addon.
             found.idx = media.idx;
+            // Same for the TVDB id: ours names this episode, the matched
+            // video's names whatever we matched, and a wrong match stored
+            // over ours would be trusted as the match next time.
+            if media
+                .external_ids
+                .tvdb
+                .is_some()
+            {
+                found
+                    .external_ids
+                    .tvdb = media
+                    .external_ids
+                    .tvdb;
+            }
+            // And for the Stremio id, when the episode already has one: a
+            // TMDB episode gets it from Cinemeta by its TVDB id, in the
+            // numbering stream addons read, which this addon's list (and
+            // this match) need not follow.
+            if let Some(id) = &media
+                .external_ids
+                .custom_stremio_id
+            {
+                found
+                    .external_ids
+                    .custom_stremio_id = Some(id.clone());
+            }
             let relations = build_episode_relations(media, meta_ep);
             if !relations.is_empty() {
                 found.relations = Some(relations);
@@ -1208,7 +1234,8 @@ async fn stremio_meta_fetch(
 /// number alone pins the wrong video id, and with it the wrong streams.
 ///
 /// So the number is only trusted when nothing contradicts it. In order:
-/// 1. the video carrying our TVDB episode id, when we have one;
+/// 1. the video carrying our TVDB episode id, in any season, when we have
+///    one (TMDB episodes get theirs when their season is listed);
 /// 2. the video at the same number, if its title matches ours;
 /// 3. the first video in the season whose title matches ours, ignoring part
 ///    suffixes like "(1)" (a merged episode maps to its first part). It has
@@ -1226,18 +1253,19 @@ fn match_episode_video<'a>(
     aired: Option<chrono::NaiveDate>,
     tvdb: Option<i64>,
 ) -> Option<&'a sdks::stremio::Episode> {
-    let in_season: Vec<&sdks::stremio::Episode> = videos
-        .iter()
-        .filter(|v| v.season == Some(season))
-        .collect();
+    // Anywhere in the series: the addon can file the episode under another
+    // season than ours, and the id names it regardless of its number.
     if let Some(v) = tvdb.and_then(|id| {
-        in_season
+        videos
             .iter()
-            .copied()
             .find(|v| v.tvdb_id == Some(id))
     }) {
         return Some(v);
     }
+    let in_season: Vec<&sdks::stremio::Episode> = videos
+        .iter()
+        .filter(|v| v.season == Some(season))
+        .collect();
     let by_index = in_season
         .iter()
         .copied()
@@ -2453,6 +2481,41 @@ mod tests {
 
     fn date(s: &str) -> Option<chrono::NaiveDate> {
         chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+    }
+
+    /// PAW Patrol: TMDB's S2E14 "The New Pup" is Cinemeta's S2E9, and TMDB
+    /// files episodes under other seasons than Cinemeta does. The TVDB id
+    /// names the video whatever its number, title or season.
+    #[test]
+    fn match_episode_video_follows_the_tvdb_id_across_seasons() {
+        let video = |season: i64, episode: i64, name: &str, tvdb: i64| {
+            serde_json::from_value::<sdks::stremio::Episode>(serde_json::json!({
+                "id": format!("tt3121722:{season}:{episode}"),
+                "name": name,
+                "season": season,
+                "episode": episode,
+                "tvdb_id": tvdb,
+            }))
+            .unwrap()
+        };
+        let videos = vec![
+            video(2, 9, "The New Pup", 5001),
+            video(2, 14, "Pups Jungle Trouble", 5002),
+            video(3, 1, "Pups Save a Mer-Pup", 5003),
+        ];
+        let id = |season, episode, title, tvdb| {
+            match_episode_video(&videos, season, episode, title, None, Some(tvdb)).map(
+                |v| {
+                    v.id.as_str()
+                },
+            )
+        };
+        assert_eq!(id(2, 14, "The New Pup", 5001), Some("tt3121722:2:9"));
+        // Another season, and the title spelled differently.
+        assert_eq!(
+            id(2, 26, "Pups Save the Mer-Pup", 5003),
+            Some("tt3121722:3:1")
+        );
     }
 
     /// Cinemeta's (IMDb's) season 6 of Friends: 25 videos, with "The One That
