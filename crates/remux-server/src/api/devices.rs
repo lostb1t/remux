@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use http::StatusCode;
-use remux_macros::{delete, get, query};
+use remux_macros::{delete, get, patch, query};
 use uuid::Uuid;
 
 use crate::{AppState, api, db, db::auth};
@@ -229,6 +229,35 @@ pub async fn get_devices(
     Ok(Json(result))
 }
 
+/// A device id is only unique per user, so both are needed.
+#[query]
+pub struct PatchDeviceQuery {
+    id: String,
+    user_id: Uuid,
+}
+
+#[patch("/remux/devices")]
+pub async fn patch_device(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Query(q): Query<PatchDeviceQuery>,
+    Json(body): Json<api::PatchDeviceRequest>,
+) -> Result<StatusCode> {
+    if !auth::Device::set_4k_support(
+        &state
+            .ctx
+            .db,
+        q.user_id,
+        &q.id,
+        body.four_k,
+    )
+    .await?
+    {
+        return Ok(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +472,156 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    async fn user_id(server: &axum_test::TestServer, auth: &HeaderValue) -> String {
+        server
+            .get("/users/me")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json::<serde_json::Value>()["Id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn four_k(
+        server: &axum_test::TestServer,
+        auth: &HeaderValue,
+    ) -> serde_json::Value {
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        body["Items"][0]["Remux"]["four_k"].clone()
+    }
+
+    #[tokio::test]
+    async fn admin_sets_a_devices_4k_support() {
+        let (server, _guard, token) = authenticated_server().await;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let user_id = user_id(&server, &auth).await;
+
+        assert_eq!(four_k(&server, &auth).await, json!("Auto"));
+
+        for value in ["Supported", "Unsupported", "Auto"] {
+            server
+                .patch("/remux/devices")
+                .add_query_param("id", "test-device")
+                .add_query_param("userId", &user_id)
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&json!({ "four_k": value }))
+                .await
+                .assert_status(StatusCode::NO_CONTENT);
+            assert_eq!(four_k(&server, &auth).await, json!(value));
+        }
+
+        server
+            .patch("/remux/devices")
+            .add_query_param("id", "no-such-device")
+            .add_query_param("userId", &user_id)
+            .add_header(http::header::AUTHORIZATION, auth)
+            .json(&json!({ "four_k": "Supported" }))
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    /// The list says whether playback has shown 4K, so the dashboard can tell
+    /// what Auto comes to, and nothing else in it moves.
+    #[tokio::test]
+    async fn the_device_list_says_whether_4k_was_learned() {
+        let (server, guard, token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let user_id: Uuid = user_id(&server, &auth)
+            .await
+            .parse()
+            .unwrap();
+
+        let mut before: serde_json::Value = server
+            .get("/devices")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .await
+            .json();
+        assert_eq!(before["Items"][0]["Remux"]["four_k_learned"], json!(false));
+
+        crate::db::auth::Device::mark_4k_capable(&ctx.db, user_id, "test-device")
+            .await
+            .unwrap();
+
+        let mut after: serde_json::Value = server
+            .get("/devices")
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await
+            .json();
+        assert_eq!(after["Items"][0]["Remux"]["four_k_learned"], json!(true));
+        assert_eq!(after["Items"][0]["Remux"]["four_k"], json!("Auto"));
+
+        // Each request moves the device's last activity, so leave that out.
+        before["Items"][0]["Remux"]["four_k_learned"] = json!(true);
+        for body in [&mut before, &mut after] {
+            body["Items"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("DateLastActivity");
+        }
+        assert_eq!(after, before);
+    }
+
+    #[tokio::test]
+    async fn a_non_admin_cannot_set_4k_support() {
+        let (server, _guard, token) = authenticated_server().await;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let admin_id = user_id(&server, &auth).await;
+
+        server
+            .post("/users/new")
+            .add_header(http::header::AUTHORIZATION, auth.clone())
+            .json(&json!({ "Name": "regular", "Password": "pw" }))
+            .await
+            .assert_status_ok();
+        let login = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER_2),
+            )
+            .json(&json!({ "Username": "regular", "Pw": "pw" }))
+            .await;
+        let regular = HeaderValue::from_str(&auth_header_with_token(
+            login.json::<serde_json::Value>()["AccessToken"]
+                .as_str()
+                .unwrap(),
+        ))
+        .unwrap();
+        let regular_id = user_id(&server, &regular).await;
+
+        for (device_id, owner) in
+            [("test-device", &admin_id), ("test-device-2", &regular_id)]
+        {
+            server
+                .patch("/remux/devices")
+                .add_query_param("id", device_id)
+                .add_query_param("userId", owner)
+                .add_header(http::header::AUTHORIZATION, regular.clone())
+                .json(&json!({ "four_k": "Supported" }))
+                .expect_failure()
+                .await
+                .assert_status(StatusCode::UNAUTHORIZED);
+        }
+
+        let body: serde_json::Value = server
+            .get("/devices")
+            .add_header(http::header::AUTHORIZATION, auth)
+            .await
+            .json();
+        for device in body["Items"]
+            .as_array()
+            .unwrap()
+        {
+            assert_eq!(device["Remux"]["four_k"], json!("Auto"));
+        }
     }
 }

@@ -466,8 +466,7 @@ async fn items_playbackinfo_inner(
             device_profile: sort_device_profile.as_ref(),
             is_4k_capable: session
                 .device
-                .is_4k_capable
-                == Some(true),
+                .supports_4k(),
             subtitle_mode,
             explicit_subtitle_index: q.subtitle_stream_index,
             max_bitrate: sort_max_bitrate,

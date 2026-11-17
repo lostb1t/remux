@@ -128,6 +128,8 @@ pub fn device_info_from(
                     .expose()
                     == caller_token,
             ),
+            four_k: Some(device.four_k_support()),
+            four_k_learned: Some(device.is_4k_capable == Some(true)),
         }),
     }
 }

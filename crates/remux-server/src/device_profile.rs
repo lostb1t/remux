@@ -1835,6 +1835,85 @@ mod tests {
         );
     }
 
+    fn hevc_resolution_ceiling(width: &str, height: &str) -> DeviceProfile {
+        let at_most =
+            |property: ProfileConditionProperty, value: &str| ProfileCondition {
+                condition: Some(ProfileConditionType::LessThanEqual),
+                property: Some(property),
+                value: Some(value.to_string()),
+                is_required: Some(true),
+            };
+        DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![
+                    at_most(ProfileConditionProperty::Width, width),
+                    at_most(ProfileConditionProperty::Height, height),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn device_4k(
+        learned: Option<bool>,
+        admin_choice: Option<bool>,
+    ) -> crate::db::auth::Device {
+        crate::db::auth::Device {
+            is_4k_capable: learned,
+            is_4k_capable_override: admin_choice,
+            ..Default::default()
+        }
+    }
+
+    /// The admin's choice stands in for what playback has shown; a profile
+    /// that states its own resolution limit still decides first.
+    #[test]
+    fn admin_4k_choice_yields_to_an_explicit_profile() {
+        let silent = DeviceProfile::default();
+        let hd_ceiling = hevc_resolution_ceiling("1920", "1080");
+        let uhd_ceiling = hevc_resolution_ceiling("3840", "2160");
+        let mut video = video_stream(3840, Some(VideoRangeType::Sdr));
+        video.height = Some(2160);
+        video.codec = Some("hevc".to_string());
+        let source = source_with(video, audio_stream("aac", 2), true);
+
+        // (learned, admin's choice, fit when the profile states no ceiling)
+        let cases = [
+            (None, None, FourKFit::Downscaled),
+            (Some(true), None, FourKFit::Native),
+            (None, Some(true), FourKFit::Native),
+            (Some(true), Some(true), FourKFit::Native),
+            (None, Some(false), FourKFit::Downscaled),
+            (Some(true), Some(false), FourKFit::Downscaled),
+        ];
+        for (learned, admin_choice, without_ceiling) in cases {
+            let supports_4k = device_4k(learned, admin_choice).supports_4k();
+            assert_eq!(
+                four_k_fit(&source, Some(&silent), supports_4k),
+                without_ceiling,
+                "learned {learned:?}, admin {admin_choice:?}, no ceiling"
+            );
+            assert_eq!(
+                four_k_fit(&source, None, supports_4k),
+                without_ceiling,
+                "learned {learned:?}, admin {admin_choice:?}, no profile"
+            );
+            assert_eq!(
+                four_k_fit(&source, Some(&hd_ceiling), supports_4k),
+                FourKFit::Unsupported,
+                "learned {learned:?}, admin {admin_choice:?}, 1080p ceiling"
+            );
+            assert_eq!(
+                four_k_fit(&source, Some(&uhd_ceiling), supports_4k),
+                FourKFit::Native,
+                "learned {learned:?}, admin {admin_choice:?}, 4K ceiling"
+            );
+        }
+    }
+
     #[test]
     fn direct_play_does_not_reject_aliased_subtitle_codecs() {
         let profile = DeviceProfile {

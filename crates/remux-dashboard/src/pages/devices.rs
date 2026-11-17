@@ -6,7 +6,8 @@ use crate::{
 };
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    DeleteDevice, DeleteUserDevices, DeviceInfo, GetDevices, QueryResult,
+    DeleteDevice, DeleteUserDevices, DeviceInfo, FourKSupport, GetDevices, PatchDevice,
+    PatchDeviceRequest, QueryResult,
 };
 use std::collections::HashMap;
 
@@ -100,6 +101,7 @@ pub fn DevicesPage(app_state: AppState) -> Element {
 
     let app_state_revoke = app_state.clone();
     let app_state_revoke_all = app_state.clone();
+    let app_state_four_k = app_state.clone();
 
     let total = *total_count.read();
     let total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -107,6 +109,9 @@ pub fn DevicesPage(app_state: AppState) -> Element {
 
     rsx! {
         Card { title: "All Devices", tight: true,
+            div { class: "field-hint device-hint",
+                "Auto learns it after ten minutes of 4K playback."
+            }
             div { class: "device-search",
                 input {
                     r#type: "text",
@@ -166,6 +171,26 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                                                     .remux
                                                     .as_ref()
                                                     .and_then(|r| r.remote_end_point.clone());
+                                                let owner_id = device
+                                                    .remux
+                                                    .as_ref()
+                                                    .and_then(|r| r.user_id);
+                                                let four_k = device
+                                                    .remux
+                                                    .as_ref()
+                                                    .and_then(|r| r.four_k)
+                                                    .unwrap_or_default();
+                                                let has_4k = match four_k {
+                                                    FourKSupport::Supported => true,
+                                                    FourKSupport::Unsupported => false,
+                                                    FourKSupport::Auto => device
+                                                        .remux
+                                                        .as_ref()
+                                                        .and_then(|r| r.four_k_learned)
+                                                        .unwrap_or(false),
+                                                };
+                                                let device_id_four_k = device_id.clone();
+                                                let client_four_k = app_state_four_k.clone();
                                                 rsx! {
                                                     div { class: "device-row", key: "{device_id}",
                                                         div { class: "device-col-name",
@@ -206,6 +231,50 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                                                             }
                                                         }
                                                         div { class: "device-col-action",
+                                                            if let Some(owner_id) = owner_id {
+                                                                label {
+                                                                    class: if has_4k { "device-4k device-4k-on" } else { "device-4k" },
+                                                                    span { "4K" }
+                                                                    select {
+                                                                        class: "select-input device-4k-select",
+                                                                        value: "{four_k}",
+                                                                        onchange: move |event: Event<FormData>| {
+                                                                            let Ok(choice) = event.value().parse::<FourKSupport>() else {
+                                                                                return;
+                                                                            };
+                                                                            let client = client_four_k.clone();
+                                                                            let id = device_id_four_k.clone();
+                                                                            let mut list = devices;
+                                                                            let mut err = error;
+                                                                            spawn(async move {
+                                                                                let request = PatchDevice {
+                                                                                    id: id.clone(),
+                                                                                    user_id: owner_id,
+                                                                                    patch: PatchDeviceRequest { four_k: choice },
+                                                                                };
+                                                                                match client.execute(request).await {
+                                                                                    Ok(_) => {
+                                                                                        for d in list.write().iter_mut() {
+                                                                                            if d.id.as_deref() != Some(id.as_str()) {
+                                                                                                continue;
+                                                                                            }
+                                                                                            if let Some(r) = d.remux.as_mut() {
+                                                                                                if r.user_id == Some(owner_id) {
+                                                                                                    r.four_k = Some(choice);
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                    Err(e) => err.set(Some(format!("Failed to change 4K setting: {e}"))),
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                        option { value: "Auto", selected: four_k == FourKSupport::Auto, "Auto" }
+                                                                        option { value: "Supported", selected: four_k == FourKSupport::Supported, "Supports 4K" }
+                                                                        option { value: "Unsupported", selected: four_k == FourKSupport::Unsupported, "Does not support 4K" }
+                                                                    }
+                                                                }
+                                                            }
                                                             button {
                                                                 class: "btn-device-revoke",
                                                                 disabled: is_self,

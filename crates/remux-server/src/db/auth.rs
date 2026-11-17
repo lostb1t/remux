@@ -25,11 +25,57 @@ pub struct Device {
     pub device_profile: Option<sqlx::types::Json<remux_sdks::remux::DeviceProfile>>,
     #[serde(skip)]
     pub is_4k_capable: Option<bool>,
+    /// An admin's choice, which wins over `is_4k_capable`. `None` is Auto.
+    #[serde(skip)]
+    pub is_4k_capable_override: Option<bool>,
     pub remote_ip: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
 impl Device {
+    /// Whether versions are ranked for this device as for a 4K screen: the
+    /// admin's choice if there is one, else what playback has shown. A
+    /// profile's own resolution limits still come first.
+    pub fn supports_4k(&self) -> bool {
+        self.is_4k_capable_override
+            .or(self.is_4k_capable)
+            == Some(true)
+    }
+
+    pub fn four_k_support(&self) -> crate::api::FourKSupport {
+        match self.is_4k_capable_override {
+            None => crate::api::FourKSupport::Auto,
+            Some(true) => crate::api::FourKSupport::Supported,
+            Some(false) => crate::api::FourKSupport::Unsupported,
+        }
+    }
+
+    /// Set the admin's choice for this user's device. Returns false when no
+    /// such device exists. What playback has shown is kept, so Auto goes
+    /// back to it.
+    pub async fn set_4k_support(
+        db: &SqlitePool,
+        user_id: Uuid,
+        device_id: &str,
+        support: crate::api::FourKSupport,
+    ) -> Result<bool> {
+        let value = match support {
+            crate::api::FourKSupport::Auto => None,
+            crate::api::FourKSupport::Supported => Some(true),
+            crate::api::FourKSupport::Unsupported => Some(false),
+        };
+        let result = sqlx::query(
+            "UPDATE devices SET is_4k_capable_override = ? \
+             WHERE user_id = ? AND lower(id) = lower(?)",
+        )
+        .bind(value)
+        .bind(user_id)
+        .bind(device_id)
+        .execute(db)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub fn jellyfin_client(&self) -> Box<dyn crate::jellyfin_client::JellyfinClient> {
         crate::jellyfin_client::from_device(self)
     }
@@ -537,6 +583,7 @@ impl FromRequestParts<AppState> for AuthSession {
             capabilities: None,
             device_profile: None,
             is_4k_capable: None,
+            is_4k_capable_override: None,
             remote_ip: None,
             created_at: None,
         };
@@ -964,5 +1011,125 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 1);
+    }
+
+    async fn device_with_token(db: &SqlitePool, token: &str) -> Device {
+        Device::get_by_access_token(db, token)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn learning_4k_never_overwrites_an_admins_choice() {
+        use crate::api::FourKSupport;
+
+        let db = test_db().await;
+        let uid = Uuid::new_v4();
+        insert_device(&db, uid, "token-a").await;
+        let id = device_with_token(&db, "token-a")
+            .await
+            .id;
+
+        for choice in [FourKSupport::Unsupported, FourKSupport::Supported] {
+            assert!(
+                Device::set_4k_support(&db, uid, &id, choice)
+                    .await
+                    .unwrap()
+            );
+            Device::mark_4k_capable(&db, uid, &id)
+                .await
+                .unwrap();
+            let device = device_with_token(&db, "token-a").await;
+            assert_eq!(device.four_k_support(), choice);
+            assert_eq!(device.is_4k_capable, Some(true));
+            assert_eq!(device.supports_4k(), choice == FourKSupport::Supported);
+        }
+
+        // Back to Auto, what playback showed counts again.
+        Device::set_4k_support(&db, uid, &id, FourKSupport::Auto)
+            .await
+            .unwrap();
+        let device = device_with_token(&db, "token-a").await;
+        assert_eq!(device.four_k_support(), FourKSupport::Auto);
+        assert!(device.supports_4k());
+    }
+
+    #[tokio::test]
+    async fn setting_4k_support_needs_the_owners_id() {
+        let db = test_db().await;
+        let uid = Uuid::new_v4();
+        insert_device(&db, uid, "token-a").await;
+        let id = device_with_token(&db, "token-a")
+            .await
+            .id;
+
+        assert!(
+            !Device::set_4k_support(
+                &db,
+                Uuid::new_v4(),
+                &id,
+                crate::api::FourKSupport::Supported
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !device_with_token(&db, "token-a")
+                .await
+                .supports_4k()
+        );
+    }
+
+    /// Devices that learned 4K before the admin's choice existed keep it,
+    /// and start on Auto.
+    #[tokio::test]
+    async fn the_4k_override_migration_keeps_what_was_learned() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        let mut before = sqlx::migrate!("./migrations");
+        before.migrations = before
+            .migrations
+            .iter()
+            .filter(|m| m.version < 202611170002)
+            .cloned()
+            .collect();
+        before
+            .run(&db)
+            .await
+            .unwrap();
+        let uid = Uuid::new_v4();
+        for (token, learned) in [("token-a", Some(true)), ("token-b", None)] {
+            sqlx::query(
+                "INSERT INTO devices \
+                 (user_id, id, access_token, name, app_name, app_version, is_4k_capable) \
+                 VALUES (?, ?, ?, 'Den', 'Test', '1.0', ?)",
+            )
+            .bind(uid)
+            .bind(format!("device-{token}"))
+            .bind(token)
+            .bind(learned)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/202611170002_device_4k_override.sql"
+        ))
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let learned = device_with_token(&db, "token-a").await;
+        assert_eq!(learned.is_4k_capable_override, None);
+        assert_eq!(learned.four_k_support(), crate::api::FourKSupport::Auto);
+        assert!(learned.supports_4k());
+        assert!(
+            !device_with_token(&db, "token-b")
+                .await
+                .supports_4k()
+        );
     }
 }
