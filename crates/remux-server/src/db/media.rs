@@ -4764,23 +4764,17 @@ impl Media {
                     "ignored",
                     user_state_filter.ignored,
                 );
+                push_user_flag_filter(
+                    qb,
+                    user_state_filter.user_id,
+                    "favorite",
+                    user_state_filter.favorite,
+                );
                 push_user_liked_filter(
                     qb,
                     user_state_filter.user_id,
                     user_state_filter.liked,
                 );
-
-                // favorite — always uses EXISTS
-                if let Some(favorite) = &user_state_filter.favorite {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
-                    if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ")
-                            .push_bind(user_id);
-                    }
-                    qb.push(" AND ums.favorite = ")
-                        .push_bind(favorite)
-                        .push(")");
-                }
 
                 if user_state_filter.played == Some(true) {
                     push_played_filter(
