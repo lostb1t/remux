@@ -32,7 +32,7 @@ pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     source
         .media_streams
         .push(MediaStream {
-            type_: Some(MediaStreamType::Lyric),
+            type_: MediaStreamType::Lyric,
             index: next_idx,
             is_external: true,
             ..Default::default()
@@ -189,6 +189,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
             db::MediaKind::Subtitle => MediaType::Video,
             db::MediaKind::Intro => MediaType::Video,
+            db::MediaKind::Trailer => MediaType::Trailer,
         }
     }
 }
@@ -460,18 +461,35 @@ fn db_media_to_item_inner(
         parent_id: media
             .parent_id
             .clone(),
+        // YouTube trailers only: clients hand a remote trailer to YouTube and
+        // can't play any other URL. Direct ones are local trailers.
         remote_trailers: media
             .trailers
-            .clone()
-            .map(|j| {
-                j.into_iter()
-                    .map(|id| ExternalUrl {
-                        name: Some("YouTube".to_string()),
-                        url: Some(format!("https://www.youtube.com/watch?v={id}")),
-                    })
-                    .collect()
+            .iter()
+            .flatten()
+            .filter_map(|t| {
+                Some(ExternalUrl {
+                    name: t
+                        .name
+                        .clone(),
+                    url: Some(t.youtube_url()?),
+                })
             })
-            .unwrap_or_default(),
+            .collect(),
+        local_trailer_count: media
+            .trailers
+            .as_ref()
+            .map(|trailers| {
+                trailers
+                    .iter()
+                    .filter(|t| {
+                        t.direct_url()
+                            .is_some()
+                    })
+                    .count() as i64
+            }),
+        extra_type: (media.kind == db::MediaKind::Trailer)
+            .then(|| "Trailer".to_string()),
         series_id: matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
             .then(|| {
                 media
@@ -504,7 +522,8 @@ fn db_media_to_item_inner(
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
             | db::MediaKind::TvProgram
-            | db::MediaKind::Intro => MediaType::Video,
+            | db::MediaKind::Intro
+            | db::MediaKind::Trailer => MediaType::Video,
             db::MediaKind::Track => MediaType::Audio,
             db::MediaKind::Playlist => match media.collection_media_kind {
                 Some(db::CollectionMediaKind::Music) => MediaType::Audio,
@@ -1005,6 +1024,10 @@ fn db_media_to_item_inner(
                 .collection_image_config
                 .clone(),
             sort_order: media.sort_order,
+            stremio_id: media
+                .external_ids
+                .custom_stremio_id
+                .clone(),
         }),
         enable_media_source_display: Some(true),
         date_created: Some(

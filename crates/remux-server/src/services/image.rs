@@ -420,7 +420,7 @@ impl ImageService {
     /// on those ids means a stale composite is never served — a changed
     /// Backdrop or Logo naturally misses the old cache file and regenerates.
     /// Never registered in `media_images` — purely a cache entry, wiped like
-    /// any other by `ClearImageCacheTask`. Returns the derived cache key
+    /// any other by the Clear Cache and Clean Cache Directory tasks. Returns the derived cache key
     /// alongside the bytes so the caller can reuse it as `process_image`'s
     /// `source_key`, giving per-size variants the same change-detection.
     pub async fn cached_synthetic_thumb(

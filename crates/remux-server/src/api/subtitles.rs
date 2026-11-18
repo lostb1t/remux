@@ -199,15 +199,13 @@ fn extractable_subtitles(
     let mut embedded: Vec<&api::MediaStream> = probe
         .media_streams
         .iter()
-        .filter(|s| {
-            matches!(s.type_, Some(api::MediaStreamType::Subtitle)) && !s.is_external
-        })
+        .filter(|s| matches!(s.type_, api::MediaStreamType::Subtitle) && !s.is_external)
         .collect();
     embedded.sort_by_key(|s| s.index);
     let video_size = probe
         .media_streams
         .iter()
-        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Video)))
+        .find(|s| matches!(s.type_, api::MediaStreamType::Video))
         .and_then(|s| match (s.width, s.height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
             _ => None,
@@ -268,6 +266,142 @@ fn is_cached(path: &std::path::Path) -> bool {
             .trim()
             .is_empty()
     })
+}
+
+/// Cache path for a PGS stream, stream-copied into a raw `.sup` file. Next to
+/// the text caches, scoped per media source like `subtitle_cache_path`.
+fn pgs_cache_path(
+    data_dir: &std::path::Path,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+) -> std::path::PathBuf {
+    data_dir
+        .join("subtitle-cache")
+        .join(format!("{item_id}_{media_source_id}_{stream_index}.sup"))
+}
+
+/// Single-flight registry for PGS extractions, keyed by (item_id,
+/// media_source_id, stream_index). Same idea as
+/// `SUBTITLE_EXTRACTION_INFLIGHT`: the ffmpeg run lives in its own task, and
+/// a second request for the same track (jellyfin-web's PGS renderer fetches
+/// the `.sup` twice) joins it instead of reading the whole file again.
+static PGS_EXTRACTION_INFLIGHT: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            (Uuid, Uuid, i64),
+            Shared<BoxFuture<'static, ExtractionOutcome>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| {
+    tokio::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// Stream-copies one PGS track into `final_path` (via a temp file, renamed
+/// only once ffmpeg has finished, so a reader never sees a partial file).
+async fn extract_pgs_to_cache(
+    input_url: &str,
+    map_spec: &str,
+    final_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    if let Some(dir) = final_path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    }
+    let tmp = subtitle_cache_tmp_path(final_path);
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
+    cmd.hide_console();
+    cmd.kill_on_drop(true);
+    cmd.args(["-y", "-nostdin", "-copyts"]);
+    cmd.args(ffmpeg_http_input_args(input_url));
+    cmd.args(["-i", input_url]);
+    cmd.args(["-map", map_spec, "-an", "-vn", "-c:s", "copy", "-f", "sup"]);
+    cmd.arg(&tmp);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output =
+        match tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output()).await {
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                anyhow::bail!("subtitle extraction timed out");
+            }
+            Ok(Err(e)) => anyhow::bail!("failed to run ffmpeg: {e}"),
+            Ok(Ok(output)) => output,
+        };
+    if !output
+        .status
+        .success()
+    {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
+        anyhow::bail!("ffmpeg PGS extraction failed: {stderr}");
+    }
+    if !std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        anyhow::bail!("ffmpeg produced an empty PGS track");
+    }
+    tokio::fs::rename(&tmp, final_path)
+        .await
+        .map_err(|e| {
+            anyhow!("failed to move extracted PGS subtitle into cache: {e}")
+        })?;
+    Ok(())
+}
+
+/// Ensures the PGS track is cached as `.sup`, extracting it at most once per
+/// source and track. Previously every request re-read the whole (possibly
+/// remote) file.
+async fn ensure_pgs_cached(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    stream_index: i64,
+    map_spec: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = pgs_cache_path(data_dir, item_id, media_source_id, stream_index);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        debug!(%item_id, stream_index, "PGS subtitle cache hit");
+        return Ok(path);
+    }
+    info!(%item_id, stream_index, "PGS subtitle cache miss — extracting on-demand");
+    let key = (item_id, media_source_id, stream_index);
+    let shared = {
+        let mut inflight = PGS_EXTRACTION_INFLIGHT
+            .lock()
+            .await;
+        if let Some(existing) = inflight.get(&key) {
+            existing.clone()
+        } else {
+            let input_url = input_url.to_string();
+            let map_spec = map_spec.to_string();
+            let final_path = path.clone();
+            let future: BoxFuture<'static, ExtractionOutcome> = Box::pin(async move {
+                let result = extract_pgs_to_cache(&input_url, &map_spec, &final_path)
+                    .await
+                    .map_err(|e| e.to_string());
+                PGS_EXTRACTION_INFLIGHT
+                    .lock()
+                    .await
+                    .remove(&key);
+                result
+            });
+            let shared = future.shared();
+            // Runs to completion even if the requesting client disconnects.
+            tokio::spawn(shared.clone());
+            inflight.insert(key, shared.clone());
+            shared
+        }
+    };
+    shared
+        .await
+        .map_err(|e| anyhow!(e))?;
+    Ok(path)
 }
 
 /// The path ffmpeg actually writes to for a given final cache path — never
@@ -630,6 +764,312 @@ pub async fn subtitles_stream_tickless(
         format,
     )
     .await
+}
+
+/// Cache path for one container attachment (e.g. an MKV font), next to the
+/// subtitle caches and scoped per media source like them.
+fn attachment_cache_path(
+    data_dir: &std::path::Path,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    index: i64,
+) -> std::path::PathBuf {
+    data_dir
+        .join("subtitle-cache")
+        .join(format!("{item_id}_{media_source_id}_attachment_{index}"))
+}
+
+/// Single-flight registry for attachment dumps, keyed by (item_id,
+/// media_source_id). jellyfin-web requests all fonts of a source at once;
+/// one ffmpeg run dumps every attachment, the other requests join it.
+static ATTACHMENT_EXTRACTION_INFLIGHT: std::sync::LazyLock<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            (Uuid, Uuid),
+            Shared<BoxFuture<'static, ExtractionOutcome>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| {
+    tokio::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// ffmpeg arguments that dump every attachment in `indexes` to its temp path.
+/// Attachments live in the container header, so ffmpeg reads the start of the
+/// file (plus a seek if the muxer put them at the end), not the whole file;
+/// `-t 0 -f null -` gives it an output so it exits right after opening.
+fn build_attachment_dump_args(
+    input_url: &str,
+    targets: &[(i64, std::path::PathBuf)],
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["-y".into(), "-nostdin".into()];
+    for (index, tmp) in targets {
+        args.push(format!("-dump_attachment:{index}").into());
+        args.push(
+            tmp.clone()
+                .into_os_string(),
+        );
+    }
+    args.extend(
+        ffmpeg_http_input_args(input_url)
+            .iter()
+            .map(|a| std::ffi::OsString::from(*a)),
+    );
+    args.extend(["-i".into(), input_url.into(), "-t".into(), "0".into()]);
+    args.extend(["-f".into(), "null".into(), "-".into()]);
+    args
+}
+
+async fn dump_attachments_to_cache(
+    input_url: &str,
+    targets: &[(i64, std::path::PathBuf)],
+) -> anyhow::Result<()> {
+    let Some(dir) = targets
+        .first()
+        .and_then(|(_, p)| p.parent())
+    else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    let tmp_targets: Vec<(i64, std::path::PathBuf)> = targets
+        .iter()
+        .map(|(i, p)| (*i, subtitle_cache_tmp_path(p)))
+        .collect();
+    let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
+    cmd.hide_console();
+    cmd.kill_on_drop(true);
+    cmd.args(build_attachment_dump_args(input_url, &tmp_targets));
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| anyhow!("attachment extraction timed out"))?
+        .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+    // Move whatever ffmpeg wrote, even if it exited non-zero: a single
+    // unreadable attachment shouldn't cost the others.
+    let mut moved = 0;
+    for ((_, tmp), (_, final_path)) in tmp_targets
+        .iter()
+        .zip(targets)
+    {
+        if std::fs::metadata(tmp).is_ok_and(|m| m.len() > 0)
+            && tokio::fs::rename(tmp, final_path)
+                .await
+                .is_ok()
+        {
+            moved += 1;
+        } else {
+            let _ = tokio::fs::remove_file(tmp).await;
+        }
+    }
+    if moved == 0 {
+        let stderr = crate::playback::probe::redact_urls_in(&String::from_utf8_lossy(
+            &output.stderr,
+        ));
+        anyhow::bail!("ffmpeg attachment extraction produced nothing: {stderr}");
+    }
+    Ok(())
+}
+
+/// Ensures attachment `index` is cached, dumping every not-yet-cached
+/// attachment of the source in one ffmpeg run if needed.
+async fn ensure_attachment_cached(
+    data_dir: &std::path::Path,
+    input_url: &str,
+    item_id: Uuid,
+    media_source_id: Uuid,
+    attachments: &[api::MediaAttachment],
+    index: i64,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = attachment_cache_path(data_dir, item_id, media_source_id, index);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        return Ok(path);
+    }
+    let key = (item_id, media_source_id);
+    let shared = {
+        let mut inflight = ATTACHMENT_EXTRACTION_INFLIGHT
+            .lock()
+            .await;
+        if let Some(existing) = inflight.get(&key) {
+            existing.clone()
+        } else {
+            let targets: Vec<(i64, std::path::PathBuf)> = attachments
+                .iter()
+                .map(|a| {
+                    (
+                        a.index,
+                        attachment_cache_path(
+                            data_dir,
+                            item_id,
+                            media_source_id,
+                            a.index,
+                        ),
+                    )
+                })
+                .filter(|(_, p)| !std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
+                .collect();
+            info!(%item_id, count = targets.len(), "attachment cache miss — extracting on-demand");
+            let input_url = input_url.to_string();
+            let future: BoxFuture<'static, ExtractionOutcome> = Box::pin(async move {
+                let result = dump_attachments_to_cache(&input_url, &targets)
+                    .await
+                    .map_err(|e| e.to_string());
+                ATTACHMENT_EXTRACTION_INFLIGHT
+                    .lock()
+                    .await
+                    .remove(&key);
+                result
+            });
+            let shared = future.shared();
+            tokio::spawn(shared.clone());
+            inflight.insert(key, shared.clone());
+            shared
+        }
+    };
+    shared
+        .await
+        .map_err(|e| anyhow!(e))?;
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        Ok(path)
+    } else {
+        Err(anyhow!("attachment {index} could not be extracted"))
+    }
+}
+
+/// The `Content-Type` to serve an attachment as. Its `mimetype` tag comes from
+/// the file, so only a font type is passed on: anything else (a crafted
+/// `text/html` attachment) would otherwise run on this origin when opened.
+fn attachment_content_type(mime_type: Option<&str>) -> &str {
+    match mime_type.map(str::trim) {
+        Some(mime)
+            if mime.starts_with("font/")
+                || mime.starts_with("application/x-font-")
+                || mime.starts_with("application/font-")
+                || mime == "application/vnd.ms-opentype" =>
+        {
+            mime
+        }
+        _ => "application/octet-stream",
+    }
+}
+
+/// A container attachment (Jellyfin `GET /Videos/{id}/{mediaSourceId}/Attachments/{index}`),
+/// e.g. a font an ASS/SSA subtitle needs. Advertised in PlaybackInfo's
+/// `MediaAttachments` (see `apply_subtitle_delivery`).
+#[get("/videos/{item_id}/{media_source_id}/attachments/{index}")]
+pub async fn attachment_stream(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((item_id, media_source_id, index)): Path<(Uuid, Uuid, i64)>,
+) -> Result<impl IntoResponse> {
+    let selected_id = crate::services::StreamService::device_selected_stream_for(
+        &state.ctx,
+        &session
+            .device
+            .id,
+        item_id,
+        media_source_id,
+    )
+    .unwrap_or(media_source_id);
+    let Ok(media) = crate::services::StreamService::lookup(
+        &state.ctx,
+        item_id,
+        Some(selected_id),
+        None,
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    else {
+        return Ok((StatusCode::NOT_FOUND, "stream not found").into_response());
+    };
+    let attachments = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| {
+            p.media_attachments
+                .clone()
+        })
+        .unwrap_or_default();
+    let Some(attachment) = attachments
+        .iter()
+        .find(|a| a.index == index)
+    else {
+        return Ok((StatusCode::NOT_FOUND, "attachment not found").into_response());
+    };
+    // Same gate as embedded subtitles: never read a source we may not read.
+    if !media
+        .allows_subtitle_extraction(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+    {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            "subtitle extraction is disabled for this source",
+        )
+            .into_response());
+    }
+    let url = media
+        .stream_info
+        .as_ref()
+        .map(|si| {
+            si.descriptor
+                .server_input(
+                    media.id,
+                    state
+                        .ctx
+                        .config
+                        .port,
+                )
+        })
+        .context_not_found("media source has no URL")?;
+    let path = match ensure_attachment_cached(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        &url,
+        item_id,
+        media_source_id,
+        &attachments,
+        index,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(%item_id, index, "attachment extraction failed: {e}");
+            return Ok(
+                (StatusCode::NOT_FOUND, "attachment not available").into_response()
+            );
+        }
+    };
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| anyhow!("failed to read cached attachment: {e}"))?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            "Content-Type",
+            attachment_content_type(
+                attachment
+                    .mime_type
+                    .as_deref(),
+            ),
+        )
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "public, max-age=86400")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(Body::from(bytes))
+        .unwrap())
 }
 
 /// Fetch the raw bytes of an external subtitle URL through our stream proxy.
@@ -1014,10 +1454,7 @@ async fn subtitles_stream_inner(
                     .clone()
                     .map(|mut probe| {
                         for stream in &mut probe.media_streams {
-                            if matches!(
-                                stream.type_,
-                                Some(api::MediaStreamType::Subtitle)
-                            ) {
+                            if matches!(stream.type_, api::MediaStreamType::Subtitle) {
                                 stream.is_text_subtitle_stream =
                                     stream.is_text_subtitle_stream();
                             }
@@ -1144,7 +1581,7 @@ async fn subtitles_stream_inner(
             let mut sub_indexes: Vec<i64> = probe
                 .media_streams
                 .iter()
-                .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
+                .filter(|s| matches!(s.type_, api::MediaStreamType::Subtitle))
                 .map(|s| s.index)
                 .collect();
             sub_indexes.sort_unstable();
@@ -1157,44 +1594,40 @@ async fn subtitles_stream_inner(
 
     let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
 
-    // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
+    // Binary formats (PGS/SUP): stream-copied once into the cache, then served
+    // from there like the text formats.
     if is_binary {
-        let mut cmd = tokio::process::Command::new(crate::tools::ffmpeg());
-        cmd.hide_console();
-        cmd.kill_on_drop(true);
-        cmd.args(["-copyts"]);
-        cmd.args(ffmpeg_http_input_args(&url));
-        cmd.args(["-i", &url]);
-        cmd.args([
-            "-map",
+        let cache_path = match ensure_pgs_cached(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            &url,
+            item_id,
+            media_source_id,
+            stream_index,
             &map_spec,
-            "-an",
-            "-vn",
-            "-c:s",
-            "copy",
-            "-f",
-            output_format.as_str(),
-            "-",
-        ]);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        let output = tokio::time::timeout(SUBTITLE_EXTRACTION_TIMEOUT, cmd.output())
-            .await
-            .map_err(|_| anyhow!("subtitle extraction timed out"))?
-            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
-        if !output
-            .status
-            .success()
+        )
+        .await
         {
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("subtitle extraction failed"))
-                .unwrap());
-        }
+            Ok(p) => p,
+            Err(e) => {
+                error!(%item_id, stream_index, %map_spec, "PGS subtitle extraction failed: {e}");
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("subtitle extraction failed"))
+                    .unwrap());
+            }
+        };
+        let bytes = tokio::fs::read(&cache_path)
+            .await
+            .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?;
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", content_type)
-            .body(Body::from(output.stdout))
+            .header("Cache-Control", "public, max-age=3600")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Body::from(bytes))
             .unwrap());
     }
 
@@ -1420,7 +1853,7 @@ pub(crate) fn append_external_subtitles(
                         )
                 });
             if wants_default && i == 0 && in_preferred_language {
-                stream.is_default = Some(true);
+                stream.is_default = true;
                 source.default_subtitle_stream_index = Some(next_idx);
             }
             source
@@ -1463,7 +1896,7 @@ fn has_supported_embedded_subtitle(
         .media_streams
         .iter()
         .any(|stream| {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle)
+            if stream.type_ != api::MediaStreamType::Subtitle
                 || stream.is_external
                 || stream
                     .delivery_method
@@ -1527,9 +1960,7 @@ pub(crate) fn drop_unsupported_embedded_subtitles_with_external_match(
     source
         .media_streams
         .retain(|stream| {
-            if stream.type_ != Some(api::MediaStreamType::Subtitle)
-                || stream.is_external
-            {
+            if stream.type_ != api::MediaStreamType::Subtitle || stream.is_external {
                 return true;
             }
             let Some(codec) = stream
@@ -1658,6 +2089,78 @@ mod tests {
     }
 
     #[test]
+    fn pgs_cache_path_is_scoped_per_source_and_track() {
+        let data_dir = std::path::Path::new("/data");
+        let item = Uuid::nil();
+        let a = pgs_cache_path(data_dir, item, Uuid::from_u128(1), 3);
+        let b = pgs_cache_path(data_dir, item, Uuid::from_u128(2), 3);
+        let c = pgs_cache_path(data_dir, item, Uuid::from_u128(1), 4);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(
+            a.extension()
+                .and_then(|e| e.to_str()),
+            Some("sup")
+        );
+        assert_eq!(
+            a.parent(),
+            Some(
+                data_dir
+                    .join("subtitle-cache")
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_pgs_track_is_served_without_running_ffmpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = Uuid::from_u128(7);
+        let source = Uuid::from_u128(8);
+        let path = pgs_cache_path(dir.path(), item, source, 2);
+        std::fs::create_dir_all(
+            path.parent()
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&path, b"PG\x00\x01fake").unwrap();
+
+        // An unreachable input: any ffmpeg run would fail, so Ok proves the
+        // cache was used.
+        let got = ensure_pgs_cached(
+            dir.path(),
+            "http://127.0.0.1:9/never",
+            item,
+            source,
+            2,
+            "0:s:0",
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, path);
+    }
+
+    #[tokio::test]
+    async fn failed_pgs_extraction_leaves_no_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = Uuid::from_u128(9);
+        let source = Uuid::from_u128(10);
+        let result = ensure_pgs_cached(
+            dir.path(),
+            "http://127.0.0.1:9/never",
+            item,
+            source,
+            2,
+            "0:s:0",
+        )
+        .await;
+        assert!(result.is_err());
+        let path = pgs_cache_path(dir.path(), item, source, 2);
+        assert!(!path.exists());
+        assert!(!subtitle_cache_tmp_path(&path).exists());
+    }
+
+    #[test]
     fn subtitle_cache_path_is_scoped_per_media_source() {
         // Regression test: two sources of the same item (different
         // releases/qualities) must never collide on the same cache file,
@@ -1712,12 +2215,12 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     index: 0,
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     ..Default::default()
                 },
                 api::MediaStream {
                     index: 2,
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     ..Default::default()
                 },
             ],
@@ -1774,7 +2277,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1822,12 +2325,12 @@ mod tests {
         let existing = vec![
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 ..Default::default()
             },
@@ -1920,7 +2423,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("eng".into()),
                 ..Default::default()
@@ -2038,7 +2541,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("PGSSUB".into()),
                 language: Some("nld".into()),
                 ..Default::default()
@@ -2091,7 +2594,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("eng".into()),
                 ..Default::default()
@@ -2173,7 +2676,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("pgssub".into()),
                 language: Some("dut".into()),
                 ..Default::default()
@@ -2288,7 +2791,7 @@ mod tests {
     fn requested_ass_output_is_planned_for_an_srt_track() {
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 2,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("subrip".into()),
             is_external: false,
             ..Default::default()
@@ -2317,35 +2820,35 @@ mod tests {
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 5,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 1,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("mov_text".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 3,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 is_external: true,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("hdmv_pgs_subtitle".into()),
                 is_external: false,
                 ..Default::default()
             },
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 codec: Some("aac".into()),
                 ..Default::default()
             },
@@ -2379,7 +2882,7 @@ mod tests {
     fn is_known_text_codec_rejects_unknown_and_missing_codecs() {
         let sub = |index: i64, codec: Option<&str>| api::MediaStream {
             index,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: codec.map(Into::into),
             ..Default::default()
         };
@@ -2404,7 +2907,7 @@ mod tests {
         // ever get a .ass file, and such a request would 404 forever.
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("ass".into()),
             ..Default::default()
         }]);
@@ -2454,19 +2957,19 @@ mod tests {
         let source = source_with_subtitles(vec![
             api::MediaStream {
                 index: 0,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("subrip".into()),
                 ..Default::default()
             },
             api::MediaStream {
                 index: 1,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("ass".into()),
                 ..Default::default()
             },
             api::MediaStream {
                 index: 2,
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 codec: Some("hdmv_pgs_subtitle".into()),
                 ..Default::default()
             },
@@ -2569,7 +3072,7 @@ mod tests {
     fn sub_stream(index: i64, codec: &str) -> api::MediaStream {
         api::MediaStream {
             index,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some(codec.into()),
             ..Default::default()
         }
@@ -2578,7 +3081,7 @@ mod tests {
     fn video_stream(width: Option<i64>, height: Option<i64>) -> api::MediaStream {
         api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Video),
+            type_: api::MediaStreamType::Video,
             codec: Some("h264".into()),
             width,
             height,
@@ -2707,7 +3210,7 @@ mod tests {
         let data_dir = std::path::Path::new("/tmp/remux-subtitle-test");
         let source = source_with_subtitles(vec![api::MediaStream {
             index: 0,
-            type_: Some(api::MediaStreamType::Subtitle),
+            type_: api::MediaStreamType::Subtitle,
             codec: Some("subrip".into()),
             ..Default::default()
         }]);
@@ -2725,6 +3228,124 @@ mod tests {
         assert!(
             !args.contains(&"-reconnect".to_string()),
             "a local path should not get http reconnect args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn attachment_dump_args_name_each_index_and_exit_after_opening() {
+        let targets = vec![
+            (5, std::path::PathBuf::from("/c/a_5.tmp")),
+            (9, std::path::PathBuf::from("/c/a_9.tmp")),
+        ];
+        let args: Vec<String> = build_attachment_dump_args("/media/x.mkv", &targets)
+            .into_iter()
+            .map(|a| {
+                a.into_string()
+                    .unwrap()
+            })
+            .collect();
+        let pos = |needle: &str| {
+            args.iter()
+                .position(|a| a == needle)
+                .unwrap()
+        };
+        assert_eq!(args[pos("-dump_attachment:5") + 1], "/c/a_5.tmp");
+        assert_eq!(args[pos("-dump_attachment:9") + 1], "/c/a_9.tmp");
+        // -dump_attachment is an input option: it must come before -i.
+        assert!(pos("-dump_attachment:9") < pos("-i"));
+        assert_eq!(args[pos("-i") + 1], "/media/x.mkv");
+        assert_eq!(&args[args.len() - 5..], ["-t", "0", "-f", "null", "-"]);
+    }
+
+    #[test]
+    fn only_font_attachments_keep_their_content_type() {
+        for font in [
+            "font/ttf",
+            "font/otf",
+            "application/x-font-ttf",
+            "application/font-sfnt",
+            "application/vnd.ms-opentype",
+        ] {
+            assert_eq!(attachment_content_type(Some(font)), font);
+        }
+        for other in [Some("text/html"), Some("image/svg+xml"), Some(""), None] {
+            assert_eq!(
+                attachment_content_type(other),
+                "application/octet-stream",
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn attachment_cache_path_is_scoped_per_source() {
+        let data_dir = std::path::Path::new("/data");
+        let a = attachment_cache_path(data_dir, Uuid::nil(), Uuid::from_u128(1), 5);
+        let b = attachment_cache_path(data_dir, Uuid::nil(), Uuid::from_u128(2), 5);
+        assert_ne!(a, b);
+        assert_eq!(
+            a.parent(),
+            Some(
+                data_dir
+                    .join("subtitle-cache")
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn attachments_are_dumped_from_a_real_mkv() {
+        // Needs ffmpeg on PATH; skip quietly where it isn't (like CI images
+        // without it).
+        let ffmpeg = crate::tools::ffmpeg();
+        if std::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let font = dir
+            .path()
+            .join("font.ttf");
+        std::fs::write(&font, b"not really a font, just bytes").unwrap();
+        let mkv = dir
+            .path()
+            .join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args([
+                "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+            ])
+            .arg("-attach")
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=font/ttf", "-c:a", "pcm_s16le"])
+            .arg(&mkv)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let item = Uuid::from_u128(3);
+        let source = Uuid::from_u128(4);
+        let attachments = vec![api::MediaAttachment {
+            index: 1,
+            mime_type: Some("font/ttf".into()),
+            ..Default::default()
+        }];
+        let path = ensure_attachment_cached(
+            dir.path(),
+            mkv.to_str()
+                .unwrap(),
+            item,
+            source,
+            &attachments,
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            b"not really a font, just bytes"
         );
     }
 }

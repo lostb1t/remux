@@ -134,7 +134,7 @@ pub async fn insert_test_source_with_external_subtitle(ctx: &AppContext) -> db::
         db::MediaKind::Stream,
         vec![MediaStream {
             codec: Some("subrip".to_string()),
-            type_: Some(MediaStreamType::Subtitle),
+            type_: MediaStreamType::Subtitle,
             index: 2,
             is_external: true,
             language: Some("eng".to_string()),
@@ -183,7 +183,7 @@ async fn insert_source(
             MediaStream {
                 codec: Some("h264".to_string()),
                 ref_frames: Some(1),
-                type_: Some(MediaStreamType::Video),
+                type_: MediaStreamType::Video,
                 index: 0,
                 width: Some(1920),
                 height: Some(1080),
@@ -191,7 +191,7 @@ async fn insert_source(
             },
             MediaStream {
                 codec: Some("aac".to_string()),
-                type_: Some(MediaStreamType::Audio),
+                type_: MediaStreamType::Audio,
                 index: 1,
                 ..Default::default()
             },

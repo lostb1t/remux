@@ -2744,7 +2744,11 @@ pub struct MediaSourceInfo {
     pub is_remote: bool,
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
-    //pub media_attachments: Option<Vec<MediaAttachment>>,
+    /// Files attached to the container (MKV fonts for ASS/SSA subtitles).
+    /// jellyfin-web loads the font ones into its libass renderer. `None` in a
+    /// stored probe means they were never read (a RemuxDB record, or a probe
+    /// from before they were recorded); `Some([])` means the file has none.
+    pub media_attachments: Option<Vec<MediaAttachment>>,
     #[default(vec![])]
     pub media_streams: Vec<MediaStream>,
     pub name: Option<String>,
@@ -2882,10 +2886,7 @@ impl MediaSourceInfo {
     pub fn default_audio_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
-            .find(|s| {
-                matches!(s.type_, Some(MediaStreamType::Audio))
-                    && s.is_default == Some(true)
-            })
+            .find(|s| matches!(s.type_, MediaStreamType::Audio) && s.is_default)
     }
 
     /// The container's default subtitle stream: the first stream flagged
@@ -2893,16 +2894,13 @@ impl MediaSourceInfo {
     pub fn default_subtitle_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
-            .find(|s| {
-                matches!(s.type_, Some(MediaStreamType::Subtitle))
-                    && s.is_default == Some(true)
-            })
+            .find(|s| matches!(s.type_, MediaStreamType::Subtitle) && s.is_default)
     }
 
     fn stream_exists(&self, index: i64, kind: MediaStreamType) -> bool {
         self.media_streams
             .iter()
-            .any(|s| s.index == index && matches!(s.type_, Some(t) if t == kind))
+            .any(|s| s.index == index && s.type_ == kind)
     }
 
     /// Among subtitle streams matching `target`'s two-letter language, prefer
@@ -2914,7 +2912,7 @@ impl MediaSourceInfo {
         self.media_streams
             .iter()
             .find(|s| {
-                matches!(s.type_, Some(MediaStreamType::Audio))
+                matches!(s.type_, MediaStreamType::Audio)
                     && s.language
                         .as_deref()
                         .and_then(lang_to_two_letter)
@@ -2925,7 +2923,7 @@ impl MediaSourceInfo {
 
     fn best_subtitle_for_language(&self, target: &str) -> Option<&MediaStream> {
         let matches_lang = |s: &&MediaStream| {
-            matches!(s.type_, Some(MediaStreamType::Subtitle))
+            matches!(s.type_, MediaStreamType::Subtitle)
                 && s.language
                     .as_deref()
                     .and_then(lang_to_two_letter)
@@ -3115,7 +3113,7 @@ impl MediaSourceInfo {
                             .media_streams
                             .iter()
                             .find(|s| {
-                                matches!(s.type_, Some(MediaStreamType::Audio))
+                                matches!(s.type_, MediaStreamType::Audio)
                                     && s.language
                                         .as_deref()
                                         .and_then(lang_to_two_letter)
@@ -3135,7 +3133,7 @@ impl MediaSourceInfo {
                             .media_streams
                             .iter()
                             .find(|s| {
-                                matches!(s.type_, Some(MediaStreamType::Audio))
+                                matches!(s.type_, MediaStreamType::Audio)
                                     && s.language
                                         .as_deref()
                                         .and_then(lang_to_two_letter)
@@ -3229,7 +3227,7 @@ impl MediaSourceInfo {
                         .media_streams
                         .iter()
                         .find_map(|s| {
-                            if matches!(s.type_, Some(MediaStreamType::Subtitle))
+                            if matches!(s.type_, MediaStreamType::Subtitle)
                                 && !s.is_forced
                             {
                                 Some(s.index)
@@ -3249,9 +3247,7 @@ impl MediaSourceInfo {
                     .media_streams
                     .iter()
                     .find_map(|s| {
-                        if matches!(s.type_, Some(MediaStreamType::Subtitle))
-                            && s.is_forced
-                        {
+                        if matches!(s.type_, MediaStreamType::Subtitle) && s.is_forced {
                             Some(s.index)
                         } else {
                             None
@@ -3267,7 +3263,7 @@ impl MediaSourceInfo {
                         .media_streams
                         .iter()
                         .find(|s| {
-                            matches!(s.type_, Some(MediaStreamType::Audio))
+                            matches!(s.type_, MediaStreamType::Audio)
                                 && Some(s.index) == self.default_audio_stream_index
                         })
                         .and_then(|s| {
@@ -3339,19 +3335,19 @@ impl MediaSourceInfo {
     pub fn video_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
-            .find(|s| matches!(s.type_, Some(MediaStreamType::Video)))
+            .find(|s| matches!(s.type_, MediaStreamType::Video))
     }
 
     pub fn audio_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
-            .find(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
+            .find(|s| matches!(s.type_, MediaStreamType::Audio))
     }
 
     pub fn subtitle_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
-            .find(|s| matches!(s.type_, Some(MediaStreamType::Subtitle)))
+            .find(|s| matches!(s.type_, MediaStreamType::Subtitle))
     }
 
     /// Returns the video stream's bitrate, falling back to container total minus
@@ -3368,13 +3364,11 @@ impl MediaSourceInfo {
         let non_video: Vec<&MediaStream> = self
             .media_streams
             .iter()
-            .filter(|s| {
-                !matches!(s.type_, Some(MediaStreamType::Video)) && !s.is_external
-            })
+            .filter(|s| !matches!(s.type_, MediaStreamType::Video) && !s.is_external)
             .collect();
         let all_audio_known = non_video
             .iter()
-            .filter(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
+            .filter(|s| matches!(s.type_, MediaStreamType::Audio))
             .all(|s| {
                 s.bit_rate
                     .is_some()
@@ -3827,6 +3821,19 @@ pub struct UpdateUserPassword {
     pub reset_password: Option<bool>,
 }
 
+/// An attachment stream of a media source (Jellyfin `MediaAttachment`).
+#[dto]
+pub struct MediaAttachment {
+    pub codec: Option<String>,
+    pub codec_tag: Option<String>,
+    pub comment: Option<String>,
+    /// Container stream index (ffmpeg's absolute stream index).
+    pub index: i64,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
+    pub delivery_url: Option<String>,
+}
+
 #[dto]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,
@@ -3859,7 +3866,9 @@ pub struct MediaStream {
     pub index: i64,
     pub is_anamorphic: Option<bool>,
     pub is_avc: Option<bool>,
-    pub is_default: Option<bool>,
+    /// Always sent: Jellyfin 12 clients' models require it.
+    #[serde(default)]
+    pub is_default: bool,
     #[serde(default)]
     pub is_external: bool,
     pub is_external_url: Option<bool>,
@@ -3869,6 +3878,10 @@ pub struct MediaStream {
     pub is_hearing_impaired: bool,
     #[serde(default)]
     pub is_interlaced: bool,
+    /// Jellyfin 12 marks the track in the title's original language. Its
+    /// clients' models require the field, so it is always sent.
+    #[serde(default)]
+    pub is_original: bool,
     #[serde(default, skip_deserializing)]
     pub is_text_subtitle_stream: bool,
     pub language: Option<String>,
@@ -3893,7 +3906,10 @@ pub struct MediaStream {
     pub supports_external_stream: bool,
     pub time_base: Option<String>,
     pub title: Option<String>,
-    pub type_: Option<MediaStreamType>,
+    /// Jellyfin 12 clients' models require it. A stored stream of a kind
+    /// RemuxDB didn't name was saved without one; it reads back as data.
+    #[serde(default = "MediaStreamType::data")]
+    pub type_: MediaStreamType,
     pub video_do_vi_title: Option<String>,
     pub video_range: Option<VideoRange>,
     pub video_range_type: Option<VideoRangeType>,
@@ -4523,6 +4539,10 @@ pub struct RemuxInfo {
     pub watchlist: Option<bool>,
     /// Whether the requesting user ignores this item.
     pub ignored: Option<bool>,
+    /// The id Stremio addons know this item by, when it has its own: for an
+    /// episode, what stream addons are asked for first (the series' IMDb id
+    /// with the season and episode in TVDB's order, e.g. `tt3121722:2:9`).
+    pub stremio_id: Option<String>,
 }
 
 /// A user's remux-only marks on one item, as returned by the watchlist and
@@ -5184,16 +5204,24 @@ impl std::str::FromStr for ItemFields {
     Hash,
     strum_macros::Display,
     strum_macros::EnumString,
-    // Default,
+    Default,
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum MediaStreamType {
+    /// Jellyfin's default too (the enum's zero value).
+    #[default]
     Audio,
     Video,
     Subtitle,
     EmbeddedImage,
     Data,
     Lyric,
+}
+
+impl MediaStreamType {
+    fn data() -> Self {
+        Self::Data
+    }
 }
 
 #[derive(
@@ -9003,26 +9031,26 @@ mod tests {
             e_tag: uuid::Uuid::new_v4(),
             media_streams: vec![
                 MediaStream {
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 1,
                     language: Some("eng".to_string()),
                     ..Default::default()
                 },
                 MediaStream {
-                    type_: Some(MediaStreamType::Audio),
+                    type_: MediaStreamType::Audio,
                     index: 2,
                     language: Some("fra".to_string()),
                     ..Default::default()
                 },
                 MediaStream {
-                    type_: Some(MediaStreamType::Subtitle),
+                    type_: MediaStreamType::Subtitle,
                     index: 3,
                     language: Some("fra".to_string()),
                     is_text_subtitle_stream: true,
                     ..Default::default()
                 },
                 MediaStream {
-                    type_: Some(MediaStreamType::Subtitle),
+                    type_: MediaStreamType::Subtitle,
                     index: 4,
                     language: Some("eng".to_string()),
                     is_text_subtitle_stream: true,
@@ -9051,7 +9079,7 @@ mod tests {
     #[test]
     fn resolve_flagged_stream_is_container_default() {
         let mut src = source_with_subs();
-        src.media_streams[3].is_default = Some(true); // eng sub (index 4) flagged
+        src.media_streams[3].is_default = true; // eng sub (index 4) flagged
         src.resolve_default_streams(&user_cfg(), None, None, None, None, None, None);
         assert_eq!(src.default_audio_stream_index, None); // audio unflagged
         assert_eq!(src.default_subtitle_stream_index, Some(4));
@@ -9075,14 +9103,14 @@ mod tests {
     fn resolve_subtitle_prefers_text_over_image_in_same_language() {
         fn source(image_first: bool) -> MediaSourceInfo {
             let image = MediaStream {
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index: 0,
                 language: Some("eng".to_string()),
                 codec: Some("pgssub".to_string()),
                 ..Default::default()
             };
             let text = MediaStream {
-                type_: Some(MediaStreamType::Subtitle),
+                type_: MediaStreamType::Subtitle,
                 index: 1,
                 language: Some("eng".to_string()),
                 codec: Some("subrip".to_string()),
@@ -9365,7 +9393,7 @@ mod tests {
         assert_eq!(src.default_subtitle_stream_index, Some(3));
 
         let mut src = source_with_subs();
-        src.media_streams[3].is_default = Some(true);
+        src.media_streams[3].is_default = true;
         resolve_with(
             &mut src,
             &user_cfg(),
@@ -9412,7 +9440,7 @@ mod tests {
     #[test]
     fn resolve_play_default_audio_track_falls_back_to_container_default() {
         let mut src = source_with_subs();
-        src.media_streams[0].is_default = Some(true); // eng audio index 1 flagged
+        src.media_streams[0].is_default = true; // eng audio index 1 flagged
         let mut cfg = user_cfg();
         cfg.play_default_audio_track = true;
         // "deu" not present in the source → container default (index 1) wins
@@ -9425,7 +9453,7 @@ mod tests {
     #[test]
     fn resolve_play_default_audio_track_no_original_language_uses_container_default() {
         let mut src = source_with_subs();
-        src.media_streams[0].is_default = Some(true); // eng audio index 1 flagged
+        src.media_streams[0].is_default = true; // eng audio index 1 flagged
         let mut cfg = user_cfg();
         cfg.play_default_audio_track = true;
         src.resolve_default_streams(&cfg, None, None, None, None, None, None);
@@ -9480,8 +9508,8 @@ mod tests {
     #[test]
     fn resolve_leaves_stream_flags_untouched() {
         let mut src = source_with_subs();
-        src.media_streams[3].is_default = Some(true); // eng sub index 4
-        let flags_before: Vec<Option<bool>> = src
+        src.media_streams[3].is_default = true; // eng sub index 4
+        let flags_before: Vec<bool> = src
             .media_streams
             .iter()
             .map(|s| s.is_default)
@@ -9489,7 +9517,7 @@ mod tests {
         let mut cfg = user_cfg();
         cfg.subtitle_language_preference = Some("fra".to_string());
         src.resolve_default_streams(&cfg, Some("fr"), None, None, None, None, None);
-        let flags_after: Vec<Option<bool>> = src
+        let flags_after: Vec<bool> = src
             .media_streams
             .iter()
             .map(|s| s.is_default)

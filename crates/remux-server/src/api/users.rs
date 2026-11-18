@@ -1969,6 +1969,15 @@ pub async fn users_items_intros(
     crate::api::intro::get_intros_inner(state, session, id).await
 }
 
+#[get("/users/{user_id}/items/{id}/localtrailers")]
+pub async fn users_items_local_trailers(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    crate::api::items::local_trailers_inner(state, session, id).await
+}
+
 #[get("/useritems/resume")]
 pub async fn useritems_resume(
     State(state): State<AppState>,

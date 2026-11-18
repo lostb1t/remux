@@ -881,7 +881,7 @@ impl YtDlpAddon {
                     bitrate: f.bitrate(),
                     media_streams: vec![api::MediaStream {
                         index: 0,
-                        type_: Some(api::MediaStreamType::Audio),
+                        type_: api::MediaStreamType::Audio,
                         codec,
                         channels: f
                             .audio_channels
@@ -889,7 +889,7 @@ impl YtDlpAddon {
                         sample_rate: f
                             .asr
                             .map(|r| r as i64),
-                        is_default: Some(true),
+                        is_default: true,
                         display_title: Some(display_title),
                         ..Default::default()
                     }],

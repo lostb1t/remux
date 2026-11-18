@@ -931,7 +931,7 @@ pub(crate) async fn build_session_list(
                 let video_stream = probe_data.and_then(|p| {
                     p.media_streams
                         .iter()
-                        .find(|s| s.type_ == Some(api::MediaStreamType::Video))
+                        .find(|s| s.type_ == api::MediaStreamType::Video)
                 });
                 let width = video_stream.and_then(|v| {
                     v.width
@@ -944,7 +944,7 @@ pub(crate) async fn build_session_list(
                 let audio_channels = probe_data.and_then(|p| {
                     p.media_streams
                         .iter()
-                        .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
+                        .find(|s| s.type_ == api::MediaStreamType::Audio)
                         .and_then(|a| {
                             a.channels
                                 .map(|x| x as i32)

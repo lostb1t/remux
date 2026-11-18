@@ -233,7 +233,7 @@ pub fn remember_sources(
         let is_4k = source
             .media_streams
             .iter()
-            .find(|stream| stream.type_ == Some(MediaStreamType::Video))
+            .find(|stream| stream.type_ == MediaStreamType::Video)
             .is_some_and(|stream| {
                 let (Some(width), Some(height)) = (stream.width, stream.height) else {
                     return false;

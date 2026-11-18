@@ -136,8 +136,7 @@ pub(crate) fn selected_audio_stream(
                 .media_streams
                 .iter()
                 .find(|s| {
-                    s.index == index
-                        && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                    s.index == index && matches!(s.type_, api::MediaStreamType::Audio)
                 })
         })
         .or_else(|| source.audio_stream())
@@ -569,8 +568,7 @@ fn subtitle_burn_method(
             .media_streams
             .iter()
             .find(|s| {
-                s.index == idx
-                    && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                s.index == idx && matches!(s.type_, api::MediaStreamType::Subtitle)
             })
     })?;
 
@@ -617,7 +615,7 @@ pub(crate) fn apply_subtitle_delivery(
         .media_streams
         .iter_mut()
     {
-        if stream.type_ != Some(api::MediaStreamType::Subtitle) {
+        if stream.type_ != api::MediaStreamType::Subtitle {
             continue;
         }
         let codec = stream
@@ -714,6 +712,25 @@ pub(crate) fn apply_subtitle_delivery(
         // delivery method rather than an External URL that would just fail
         // when fetched.
     }
+
+    // Container attachments (MKV fonts for ASS/SSA): jellyfin-web loads every
+    // font one into its libass renderer. They're read from the source like an
+    // embedded subtitle, so they're only offered when that's allowed —
+    // otherwise drop them rather than advertise URLs that would 404. Always
+    // sent as a list, like Jellyfin.
+    let attachments = source
+        .media_attachments
+        .get_or_insert_default();
+    if allow_extraction {
+        for attachment in attachments.iter_mut() {
+            let index = attachment.index;
+            attachment.delivery_url = Some(format!(
+                "/Videos/{item_id}/{source_id}/Attachments/{index}?ApiKey={access_token}",
+            ));
+        }
+    } else {
+        attachments.clear();
+    }
 }
 
 #[cfg(test)]
@@ -739,7 +756,7 @@ mod tests {
             id: Uuid::new_v4(),
             media_streams: vec![api::MediaStream {
                 codec: Some("flac".to_string()),
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 index: 0,
                 ..Default::default()
             }],
@@ -789,13 +806,13 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     codec: Some("h264".to_string()),
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     index: 0,
                     ..Default::default()
                 },
                 api::MediaStream {
                     codec: Some("aac".to_string()),
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     index: 1,
                     ..Default::default()
                 },
@@ -999,7 +1016,7 @@ mod tests {
     #[test]
     fn selected_audio_stream_follows_the_requested_index() {
         let audio = |index, codec: &str| api::MediaStream {
-            type_: Some(api::MediaStreamType::Audio),
+            type_: api::MediaStreamType::Audio,
             index,
             codec: Some(codec.to_string()),
             ..Default::default()
@@ -1357,7 +1374,7 @@ mod tests {
         let mut source = make_video_source(VideoContainer::Mkv);
         let stream = |codec: &str, type_, index| api::MediaStream {
             codec: Some(codec.to_string()),
-            type_: Some(type_),
+            type_,
             index,
             ..Default::default()
         };
@@ -1406,19 +1423,19 @@ mod tests {
         source.media_streams = vec![
             api::MediaStream {
                 codec: Some("h264".to_string()),
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 index: 0,
                 ..Default::default()
             },
             api::MediaStream {
                 codec: Some("aac".to_string()),
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 index: 1,
                 ..Default::default()
             },
             api::MediaStream {
                 codec: Some("hdmv_pgs_subtitle".to_string()),
-                type_: Some(api::MediaStreamType::Subtitle),
+                type_: api::MediaStreamType::Subtitle,
                 index: 2,
                 ..Default::default()
             },
@@ -1499,14 +1516,14 @@ mod tests {
             media_streams: vec![
                 api::MediaStream {
                     codec: Some(text_codec.to_string()),
-                    type_: Some(api::MediaStreamType::Subtitle),
+                    type_: api::MediaStreamType::Subtitle,
                     is_text_subtitle_stream: true,
                     index: 0,
                     ..Default::default()
                 },
                 api::MediaStream {
                     codec: Some(image_codec.to_string()),
-                    type_: Some(api::MediaStreamType::Subtitle),
+                    type_: api::MediaStreamType::Subtitle,
                     is_text_subtitle_stream: false,
                     index: 1,
                     ..Default::default()

@@ -107,6 +107,101 @@ pub enum AlbumKind {
     Ep,
 }
 
+/// Where a trailer plays from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrailerSource {
+    /// A YouTube video id. Offered to clients as a remote trailer, which they
+    /// hand to YouTube.
+    Youtube(String),
+    /// A direct video URL. Clients can't play it as a remote trailer, so it
+    /// becomes a [`MediaKind::Trailer`] child they play through us.
+    Url(String),
+}
+
+/// A trailer of a movie, series or episode, as its addons list it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trailer {
+    pub source: TrailerSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Trailer {
+    pub fn youtube_url(&self) -> Option<String> {
+        match &self.source {
+            TrailerSource::Youtube(id) => {
+                Some(format!("https://www.youtube.com/watch?v={id}"))
+            }
+            TrailerSource::Url(_) => None,
+        }
+    }
+
+    pub fn direct_url(&self) -> Option<&str> {
+        match &self.source {
+            TrailerSource::Url(url) => Some(url),
+            TrailerSource::Youtube(_) => None,
+        }
+    }
+
+    /// The row a direct trailer plays from, a child of `owner`. Its id is
+    /// derived from the owner and the URL, so syncing it again updates it in
+    /// place.
+    pub fn row(&self, owner: &Media) -> Option<Media> {
+        let url = self.direct_url()?;
+        Some(Media {
+            id: Uuid::new_v5(
+                &TRAILER_NAMESPACE,
+                format!("{}:{url}", owner.id).as_bytes(),
+            ),
+            kind: MediaKind::Trailer,
+            parent_id: Some(owner.id),
+            title: self
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("{} Trailer", owner.title)),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Http {
+                    url: url.to_owned(),
+                    request_headers: Default::default(),
+                    response_headers: Default::default(),
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+}
+
+impl From<remux_sdks::stremio::MetaTrailer> for Trailer {
+    fn from(trailer: remux_sdks::stremio::MetaTrailer) -> Self {
+        use remux_sdks::stremio::TrailerSource as Sdk;
+        Self {
+            source: match trailer.source {
+                Sdk::YouTube(id) => TrailerSource::Youtube(id),
+                Sdk::Url(url) => TrailerSource::Url(url),
+            },
+            name: trailer.name,
+        }
+    }
+}
+
+const TRAILER_NAMESPACE: Uuid =
+    Uuid::from_u128(0x5b0e_7a1d_93c4_4f2e_8d61_2c7f_a4e9_0b38);
+
+/// Joins two trailer lists, keeping the first of any that play the same
+/// video.
+pub fn merge_trailers(target: &mut Vec<Trailer>, source: &[Trailer]) {
+    for trailer in source {
+        if !target
+            .iter()
+            .any(|t| t.source == trailer.source)
+        {
+            target.push(trailer.clone());
+        }
+    }
+}
+
 #[derive(
     Default,
     strum_macros::EnumString,
@@ -167,6 +262,9 @@ pub enum MediaKind {
     StreamGroup,
     Subtitle,
     Intro,
+    /// A trailer that plays from a direct URL, a child of the movie, series or
+    /// episode it belongs to. Not a version of its parent (that is `Stream`).
+    Trailer,
 }
 
 impl MediaKind {
@@ -322,6 +420,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::StreamGroup => sdks::remux::MediaKind::Stream,
             MediaKind::Subtitle => sdks::remux::MediaKind::Stream,
             MediaKind::Intro => sdks::remux::MediaKind::Stream,
+            MediaKind::Trailer => sdks::remux::MediaKind::Stream,
         }
     }
 }
@@ -1015,7 +1114,24 @@ impl ExternalRatings {
             .map(|r| r.score)
     }
 
+    /// RemuxDB's average over IMDb, TMDB, Trakt, MAL, ..., set by the daily
+    /// popularity sync.
+    pub fn remuxdb_average(&self) -> Option<f64> {
+        self.remuxdb
+            .as_ref()
+            .and_then(|r| r.score_average)
+            .filter(|s| s.is_finite())
+    }
+
+    /// The audience rating to show: the RemuxDB average when there is one,
+    /// since it covers every source, otherwise TMDB's score weighted towards
+    /// a prior so a handful of votes can't make a 10.
     pub fn audience_rating(&self) -> Option<f64> {
+        self.remuxdb_average()
+            .or_else(|| self.tmdb_audience_rating())
+    }
+
+    fn tmdb_audience_rating(&self) -> Option<f64> {
         const PRIOR: f64 = 6.5;
         const M: f64 = 500.0;
 
@@ -1552,7 +1668,7 @@ pub struct Media {
     pub released_at: Option<NaiveDateTime>,
     pub digital_released_at: Option<NaiveDateTime>,
     #[sqlx(json(nullable))]
-    pub trailers: Option<Vec<String>>,
+    pub trailers: Option<Vec<Trailer>>,
     // in seconds
     pub runtime: Option<i64>,
     pub rating_critic: Option<f64>,
@@ -1904,24 +2020,28 @@ impl Media {
                 .await
                 .unwrap_or_default();
 
-        // Build a synthetic Media stub from a ParentRow + its images.
-        let make_stub =
-            |row: &ParentRow, images: super::image::MediaImages| -> Arc<Media> {
+        // One stub per parent, shared by every record that points at it: a
+        // season's parent and grandparent are the same series, and a page of
+        // episodes shares one season and one series. Handing each parent's
+        // images out once (by removing them) left every later record with an
+        // image-less series stub, so seasons and most episodes went out
+        // without `SeriesPrimaryImageTag` and clients could not fall back to
+        // the series poster.
+        let stubs: HashMap<Uuid, Arc<Media>> = parent_map
+            .into_iter()
+            .map(|(id, row)| {
                 let mut m = Media::default();
                 m.id = row.id;
-                m.title = row
-                    .title
-                    .clone();
-                m.kind = row
-                    .kind
-                    .clone();
+                m.title = row.title;
+                m.kind = row.kind;
                 m.channel_number = row.channel_number;
-                m.external_ids = row
-                    .external_ids
-                    .clone();
-                m.images = images;
-                Arc::new(m)
-            };
+                m.external_ids = row.external_ids;
+                m.images = parent_images
+                    .remove(&id)
+                    .unwrap_or_default();
+                (id, Arc::new(m))
+            })
+            .collect();
 
         for media in records.iter_mut() {
             if !matches!(
@@ -1935,13 +2055,11 @@ impl Media {
                 continue;
             }
 
-            if let Some(pid) = media.parent_id {
-                if let Some(row) = parent_map.get(&pid) {
-                    let imgs = parent_images
-                        .remove(&pid)
-                        .unwrap_or_default();
-                    media.parent = Some(make_stub(row, imgs));
-                }
+            if let Some(stub) = media
+                .parent_id
+                .and_then(|pid| stubs.get(&pid))
+            {
+                media.parent = Some(stub.clone());
             }
 
             // For episodes grandparent_id points to the series;
@@ -1952,13 +2070,8 @@ impl Media {
                     .or(media.parent_id),
                 _ => media.grandparent_id,
             };
-            if let Some(gid) = gp_id {
-                if let Some(row) = parent_map.get(&gid) {
-                    let imgs = parent_images
-                        .remove(&gid)
-                        .unwrap_or_default();
-                    media.grandparent = Some(make_stub(row, imgs));
-                }
+            if let Some(stub) = gp_id.and_then(|gid| stubs.get(&gid)) {
+                media.grandparent = Some(stub.clone());
             }
         }
     }
@@ -2485,6 +2598,87 @@ impl Media {
         Ok(())
     }
 
+    /// Brings the trailer rows of `owners` in line with their direct trailers:
+    /// writes the current ones and deletes those no longer listed. An owner
+    /// written without trailers (`None`) keeps its rows.
+    async fn sync_trailer_rows(db: &sqlx::SqlitePool, owners: &[&Media]) -> Result<()> {
+        let owners: Vec<&Media> = owners
+            .iter()
+            .copied()
+            .filter(|m| {
+                m.trailers
+                    .is_some()
+                    && m.kind != MediaKind::Trailer
+            })
+            .collect();
+        for chunk in owners.chunks(400) {
+            let rows: Vec<Media> = chunk
+                .iter()
+                .flat_map(|owner| {
+                    owner
+                        .trailers
+                        .iter()
+                        .flatten()
+                        .filter_map(|t| t.row(owner))
+                })
+                .collect();
+            if rows.is_empty() {
+                // Most owners never had a direct trailer: check with a read
+                // before taking the write lock for a delete of nothing.
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT EXISTS (SELECT 1 FROM media WHERE kind = 'trailer' AND parent_id IN (",
+                );
+                let mut sep = qb.separated(", ");
+                for owner in chunk {
+                    sep.push_bind(owner.id);
+                }
+                qb.push("))");
+                let any: bool = qb
+                    .build_query_scalar()
+                    .fetch_one(db)
+                    .await?;
+                if !any {
+                    continue;
+                }
+            } else {
+                Box::pin(Self::upsert(db, &rows)).await?;
+            }
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media WHERE kind = 'trailer' AND parent_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for owner in chunk {
+                sep.push_bind(owner.id);
+            }
+            qb.push(")");
+            if !rows.is_empty() {
+                qb.push(" AND id NOT IN (");
+                let mut sep = qb.separated(", ");
+                for row in &rows {
+                    sep.push_bind(row.id);
+                }
+                qb.push(")");
+            }
+            qb.build()
+                .execute(db)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The trailer rows of `owner`, by name like Jellyfin's local trailers.
+    pub async fn trailer_rows(
+        db: &sqlx::SqlitePool,
+        owner: &Uuid,
+    ) -> Result<Vec<Media>> {
+        Ok(sqlx::query_as::<_, Media>(
+            "SELECT * FROM media WHERE kind = 'trailer' AND parent_id = ? ORDER BY title",
+        )
+        .bind(owner)
+        .fetch_all(db)
+        .await?)
+    }
+
     pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
         self.validate()?;
         let updated_at = Utc::now().naive_utc();
@@ -2615,6 +2809,9 @@ impl Media {
         MediaImage::sync_from_media(db, self.id, &self.images)
             .await
             .ok();
+        if let Err(e) = Self::sync_trailer_rows(db, &[self]).await {
+            warn!(error = %e, id = %self.id, "failed to sync trailer rows");
+        }
 
         Ok(())
     }
@@ -2965,6 +3162,13 @@ impl Media {
 
             tx.commit()
                 .await?;
+        }
+
+        let owners: Vec<&Media> = items
+            .iter()
+            .collect();
+        if let Err(e) = Self::sync_trailer_rows(db, &owners).await {
+            warn!(error = %e, "failed to sync trailer rows");
         }
 
         Ok(())
@@ -4476,6 +4680,15 @@ impl Media {
                     }
                 }
             }
+            // Like Jellyfin's extras, a trailer is nobody's child and no
+            // library item: it is only listed as its owner's local trailer.
+            if filter
+                .kind
+                .as_ref()
+                .is_none_or(|kinds| kinds.is_empty())
+            {
+                qb.push(" AND kind != 'trailer'");
+            }
             if let Some(kinds) = &filter.album_kinds {
                 if !kinds.is_empty() {
                     // Only the requested release kinds; albums without a stored
@@ -5545,7 +5758,8 @@ impl Media {
                     for id in chunk {
                         sep.push_bind(id);
                     }
-                    cc_qb.push(")");
+                    // A series' trailers are not among its children.
+                    cc_qb.push(") AND kind != 'trailer'");
                     if let Some(pf) = child_policy_filter {
                         apply_policy_filter_rules(
                             &mut cc_qb,
@@ -7754,6 +7968,24 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
+        // None when the meta doesn't mention trailers at all, so another
+        // addon's are kept.
+        let trailers = (meta
+            .trailers
+            .is_some()
+            || meta
+                .trailer_streams
+                .is_some()
+            || meta
+                .links
+                .is_some())
+        .then(|| {
+            meta.trailers()
+                .into_iter()
+                .map(Trailer::from)
+                .collect::<Vec<_>>()
+        });
+
         let mut media_kind = MediaKind::try_from(
             meta.media_type
                 .clone(),
@@ -7957,14 +8189,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             },
             status,
             end_date,
-            trailers: meta
-                .trailers
-                .map(|trailers| {
-                    trailers
-                        .into_iter()
-                        .filter_map(|t| t.source)
-                        .collect::<Vec<String>>()
-                }),
+            trailers,
             // Live channels have no external-ID deduplication path during catalog
             // import, so their primary key must be derived from the provider's
             // stable Stremio ID. Other media kinds are reconciled by their
@@ -8414,6 +8639,15 @@ pub fn stremio_meta_episode(
     episode.digital_released_at = ep
         .released
         .map(|x| x.naive_utc());
+    episode.trailers = ep
+        .trailer_streams
+        .is_some()
+        .then(|| {
+            ep.trailers()
+                .into_iter()
+                .map(Trailer::from)
+                .collect()
+        });
 
     let rels = build_episode_relations_from_ep(&episode, ep);
     if !rels.is_empty() {
@@ -9816,6 +10050,35 @@ mod tests {
                 < 7.0
         );
         assert_eq!(tmdb_ratings(7.0, None).provider_rating(), Some(7.0));
+    }
+
+    #[test]
+    fn the_remuxdb_average_is_the_audience_rating() {
+        let mut ratings = tmdb_ratings(8.1, Some(822));
+        assert!(
+            (ratings
+                .audience_rating()
+                .unwrap()
+                - 7.49)
+                .abs()
+                < 0.01
+        );
+        ratings.remuxdb = Some(RemuxDbRatings {
+            score_average: Some(8.3),
+            ..Default::default()
+        });
+        assert_eq!(ratings.audience_rating(), Some(8.3));
+        ratings
+            .remuxdb
+            .as_mut()
+            .unwrap()
+            .score_average = Some(f64::NAN);
+        assert!(
+            ratings
+                .audience_rating()
+                .unwrap()
+                < 8.0
+        );
     }
 
     #[test]
@@ -13675,6 +13938,83 @@ mod tests {
             "query took {elapsed:?}, expected < 150 ms — correlated subquery regression?"
         );
     }
+
+    /// Every season and episode of a series must see the series' images:
+    /// they all share one series (and the episodes one season), and the
+    /// series poster is what Jellyfin clients fall back to when a season has
+    /// none of its own (`SeriesPrimaryImageTag`).
+    #[tokio::test]
+    async fn preload_parents_gives_every_child_the_shared_parents_images() {
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let mut series = Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Series,
+            title: "Show".into(),
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt7000001".to_string()).ok(),
+                ..Default::default()
+            },
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        series.set_image(ImageKind::Primary, "https://img/series.jpg".into());
+        series
+            .save(&db)
+            .await
+            .unwrap();
+        let child = |kind: MediaKind, parent: Uuid, idx: i64| Media {
+            id: Uuid::new_v4(),
+            kind,
+            title: format!("{idx}"),
+            parent_id: Some(parent),
+            grandparent_id: Some(series.id),
+            idx: Some(idx),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        let mut season1 = child(MediaKind::Season, series.id, 1);
+        season1.set_image(ImageKind::Primary, "https://img/s1.jpg".into());
+        let season2 = child(MediaKind::Season, series.id, 2);
+        let episodes: Vec<Media> = (1..=2)
+            .map(|e| child(MediaKind::Episode, season2.id, e))
+            .collect();
+        let mut records = vec![season1.clone(), season2.clone()];
+        records.extend(episodes);
+        for m in records.iter_mut() {
+            m.save(&db)
+                .await
+                .unwrap();
+        }
+
+        Media::preload_parents(&db, &mut records).await;
+
+        let series_tag = |m: &Media| {
+            crate::api::models::db_media_to_item(m.clone(), true)
+                .series_primary_image_tag
+        };
+        let expected = series_tag(&records[0]);
+        assert!(expected.is_some(), "season 1 has no series poster tag");
+        for m in &records {
+            assert_eq!(series_tag(m), expected, "{:?} {:?}", m.kind, m.idx);
+        }
+        // Season 2 has no poster of its own: clients show the series poster.
+        let season2_dto =
+            crate::api::models::db_media_to_item(records[1].clone(), true);
+        assert!(
+            season2_dto
+                .image_tags
+                .and_then(|t| t.primary)
+                .is_none()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -15364,5 +15704,192 @@ mod played_filter_plan_tests {
         );
         let plan = plan_with_sampled_stats(&sql, None).await;
         assert_rollup_starts_from_play_state(&plan);
+    }
+}
+
+#[cfg(test)]
+mod trailer_tests {
+    use super::*;
+
+    fn youtube(id: &str) -> Trailer {
+        Trailer {
+            source: TrailerSource::Youtube(id.into()),
+            name: None,
+        }
+    }
+
+    fn direct(url: &str, name: &str) -> Trailer {
+        Trailer {
+            source: TrailerSource::Url(url.into()),
+            name: Some(name.into()),
+        }
+    }
+
+    fn movie(trailers: Option<Vec<Trailer>>) -> Media {
+        Media {
+            title: "Inception".into(),
+            kind: MediaKind::Movie,
+            external_ids: ExternalIds {
+                imdb: NonEmptyString::try_new("tt1375666".to_string()).ok(),
+                ..Default::default()
+            },
+            trailers,
+            ..Default::default()
+        }
+    }
+
+    async fn trailer_urls(db: &SqlitePool, owner: &Uuid) -> Vec<String> {
+        Media::trailer_rows(db, owner)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                assert_eq!(row.kind, MediaKind::Trailer);
+                assert_eq!(row.parent_id, Some(*owner));
+                match row
+                    .stream_info
+                    .unwrap()
+                    .descriptor
+                {
+                    crate::stream::StreamDescriptor::Http { url, .. } => url,
+                    other => panic!("unexpected descriptor {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn saving_an_item_syncs_a_row_per_direct_trailer() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut item = movie(Some(vec![
+            youtube("cdx31ak4KbQ"),
+            direct("https://cdn.example/a.mp4", "A 1080p"),
+            direct("https://cdn.example/b.mp4", "B 720p"),
+        ]));
+        item.save(db)
+            .await
+            .unwrap();
+        assert_eq!(
+            trailer_urls(db, &item.id).await,
+            ["https://cdn.example/a.mp4", "https://cdn.example/b.mp4"]
+        );
+        let first_ids: Vec<Uuid> = Media::trailer_rows(db, &item.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+
+        // Written without trailers: the rows stay.
+        let mut partial = movie(None);
+        partial.id = item.id;
+        partial
+            .save(db)
+            .await
+            .unwrap();
+        assert_eq!(
+            trailer_urls(db, &item.id)
+                .await
+                .len(),
+            2
+        );
+
+        // One dropped, one kept: the kept row keeps its id.
+        item.trailers = Some(vec![direct("https://cdn.example/b.mp4", "B 720p")]);
+        Media::upsert(db, &[item.clone()])
+            .await
+            .unwrap();
+        let rows = Media::trailer_rows(db, &item.id)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, first_ids[1]);
+
+        // No direct trailers left: no rows left.
+        item.trailers = Some(vec![youtube("cdx31ak4KbQ")]);
+        Media::upsert(db, &[item.clone()])
+            .await
+            .unwrap();
+        assert!(
+            trailer_urls(db, &item.id)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_youtube_ids_become_typed_trailers() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut item = movie(None);
+        item.save(db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE media SET trailers = ? WHERE id = ?")
+            .bind(r#"["cdx31ak4KbQ", "JE9z-gy4De4"]"#)
+            .bind(item.id)
+            .execute(db)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/202611160001_typed_trailers.sql"
+        ))
+        .execute(db)
+        .await
+        .unwrap();
+
+        let stored = Media::get_by_id(db, &item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.trailers,
+            Some(vec![youtube("cdx31ak4KbQ"), youtube("JE9z-gy4De4")])
+        );
+    }
+
+    #[test]
+    fn stremio_metas_keep_their_trailers_typed() {
+        let meta: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt1375666",
+            "type": "movie",
+            "name": "Inception",
+            "trailerStreams": [{"ytId": "cdx31ak4KbQ", "title": "Inception"}],
+            "links": [{"trailers": "https://cdn.example/a.mp4", "provider": "A 1080p"}]
+        }))
+        .unwrap();
+        let media = Media::try_from(meta).unwrap();
+        assert_eq!(
+            media.trailers,
+            Some(vec![
+                Trailer {
+                    source: TrailerSource::Youtube("cdx31ak4KbQ".into()),
+                    name: Some("Inception".into()),
+                },
+                direct("https://cdn.example/a.mp4", "A 1080p"),
+            ])
+        );
+
+        let without: sdks::stremio::Meta = serde_json::from_value(serde_json::json!({
+            "id": "tt1375666", "type": "movie", "name": "Inception"
+        }))
+        .unwrap();
+        assert_eq!(
+            Media::try_from(without)
+                .unwrap()
+                .trailers,
+            None
+        );
     }
 }

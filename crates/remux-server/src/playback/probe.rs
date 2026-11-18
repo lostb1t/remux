@@ -351,6 +351,8 @@ struct FfprobeDisposition {
     #[serde(default)]
     hearing_impaired: i64,
     #[serde(default)]
+    original: i64,
+    #[serde(default)]
     attached_pic: i64,
 }
 
@@ -570,7 +572,7 @@ fn apply_video_bitrate_fallback(
         .iter()
         .enumerate()
         .filter(|(_, s)| {
-            matches!(s.type_, Some(api::MediaStreamType::Video))
+            matches!(s.type_, api::MediaStreamType::Video)
                 && s.bit_rate
                     .is_none()
         })
@@ -583,13 +585,11 @@ fn apply_video_bitrate_fallback(
     // audioBitratesKnown check: all audio streams must have a known bitrate.
     let non_video: Vec<&api::MediaStream> = streams
         .iter()
-        .filter(|s| {
-            !matches!(s.type_, Some(api::MediaStreamType::Video)) && !s.is_external
-        })
+        .filter(|s| !matches!(s.type_, api::MediaStreamType::Video) && !s.is_external)
         .collect();
     let audio_all_known = non_video
         .iter()
-        .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
+        .filter(|s| matches!(s.type_, api::MediaStreamType::Audio))
         .all(|s| {
             s.bit_rate
                 .is_some()
@@ -818,6 +818,7 @@ pub fn probe_media_with(
 
     let mut streams: Vec<api::MediaStream> = Vec::new();
     let mut video_idx: i64 = 0;
+    let mut attachments: Vec<api::MediaAttachment> = Vec::new();
 
     for s in &probe.streams {
         let codec_type = s
@@ -928,7 +929,7 @@ pub fn probe_media_with(
                             .and_then(bit_depth_from_pix_fmt)
                     });
                 streams.push(api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     index: s.index,
                     codec: Some(codec.clone()),
                     codec_tag: s
@@ -954,7 +955,7 @@ pub fn probe_media_with(
                     real_frame_rate: fps
                         .map(|f| f as f32)
                         .and_then(nonzero),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
                     is_avc: s
                         .is_avc
@@ -1049,7 +1050,7 @@ pub fn probe_media_with(
                 };
 
                 streams.push(api::MediaStream {
-                    type_: Some(api::MediaStreamType::Audio),
+                    type_: api::MediaStreamType::Audio,
                     index: s.index,
                     codec: Some(codec.clone()),
                     channels,
@@ -1060,8 +1061,12 @@ pub fn probe_media_with(
                     profile: s
                         .profile
                         .clone(),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
+                    is_original: s
+                        .disposition
+                        .original
+                        != 0,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Other),
@@ -1128,12 +1133,16 @@ pub fn probe_media_with(
                 };
 
                 let mut stream = api::MediaStream {
-                    type_: Some(api::MediaStreamType::Subtitle),
+                    type_: api::MediaStreamType::Subtitle,
                     index: s.index,
                     codec: Some(codec.clone()),
-                    is_default: Some(is_default),
+                    is_default: is_default,
                     is_forced,
                     is_hearing_impaired,
+                    is_original: s
+                        .disposition
+                        .original
+                        != 0,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Other),
@@ -1154,6 +1163,30 @@ pub fn probe_media_with(
                 stream.is_text_subtitle_stream = stream.is_text_subtitle_stream();
                 streams.push(stream);
             }
+            "attachment" => {
+                attachments.push(api::MediaAttachment {
+                    index: s.index,
+                    codec: s
+                        .codec_name
+                        .clone(),
+                    codec_tag: s
+                        .codec_tag_string
+                        .clone(),
+                    file_name: s
+                        .tags
+                        .get("filename")
+                        .cloned(),
+                    mime_type: s
+                        .tags
+                        .get("mimetype")
+                        .cloned(),
+                    comment: s
+                        .tags
+                        .get("comment")
+                        .cloned(),
+                    ..Default::default()
+                });
+            }
             _ => {}
         }
     }
@@ -1171,6 +1204,7 @@ pub fn probe_media_with(
     Ok((
         api::MediaSourceInfo {
             media_streams: streams,
+            media_attachments: Some(attachments),
             container,
             run_time_ticks,
             bitrate: overall_bitrate,
@@ -1646,6 +1680,32 @@ mod probe_tests {
     use super::*;
 
     #[test]
+    fn media_stream_always_reports_its_required_fields() {
+        // Jellyfin 12 clients (SDK 1.9) fail to decode a MediaStream without them.
+        let value = serde_json::to_value(api::MediaStream::default()).unwrap();
+        for field in ["IsOriginal", "IsDefault"] {
+            assert_eq!(
+                value.get(field),
+                Some(&serde_json::Value::Bool(false)),
+                "{field}"
+            );
+        }
+        assert_eq!(value.get("Type"), Some(&serde_json::json!("Audio")));
+        // A stored stream saved without a type reads back as data.
+        let stored: api::MediaStream = serde_json::from_str(r#"{"Index":2}"#).unwrap();
+        assert_eq!(stored.type_, api::MediaStreamType::Data);
+    }
+
+    #[test]
+    fn ffprobe_original_disposition_is_read() {
+        let disposition: FfprobeDisposition =
+            serde_json::from_str(r#"{"default":0,"original":1}"#).unwrap();
+        assert_eq!(disposition.original, 1);
+        let missing: FfprobeDisposition = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.original, 0);
+    }
+
+    #[test]
     fn bit_depth_from_pix_fmt_known_formats() {
         assert_eq!(bit_depth_from_pix_fmt("yuv420p10le"), Some(10));
         assert_eq!(bit_depth_from_pix_fmt("yuv420p12le"), Some(12));
@@ -1699,7 +1759,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_accepts_real_probe_with_video() {
         let real = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1709,6 +1769,75 @@ mod probe_tests {
             ..Default::default()
         };
         assert!(is_reusable_probe_cache(&real));
+    }
+
+    #[test]
+    fn a_probe_stored_without_attachments_reads_as_unknown() {
+        // RemuxDB records and probes from before attachments were recorded
+        // carry no list: that's "never read", not "the file has none".
+        let stored: api::MediaSourceInfo =
+            serde_json::from_str(r#"{"MediaStreams":[]}"#).unwrap();
+        assert_eq!(stored.media_attachments, None);
+    }
+
+    #[test]
+    fn probe_lists_mkv_attachments() {
+        // Needs ffmpeg/ffprobe on PATH; skip where they aren't.
+        let ffmpeg = crate::tools::ffmpeg();
+        if std::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let font = dir
+            .path()
+            .join("Gandhi Sans.ttf");
+        std::fs::write(&font, b"font bytes").unwrap();
+        let mkv = dir
+            .path()
+            .join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args([
+                "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+            ])
+            .arg("-attach")
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=font/ttf", "-c:a", "pcm_s16le"])
+            .arg(&mkv)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let (info, _) = probe_media(
+            mkv.to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let attachments = info
+            .media_attachments
+            .expect("an ffprobe result records its attachments");
+        assert_eq!(attachments.len(), 1);
+        let a = &attachments[0];
+        assert_eq!(a.index, 1);
+        assert_eq!(
+            a.file_name
+                .as_deref(),
+            Some("Gandhi Sans.ttf")
+        );
+        assert_eq!(
+            a.mime_type
+                .as_deref(),
+            Some("font/ttf")
+        );
+        // Attachments are not media streams.
+        assert!(
+            info.media_streams
+                .iter()
+                .all(|s| s.index != 1)
+        );
     }
 
     #[test]
@@ -1763,7 +1892,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_accepts_remuxdb_match_with_video() {
         let remuxdb = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1786,7 +1915,7 @@ mod probe_tests {
         ] {
             let incomplete = api::MediaSourceInfo {
                 media_streams: vec![api::MediaStream {
-                    type_: Some(api::MediaStreamType::Video),
+                    type_: api::MediaStreamType::Video,
                     codec: Some(codec.to_string()),
                     ref_frames,
                     ..Default::default()
@@ -1808,7 +1937,7 @@ mod probe_tests {
     fn failed_refresh_can_fall_back_to_real_but_stale_probe_data() {
         let stale = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("h264".to_string()),
                 ..Default::default()
             }],
@@ -1829,7 +1958,7 @@ mod probe_tests {
 
         let local_probe = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("h264".to_string()),
                 ..Default::default()
             }],
@@ -1849,7 +1978,7 @@ mod probe_tests {
         // a completed probe, or a real ffprobe never runs for this source.
         let guess = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Video),
+                type_: api::MediaStreamType::Video,
                 codec: Some("hevc".to_string()),
                 ..Default::default()
             }],
@@ -1866,7 +1995,7 @@ mod probe_tests {
     fn is_reusable_probe_cache_rejects_no_video_stream() {
         let audio_only = api::MediaSourceInfo {
             media_streams: vec![api::MediaStream {
-                type_: Some(api::MediaStreamType::Audio),
+                type_: api::MediaStreamType::Audio,
                 ..Default::default()
             }],
             remux: Some(api::MediaSourceRemuxInfo {
@@ -1924,7 +2053,7 @@ mod probe_tests {
         Ok((
             api::MediaSourceInfo {
                 media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -2161,7 +2290,7 @@ mod probe_tests {
             api::MediaSourceInfo {
                 run_time_ticks: Some(short_ticks),
                 media_streams: vec![MediaStream {
-                    type_: Some(MediaStreamType::Video),
+                    type_: MediaStreamType::Video,
                     ..Default::default()
                 }],
                 ..Default::default()
