@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, api, db,
-    db::auth::{AdminSession, AuthSession},
+    db::auth::{AdminSession, AuthSession, TargetUser},
 };
 
 // --------------------------------------------------------------------------
@@ -106,14 +106,16 @@ pub async fn livetv_guide_info(
 pub struct GetChannelsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
+    pub is_favorite: Option<bool>,
 }
 
 #[get("/livetv/channels")]
 pub async fn livetv_channels(
     State(state): State<AppState>,
-    _session: AuthSession,
+    TargetUser(user): TargetUser,
     Query(q): Query<GetChannelsQuery>,
 ) -> Result<impl IntoResponse> {
+    let user_id = user.id;
     let result = db::Media::get_by_filter(
         &state
             .ctx
@@ -124,6 +126,15 @@ pub async fn livetv_channels(
             limit: q.limit,
             offset: q.start_index,
             total_count: true,
+            include_user_state: true,
+            user_id: Some(user_id),
+            user_state: q
+                .is_favorite
+                .map(|favorite| db::UserMediaStateFilter {
+                    user_id: Some(user_id),
+                    favorite: Some(favorite),
+                    ..Default::default()
+                }),
             ..Default::default()
         },
     )
@@ -150,10 +161,10 @@ pub async fn livetv_channels(
 #[get("/livetv/channels/{channel_id}")]
 pub async fn livetv_channel(
     State(state): State<AppState>,
-    _session: AuthSession,
+    TargetUser(user): TargetUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -161,6 +172,14 @@ pub async fn livetv_channel(
     )
     .await?
     .context_not_found("channel not found")?;
+    media
+        .user_state(
+            &state
+                .ctx
+                .db,
+            &user,
+        )
+        .await?;
     Ok(Json(api::db_media_to_item(media, false)))
 }
 
@@ -1153,5 +1172,328 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         country: m
             .country
             .clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::header::HeaderValue;
+    use uuid::Uuid;
+
+    use crate::{
+        db,
+        integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server},
+    };
+
+    async fn insert_channel(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        number: i64,
+    ) -> db::Media {
+        let mut channel = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::TvChannel,
+            channel_number: Some(number),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://example.com/live.m3u8",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        channel
+            .save(db)
+            .await
+            .unwrap();
+        channel
+    }
+
+    async fn insert_favorite(
+        db: &sqlx::SqlitePool,
+        user_id: Uuid,
+        media_id: Uuid,
+        favorite: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, favorite) \
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(favorite)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    fn names(body: &serde_json::Value) -> Vec<String> {
+        body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                item["Name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Five channels in number order: the requesting user has favorited the
+    /// first and third and cleared the fifth, another user favorited the second.
+    #[tokio::test]
+    async fn channel_routes_report_and_filter_favorites() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let get = |path: &str| {
+            server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+        };
+
+        let user_id = db::User::get_by_username(db, "test")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let other_user = Uuid::new_v4();
+
+        let first = insert_channel(db, "Test Channel A", 1).await;
+        let second = insert_channel(db, "Test Channel B", 2).await;
+        let third = insert_channel(db, "Test Channel C", 3).await;
+        insert_channel(db, "Test Channel D", 4).await;
+        let fifth = insert_channel(db, "Test Channel E", 5).await;
+        insert_favorite(db, user_id, first.id, true).await;
+        insert_favorite(db, user_id, third.id, true).await;
+        insert_favorite(db, user_id, fifth.id, false).await;
+        insert_favorite(db, other_user, second.id, true).await;
+
+        // The list: every channel, each with this user's favorite flag.
+        let all: serde_json::Value = get("/livetv/channels")
+            .await
+            .json();
+        assert_eq!(all["TotalRecordCount"], 5);
+        let flags: Vec<(String, bool)> = all["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["Name"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                    item["UserData"]["IsFavorite"]
+                        .as_bool()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            vec![
+                ("Test Channel A".to_string(), true),
+                ("Test Channel B".to_string(), false),
+                ("Test Channel C".to_string(), true),
+                ("Test Channel D".to_string(), false),
+                ("Test Channel E".to_string(), false),
+            ]
+        );
+
+        // The single channel: true for this user's favorite, false for one
+        // only another user has favorited.
+        let one: serde_json::Value = get(&format!("/livetv/channels/{}", first.id))
+            .await
+            .json();
+        assert_eq!(one["UserData"]["IsFavorite"], true);
+        let two: serde_json::Value = get(&format!("/livetv/channels/{}", second.id))
+            .await
+            .json();
+        assert_eq!(two["UserData"]["IsFavorite"], false);
+
+        // Favorites only, paged: the count is of the favorites.
+        let page: serde_json::Value =
+            get("/livetv/channels?IsFavorite=true&StartIndex=0&Limit=1")
+                .await
+                .json();
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert_eq!(names(&page), vec!["Test Channel A"]);
+        let page: serde_json::Value =
+            get("/livetv/channels?IsFavorite=true&StartIndex=1&Limit=1")
+                .await
+                .json();
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert_eq!(page["StartIndex"], 1);
+        assert_eq!(names(&page), vec!["Test Channel C"]);
+
+        // The others, including untouched and cleared channels.
+        let page: serde_json::Value =
+            get("/livetv/channels?isFavorite=false&startIndex=1&limit=5")
+                .await
+                .json();
+        assert_eq!(page["TotalRecordCount"], 3);
+        assert_eq!(names(&page), vec!["Test Channel D", "Test Channel E"]);
+        let others: serde_json::Value = get("/livetv/channels?IsFavorite=false")
+            .await
+            .json();
+        assert_eq!(
+            names(&others),
+            vec!["Test Channel B", "Test Channel D", "Test Channel E"]
+        );
+    }
+
+    fn flags(body: &serde_json::Value) -> Vec<(String, bool)> {
+        body["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["Name"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                    item["UserData"]["IsFavorite"]
+                        .as_bool()
+                        .unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The admin "test" has favorited the first channel, a regular user the
+    /// second. `userId` picks whose flags are reported and filtered on, with
+    /// the same rule as a single item (`GET /Items/{id}`).
+    #[tokio::test]
+    async fn channel_routes_answer_for_the_user_named_by_user_id() {
+        let (server, guard, admin_token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let get = |path: &str, token: &str| {
+            server
+                .get(path)
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth_header_with_token(token)).unwrap(),
+                )
+        };
+
+        server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&admin_token)).unwrap(),
+            )
+            .json(&serde_json::json!({ "Name": "regular", "Password": "pw" }))
+            .await;
+        let login: serde_json::Value = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&serde_json::json!({ "Username": "regular", "Pw": "pw" }))
+            .await
+            .json();
+        let user_token = login["AccessToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let admin_id = db::User::get_by_username(db, "test")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let user_id = db::User::get_by_username(db, "regular")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let first = insert_channel(db, "Test Channel A", 1).await;
+        let second = insert_channel(db, "Test Channel B", 2).await;
+        insert_channel(db, "Test Channel C", 3).await;
+        insert_favorite(db, admin_id, first.id, true).await;
+        insert_favorite(db, user_id, second.id, true).await;
+
+        // Naming yourself is the same as naming no one.
+        for (path, sep) in [
+            ("/livetv/channels?IsFavorite=true".to_string(), '&'),
+            (format!("/livetv/channels/{}", second.id), '?'),
+        ] {
+            let plain: serde_json::Value = get(&path, &user_token)
+                .await
+                .json();
+            let named: serde_json::Value =
+                get(&format!("{path}{sep}userId={user_id}"), &user_token)
+                    .await
+                    .json();
+            assert_eq!(plain, named, "{path}");
+        }
+
+        // An admin naming another user gets that user's flags and favorites.
+        let all: serde_json::Value =
+            get(&format!("/livetv/channels?userId={user_id}"), &admin_token)
+                .await
+                .json();
+        assert_eq!(
+            flags(&all),
+            vec![
+                ("Test Channel A".to_string(), false),
+                ("Test Channel B".to_string(), true),
+                ("Test Channel C".to_string(), false),
+            ]
+        );
+        let favorites: serde_json::Value = get(
+            &format!("/livetv/channels?IsFavorite=true&userId={user_id}"),
+            &admin_token,
+        )
+        .await
+        .json();
+        assert_eq!(favorites["TotalRecordCount"], 1);
+        assert_eq!(names(&favorites), vec!["Test Channel B"]);
+        let one: serde_json::Value = get(
+            &format!("/livetv/channels/{}?userId={user_id}", first.id),
+            &admin_token,
+        )
+        .await
+        .json();
+        assert_eq!(one["UserData"]["IsFavorite"], false);
+        let two: serde_json::Value = get(
+            &format!("/livetv/channels/{}?userId={user_id}", second.id),
+            &admin_token,
+        )
+        .await
+        .json();
+        assert_eq!(two["UserData"]["IsFavorite"], true);
+
+        // A regular user naming someone else is turned away as on `GET /Items/{id}`.
+        let items = get(
+            &format!("/items/{}?userId={admin_id}", first.id),
+            &user_token,
+        )
+        .expect_failure()
+        .await;
+        assert_eq!(items.status_code(), http::StatusCode::FORBIDDEN);
+        for path in [
+            format!("/livetv/channels?userId={admin_id}"),
+            format!("/livetv/channels?IsFavorite=true&userId={admin_id}"),
+            format!("/livetv/channels/{}?userId={admin_id}", first.id),
+        ] {
+            let resp = get(&path, &user_token)
+                .expect_failure()
+                .await;
+            assert_eq!(resp.status_code(), items.status_code(), "{path}");
+        }
     }
 }
