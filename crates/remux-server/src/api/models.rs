@@ -1024,6 +1024,10 @@ fn db_media_to_item_inner(
                 .collection_image_config
                 .clone(),
             sort_order: media.sort_order,
+            stremio_id: media
+                .external_ids
+                .custom_stremio_id
+                .clone(),
         }),
         enable_media_source_display: Some(true),
         date_created: Some(
