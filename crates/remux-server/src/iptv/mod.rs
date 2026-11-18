@@ -40,7 +40,8 @@ pub async fn stream_import_epg(
     let resp = client
         .get(url)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let is_gzip = resp
         .headers()
         .get(reqwest::header::CONTENT_ENCODING)
@@ -136,20 +137,23 @@ pub async fn stream_import_epg(
 
     // Delete programs for these channels that were not re-imported in this run.
     // Programs upserted above have updated_at >= import_start; stale ones do not.
-    for chunk in channels.chunks(200) {
-        let mut qb = sqlx::QueryBuilder::new(
-            "DELETE FROM media WHERE kind = 'tv_program' AND updated_at < ",
-        );
-        qb.push_bind(import_start);
-        qb.push(" AND parent_id IN (");
-        let mut sep = qb.separated(", ");
-        for (id, _) in chunk {
-            sep.push_bind(*id);
+    // A guide that matched nothing (empty or broken response) prunes nothing.
+    if total > 0 {
+        for chunk in channels.chunks(200) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media WHERE kind = 'tv_program' AND updated_at < ",
+            );
+            qb.push_bind(import_start);
+            qb.push(" AND parent_id IN (");
+            let mut sep = qb.separated(", ");
+            for (id, _) in chunk {
+                sep.push_bind(*id);
+            }
+            qb.push(")");
+            qb.build()
+                .execute(&ctx.db)
+                .await?;
         }
-        qb.push(")");
-        qb.build()
-            .execute(&ctx.db)
-            .await?;
     }
 
     sqlx::query(
@@ -250,4 +254,108 @@ pub fn parse_program_kind(category: &str) -> Option<ProgramKind> {
                 .any(|t| lower.contains(t))
         })
         .map(|(_, kind)| kind.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn guide(title: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><tv><programme start="20990101120000 +0000" stop="20990101130000 +0000" channel="ch1"><title>{title}</title></programme></tv>"#
+        )
+    }
+
+    async fn programmes(ctx: &AppContext, channel: Uuid) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT title FROM media WHERE kind = 'tv_program' AND parent_id = ?",
+        )
+        .bind(channel)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_failed_or_empty_guide_keeps_the_programmes() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let channel = Uuid::new_v4();
+        db::Media::upsert(
+            &ctx.db,
+            &[db::Media {
+                id: channel,
+                title: "Channel 1".into(),
+                kind: db::MediaKind::TvChannel,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        let provider = httpmock::MockServer::start();
+        provider.mock(|when, then| {
+            when.path("/first.xml");
+            then.status(200)
+                .body(guide("First"));
+        });
+        provider.mock(|when, then| {
+            when.path("/error.xml");
+            then.status(503)
+                .body("<html><body>Service Unavailable</body></html>");
+        });
+        provider.mock(|when, then| {
+            when.path("/empty.xml");
+            then.status(200)
+                .body("");
+        });
+        provider.mock(|when, then| {
+            when.path("/second.xml");
+            then.status(200)
+                .body(guide("Second"));
+        });
+        let client = reqwest::Client::new();
+        let channels = vec![(channel, Some("ch1".to_string()))];
+        let import = |path: &str| {
+            let url = provider.url(path);
+            let client = &client;
+            let channels = &channels;
+            async move { stream_import_epg(client, &url, channels, ctx).await }
+        };
+
+        assert_eq!(
+            import("/first.xml")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(programmes(ctx, channel).await, vec!["First"]);
+
+        // A provider error page must not wipe the guide.
+        assert!(
+            import("/error.xml")
+                .await
+                .is_err()
+        );
+        assert_eq!(programmes(ctx, channel).await, vec!["First"]);
+
+        // Neither must an empty response.
+        assert_eq!(
+            import("/empty.xml")
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(programmes(ctx, channel).await, vec!["First"]);
+
+        // A real guide still replaces programmes that are no longer listed.
+        assert_eq!(
+            import("/second.xml")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(programmes(ctx, channel).await, vec!["Second"]);
+    }
 }
