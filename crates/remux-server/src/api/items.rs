@@ -2104,7 +2104,10 @@ async fn item_for_user(
     } else {
         None
     };
-    if want_streams && media.kind == db::MediaKind::Stream {
+    // A stream or trailer plays its own URL, so it is its own source.
+    if want_streams
+        && matches!(media.kind, db::MediaKind::Stream | db::MediaKind::Trailer)
+    {
         media.sources = Some(vec![media.clone()]);
     } else if want_streams
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
@@ -7940,6 +7943,36 @@ mod tests {
 
         resp.assert_status_ok();
         assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
+    }
+
+    /// A trailer opened by id is playable: it lists itself as its source, so
+    /// clients (Swiftfin) don't take it for a missing, virtual item.
+    #[tokio::test]
+    async fn a_trailer_opens_as_its_own_source() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let trailer =
+            insert_test_source_of_kind(&guard.0, db::MediaKind::Trailer).await;
+
+        let resp = server
+            .get(&format!("/items/{}", trailer.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let body = resp.json::<serde_json::Value>();
+        assert_eq!(body["Type"], "Trailer");
+        assert_ne!(body["LocationType"], "Virtual");
+        assert_eq!(
+            body["MediaSources"][0]["Id"],
+            trailer
+                .id
+                .simple()
+                .to_string()
+        );
     }
 
     /// Android TV calls `/items?parentId=<season>&startIndex=1` with no SortBy and

@@ -1598,10 +1598,12 @@ where
                 // relative to the known metadata runtime (or absolutely < 3 min
                 // when unknown) — these are typically error/copyright-strike
                 // placeholder videos, not real content. Skip for audio-only
-                // streams since short songs are legitimate.
-                if probed
-                    .video_stream()
-                    .is_some()
+                // streams since short songs are legitimate, and for trailers,
+                // which are short by nature.
+                if stream.kind != db::MediaKind::Trailer
+                    && probed
+                        .video_stream()
+                        .is_some()
                     && let Some(probed_ticks) = probed.run_time_ticks
                 {
                     let max_threshold = 5_i64
@@ -2319,6 +2321,43 @@ mod probe_tests {
             effective.id, fallback_id,
             "short primary skipped — effective stream must be the fallback"
         );
+    }
+
+    /// A trailer is short by nature, so its length doesn't mark it as a
+    /// placeholder: a 2-minute trailer plays.
+    #[tokio::test]
+    async fn a_short_trailer_is_not_rejected() {
+        let db = test_db().await;
+        let short_probe = Ok((
+            api::MediaSourceInfo {
+                run_time_ticks: Some(120_i64 * 10_000_000),
+                media_streams: vec![MediaStream {
+                    type_: MediaStreamType::Video,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            MediaSegments::default(),
+        ));
+        let mut trailer = http_media("http://a.example.com");
+        trailer.kind = db::MediaKind::Trailer;
+        let trailer_id = trailer.id;
+        let all = vec![trailer.clone()];
+        let (_, effective) = probe_with_fallback(
+            trailer,
+            Some("http://a.example.com".to_string()),
+            10,
+            true,
+            5,
+            &all,
+            false,
+            3000,
+            &db,
+            queued_probe(vec![short_probe]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(effective.id, trailer_id);
     }
 
     #[tokio::test]
