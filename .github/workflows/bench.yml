@@ -10,7 +10,7 @@ permissions:
 jobs:
   bench:
     name: Benchmarks
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
