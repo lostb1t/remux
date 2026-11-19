@@ -220,8 +220,7 @@ pub fn DevicesPage(app_state: AppState) -> Element {
                                                         }
                                                         div { class: "device-col-action",
                                                             button {
-                                                                class: "btn btn-ghost",
-                                                                style: "height:28px;font-size:.65rem;padding:0 8px",
+                                                                class: "btn btn-ghost btn-device-details",
                                                                 onclick: move |_| {
                                                                     details_four_k.set(four_k);
                                                                     details_error.set(None);

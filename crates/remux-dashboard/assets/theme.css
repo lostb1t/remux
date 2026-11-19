@@ -396,6 +396,8 @@ html, body {
 .btn-device-revoke:hover:not(:disabled) { background: var(--error); color: #fff; }
 .btn-device-revoke:disabled { opacity: .35; cursor: not-allowed; }
 
+.btn.btn-device-details { height: 28px; padding: 0 8px; font-size: .65rem; }
+
 /* ── Device rows (responsive) ────────────────────────────────────── */
 .device-row {
   display: flex;

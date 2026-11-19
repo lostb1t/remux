@@ -1163,7 +1163,7 @@ async fn items_playbackinfo_inner(
     if session
         .device
         .is_4k_capable
-        != Some(true)
+        .is_none()
     {
         crate::services::four_k_capability::remember_sources(
             &state.ctx,
