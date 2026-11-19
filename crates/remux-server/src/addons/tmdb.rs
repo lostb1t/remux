@@ -787,9 +787,10 @@ async fn tmdb_season_episodes(
 }
 
 /// A season in the metadata language. TMDB answers an episode nobody
-/// translated with a made-up name ("Folge 26") and an empty overview, so such
-/// an episode takes its name and overview from TMDB's default-language answer
-/// when that has an overview. That is one more call, cached, and only for a
+/// translated with a made-up name ("Folge 26") and an empty overview, so an
+/// episode without an overview takes one from TMDB's default-language answer,
+/// and its name too unless it has a real one in the metadata language (see
+/// [`name_by_translation`]). That is one more call, cached, and only for a
 /// season with such an episode. `episode` is the one episode the caller is
 /// after, if it is not the whole season (see [`name_by_translation`]).
 async fn localized_season(
@@ -840,8 +841,9 @@ async fn localized_season(
         }
     };
     let mut merged = (*localized).clone();
-    // Episodes neither answer describes and the two name differently: one of
-    // the names, or both, is made up.
+    // Episodes without an overview that the two answers name differently:
+    // the localized name is made up, or a real one that came without an
+    // overview.
     let mut undecided = Vec::new();
     for episode in merged
         .episodes
@@ -858,6 +860,9 @@ async fn localized_season(
         else {
             continue;
         };
+        if fallback.name != episode.name {
+            undecided.push(episode.episode_number);
+        }
         if !untranslated(fallback) {
             episode.name = fallback
                 .name
@@ -865,8 +870,6 @@ async fn localized_season(
             episode.overview = fallback
                 .overview
                 .clone();
-        } else if fallback.name != episode.name {
-            undecided.push(episode.episode_number);
         }
     }
     name_by_translation(
@@ -883,12 +886,12 @@ async fn localized_season(
     Ok(Arc::new(merged))
 }
 
-/// Settles the name of episodes that have an overview in neither the
-/// metadata language nor TMDB's default. A season answer can't tell a
-/// made-up name ("Folge 26", "Episode 26") from a real one there, but the
-/// episode's translations can: a name nobody entered is empty in them. A
-/// name in the metadata language stays, else the English one is taken, else
-/// the answer stays as it is. Asked like [`add_episode_external_ids`] asks
+/// Settles the name of episodes without an overview in the metadata
+/// language. A season answer can't tell a made-up name ("Folge 26",
+/// "Episode 26") from a real one, but the episode's translations can: a name
+/// nobody entered is empty in them. A name in the metadata language is
+/// used, also when the overview had to come from the default language; else
+/// the English one, else the answer stays as it is. Asked like [`add_episode_external_ids`] asks
 /// the ids: [`MAX_APPENDS`] episodes per call, cached for a day. A failed
 /// call leaves those episodes as they are. With `only`, just the call that
 /// holds that episode is made: a single episode's refresh then repeats a
@@ -947,7 +950,8 @@ async fn name_by_translation(
             let name = |language, country| {
                 batch.name(season_number, episode.episode_number, language, country)
             };
-            if name(language, country).is_some() {
+            if let Some(own) = name(language, country) {
+                episode.name = own.to_string();
                 continue;
             }
             if let Some(english) = name("en", "US") {
@@ -3278,7 +3282,7 @@ mod tests {
             when.path("/tv/900303")
                 .query_param(
                     "append_to_response",
-                    "season/1/episode/1/translations,season/1/episode/2/translations,season/1/episode/3/translations",
+                    "season/1/episode/1/translations,season/1/episode/2/translations,season/1/episode/3/translations,season/1/episode/5/translations",
                 );
             then.status(200)
                 .json_body(serde_json::json!({
@@ -3286,6 +3290,7 @@ mod tests {
                     "season/1/episode/1/translations": { "translations": [name("en", "US", "The Guest"), name("de", "DE", "")] },
                     "season/1/episode/2/translations": { "translations": [name("en", "US", "The Return"), name("de", "DE", "Die Rückkehr")] },
                     "season/1/episode/3/translations": { "translations": [name("en", "US", ""), name("de", "DE", "")] },
+                    "season/1/episode/5/translations": { "translations": [name("en", "US", "The End"), name("de", "DE", "")] },
                 }));
         });
         let client = tmdb_client("test", &tmdb.base_url()).unwrap();
@@ -3380,5 +3385,80 @@ mod tests {
         assert_eq!(episodes[0].name, "Folge 1");
         last.assert_hits(1);
         others.assert_hits(0);
+    }
+
+    /// A name in the metadata language stays when only the overview is
+    /// missing there: the overview comes from the default language, the name
+    /// doesn't. An episode with neither takes both, as before.
+    #[tokio::test]
+    async fn a_translated_name_stays_when_only_its_overview_is_missing() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/900305/season/1")
+                .query_param("language", "de");
+            then.status(200)
+                .json_body(season_json(&[
+                    (1, "Der Geschmack des Todes", ""),
+                    (2, "Folge 2", ""),
+                ]));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/900305/season/1")
+                .matches(|req| {
+                    !req.query_params
+                        .as_ref()
+                        .is_some_and(|q| {
+                            q.iter()
+                                .any(|(k, _)| k == "language")
+                        })
+                });
+            then.status(200)
+                .json_body(season_json(&[
+                    (1, "The Taste of Death", "He dies again."),
+                    (2, "The Tea Party", "Tea is served."),
+                ]));
+        });
+        let name = |language: &str, name: &str| serde_json::json!({ "iso_639_1": language, "iso_3166_1": "", "data": { "name": name } });
+        tmdb.mock(|when, then| {
+            when.path("/tv/900305")
+                .query_param(
+                    "append_to_response",
+                    "season/1/episode/1/translations,season/1/episode/2/translations",
+                );
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "season/1/episode/1/translations": { "translations": [
+                        name("en", "The Taste of Death"), name("de", "Der Geschmack des Todes")
+                    ] },
+                    "season/1/episode/2/translations": { "translations": [
+                        name("en", "The Tea Party"), name("de", "")
+                    ] },
+                }));
+        });
+        let client = tmdb_client("test", &tmdb.base_url()).unwrap();
+        let season = localized_season(&client, 900305, 1, Some("de".into()), None)
+            .await
+            .unwrap();
+        let episodes: Vec<(&str, Option<&str>)> = season
+            .episodes
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e.name
+                        .as_str(),
+                    e.overview
+                        .as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            episodes,
+            [
+                ("Der Geschmack des Todes", Some("He dies again.")),
+                ("The Tea Party", Some("Tea is served.")),
+            ]
+        );
     }
 }
