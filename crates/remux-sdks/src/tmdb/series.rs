@@ -415,6 +415,148 @@ impl From<std::collections::HashMap<String, serde_json::Value>>
     }
 }
 
+/// The names of up to [`MAX_APPENDS`] episodes of one season in every
+/// language TMDB has an entry for, in a single call like
+/// [`EpisodeExternalIdsBatchEndpoint`]. A name nobody entered is empty, which
+/// a season answer doesn't show: there TMDB fills in a made-up one.
+#[derive(Debug, Clone)]
+pub struct EpisodeTranslationsBatchEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+    pub episode_numbers: Vec<i64>,
+}
+
+impl Endpoint for EpisodeTranslationsBatchEndpoint {
+    type Output = EpisodeTranslationsBatch;
+
+    fn path(&self) -> String {
+        format!("tv/{}", self.series_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        let appends = self
+            .episode_numbers
+            .iter()
+            .map(|e| format!("season/{}/episode/{e}/translations", self.season_number))
+            .collect::<Vec<_>>()
+            .join(",");
+        [("append_to_response", appends)]
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "std::collections::HashMap<String, serde_json::Value>")]
+pub struct EpisodeTranslationsBatch {
+    pub episodes: Vec<EpisodeNames>,
+}
+
+/// The names an episode has, one per language somebody entered one in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodeNames {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub names: Vec<EpisodeName>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodeName {
+    /// ISO 639-1, e.g. "de".
+    pub language: String,
+    /// ISO 3166-1, e.g. "DE".
+    pub country: String,
+    pub name: remux_utils::NonEmptyString,
+}
+
+impl EpisodeTranslationsBatch {
+    /// The episode's name in `language`, `country`'s entry first.
+    pub fn name(
+        &self,
+        season_number: i64,
+        episode_number: i64,
+        language: &str,
+        country: &str,
+    ) -> Option<&remux_utils::NonEmptyString> {
+        let names = &self
+            .episodes
+            .iter()
+            .find(|e| {
+                e.season_number == season_number && e.episode_number == episode_number
+            })?
+            .names;
+        names
+            .iter()
+            .find(|n| n.language == language && n.country == country)
+            .or_else(|| {
+                names
+                    .iter()
+                    .find(|n| n.language == language)
+            })
+            .map(|n| &n.name)
+    }
+}
+
+/// Keeps only the names of the appended `season/S/episode/E/translations`
+/// entries of the series response, not the series itself.
+impl From<std::collections::HashMap<String, serde_json::Value>>
+    for EpisodeTranslationsBatch
+{
+    fn from(response: std::collections::HashMap<String, serde_json::Value>) -> Self {
+        #[derive(Deserialize)]
+        struct Translations {
+            #[serde(default)]
+            translations: Vec<Translation>,
+        }
+        #[derive(Deserialize)]
+        struct Translation {
+            #[serde(default)]
+            iso_639_1: String,
+            #[serde(default)]
+            iso_3166_1: String,
+            #[serde(default)]
+            data: Data,
+        }
+        #[derive(Deserialize, Default)]
+        struct Data {
+            name: Option<String>,
+        }
+        let episodes = response
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let rest = key.strip_prefix("season/")?;
+                let (season, rest) = rest.split_once("/episode/")?;
+                let episode = rest.strip_suffix("/translations")?;
+                let names = serde_json::from_value::<Translations>(value)
+                    .ok()?
+                    .translations
+                    .into_iter()
+                    .filter_map(|t| {
+                        Some(EpisodeName {
+                            language: t.iso_639_1,
+                            country: t.iso_3166_1,
+                            name: remux_utils::NonEmptyString::try_new(
+                                t.data
+                                    .name?
+                                    .trim(),
+                            )
+                            .ok()?,
+                        })
+                    })
+                    .collect();
+                Some(EpisodeNames {
+                    season_number: season
+                        .parse()
+                        .ok()?,
+                    episode_number: episode
+                        .parse()
+                        .ok()?,
+                    names,
+                })
+            })
+            .collect();
+        Self { episodes }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

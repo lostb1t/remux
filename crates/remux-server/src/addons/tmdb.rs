@@ -749,6 +749,7 @@ async fn tmdb_season_episodes(
         series_tmdb_id,
         season_number as i64,
         preferred_language,
+        None,
     )
     .await?;
 
@@ -789,12 +790,14 @@ async fn tmdb_season_episodes(
 /// translated with a made-up name ("Folge 26") and an empty overview, so such
 /// an episode takes its name and overview from TMDB's default-language answer
 /// when that has an overview. That is one more call, cached, and only for a
-/// season with such an episode.
+/// season with such an episode. `episode` is the one episode the caller is
+/// after, if it is not the whole season (see [`name_by_translation`]).
 async fn localized_season(
     client: &sdks::RestClient<sdks::BearerAuth>,
     series_id: i64,
     season_number: i64,
     language: Option<String>,
+    episode: Option<i64>,
 ) -> Result<Arc<sdks::tmdb::Season>> {
     let season = |language| {
         client.execute_arc(
@@ -810,7 +813,7 @@ async fn localized_season(
     let has_language = language
         .as_deref()
         .is_some_and(|l| !l.is_empty());
-    let localized = season(language).await?;
+    let localized = season(language.clone()).await?;
     let untranslated = |e: &sdks::tmdb::Episode| {
         e.overview
             .as_deref()
@@ -837,28 +840,121 @@ async fn localized_season(
         }
     };
     let mut merged = (*localized).clone();
+    // Episodes neither answer describes and the two name differently: one of
+    // the names, or both, is made up.
+    let mut undecided = Vec::new();
     for episode in merged
         .episodes
         .iter_mut()
         .flatten()
         .filter(|e| untranslated(e))
     {
-        if let Some(fallback) = default
+        let Some(fallback) = default
             .episodes
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .find(|d| d.episode_number == episode.episode_number && !untranslated(d))
-        {
+            .find(|d| d.episode_number == episode.episode_number)
+        else {
+            continue;
+        };
+        if !untranslated(fallback) {
             episode.name = fallback
                 .name
                 .clone();
             episode.overview = fallback
                 .overview
                 .clone();
+        } else if fallback.name != episode.name {
+            undecided.push(episode.episode_number);
         }
     }
+    name_by_translation(
+        client,
+        series_id,
+        language
+            .as_deref()
+            .unwrap_or_default(),
+        &undecided,
+        episode,
+        &mut merged,
+    )
+    .await;
     Ok(Arc::new(merged))
+}
+
+/// Settles the name of episodes that have an overview in neither the
+/// metadata language nor TMDB's default. A season answer can't tell a
+/// made-up name ("Folge 26", "Episode 26") from a real one there, but the
+/// episode's translations can: a name nobody entered is empty in them. A
+/// name in the metadata language stays, else the English one is taken, else
+/// the answer stays as it is. Asked like [`add_episode_external_ids`] asks
+/// the ids: [`MAX_APPENDS`] episodes per call, cached for a day. A failed
+/// call leaves those episodes as they are. With `only`, just the call that
+/// holds that episode is made: a single episode's refresh then repeats a
+/// call the season's listing already made instead of asking for the whole
+/// season.
+///
+/// [`MAX_APPENDS`]: sdks::tmdb::series::MAX_APPENDS
+async fn name_by_translation(
+    client: &sdks::RestClient<sdks::BearerAuth>,
+    series_id: i64,
+    language: &str,
+    numbers: &[i64],
+    only: Option<i64>,
+    season: &mut sdks::tmdb::Season,
+) {
+    let mut parts = language.split('-');
+    let (language, country) = (
+        parts
+            .next()
+            .unwrap_or_default(),
+        parts
+            .next()
+            .unwrap_or_default(),
+    );
+    let season_number = season.season_number;
+    let batches = futures::future::join_all(
+        numbers
+            .chunks(sdks::tmdb::series::MAX_APPENDS)
+            .filter(|chunk| only.is_none_or(|n| chunk.contains(&n)))
+            .map(|chunk| {
+                client.execute(
+                    sdks::tmdb::series::EpisodeTranslationsBatchEndpoint {
+                        series_id,
+                        season_number,
+                        episode_numbers: chunk.to_vec(),
+                    }
+                    .with_cache(Duration::from_secs(86400)),
+                )
+            }),
+    )
+    .await;
+    for batch in batches {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(e) => {
+                debug!(series_id, season_number, error = %e, "episode translations failed");
+                continue;
+            }
+        };
+        for episode in season
+            .episodes
+            .iter_mut()
+            .flatten()
+            .filter(|e| numbers.contains(&e.episode_number))
+        {
+            let name = |language, country| {
+                batch.name(season_number, episode.episode_number, language, country)
+            };
+            if name(language, country).is_some() {
+                continue;
+            }
+            if let Some(english) = name("en", "US") {
+                episode.name = english.to_string();
+            }
+        }
+    }
 }
 
 /// Gives each episode of a season its own TVDB and IMDb id. TMDB's season
@@ -1891,6 +1987,7 @@ async fn fetch_tmdb_meta(
                     config
                         .preferred_metadata_language
                         .clone(),
+                    Some(e_n),
                 )
                 .await?;
                 let Some(ep) = season
@@ -3062,7 +3159,7 @@ mod tests {
                 ]));
         });
         let client = tmdb_client("test", &tmdb.base_url()).unwrap();
-        let season = localized_season(&client, 900301, 1, Some("de".into()))
+        let season = localized_season(&client, 900301, 1, Some("de".into()), None)
             .await
             .unwrap();
         let got: Vec<(&str, Option<&str>)> = season
@@ -3115,11 +3212,11 @@ mod tests {
                 .json_body(season_json(&[(1, "Episode 1", "")]));
         });
         let client = tmdb_client("test", &tmdb.base_url()).unwrap();
-        localized_season(&client, 900302, 1, Some("de".into()))
+        localized_season(&client, 900302, 1, Some("de".into()), None)
             .await
             .unwrap();
         default.assert_hits(0);
-        let season = localized_season(&client, 900302, 1, None)
+        let season = localized_season(&client, 900302, 1, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -3131,5 +3228,157 @@ mod tests {
             "Episode 1"
         );
         default.assert_hits(1);
+    }
+
+    /// Episodes with an overview in neither language: the translations
+    /// tell a made-up name from a real one. An English name replaces
+    /// "Folge 1", a German name without an overview stays, and an episode
+    /// nobody named keeps TMDB's answer. Episodes the two answers settle,
+    /// or name alike, are not asked about.
+    #[tokio::test]
+    async fn names_without_an_overview_are_settled_by_the_translations() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/900303/season/1")
+                .query_param("language", "de-DE");
+            then.status(200)
+                .json_body(season_json(&[
+                    (1, "Folge 1", ""),
+                    (2, "Die Rückkehr", ""),
+                    (3, "Folge 3", ""),
+                    (4, "Finale", ""),
+                    (5, "Folge 5", ""),
+                ]));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/900303/season/1")
+                .matches(|req| {
+                    !req.query_params
+                        .as_ref()
+                        .is_some_and(|q| {
+                            q.iter()
+                                .any(|(k, _)| k == "language")
+                        })
+                });
+            then.status(200)
+                .json_body(season_json(&[
+                    (1, "The Guest", ""),
+                    (2, "The Return", ""),
+                    (3, "Episode 3", ""),
+                    (4, "Finale", ""),
+                    (5, "The End", "It ends."),
+                ]));
+        });
+        let name = |language: &str, country: &str, name: &str| {
+            serde_json::json!({
+                "iso_639_1": language, "iso_3166_1": country, "data": { "name": name, "overview": "" }
+            })
+        };
+        let translations = tmdb.mock(|when, then| {
+            when.path("/tv/900303")
+                .query_param(
+                    "append_to_response",
+                    "season/1/episode/1/translations,season/1/episode/2/translations,season/1/episode/3/translations",
+                );
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 900303,
+                    "season/1/episode/1/translations": { "translations": [name("en", "US", "The Guest"), name("de", "DE", "")] },
+                    "season/1/episode/2/translations": { "translations": [name("en", "US", "The Return"), name("de", "DE", "Die Rückkehr")] },
+                    "season/1/episode/3/translations": { "translations": [name("en", "US", ""), name("de", "DE", "")] },
+                }));
+        });
+        let client = tmdb_client("test", &tmdb.base_url()).unwrap();
+        let season = localized_season(&client, 900303, 1, Some("de-DE".into()), None)
+            .await
+            .unwrap();
+        let names: Vec<&str> = season
+            .episodes
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                e.name
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["The Guest", "Die Rückkehr", "Folge 3", "Finale", "The End"]
+        );
+        translations.assert_hits(1);
+    }
+
+    /// A single episode's refresh asks only for the batch that holds it,
+    /// which the season's listing has asked for before.
+    #[tokio::test]
+    async fn one_episode_asks_for_its_own_batch_of_translations() {
+        let tmdb = httpmock::MockServer::start();
+        let numbered = |name: &str| -> Vec<(i64, String)> {
+            (1..=21)
+                .map(|n| (n, format!("{name} {n}")))
+                .collect()
+        };
+        let season = |names: Vec<(i64, String)>| {
+            let episodes: Vec<(i64, &str, &str)> = names
+                .iter()
+                .map(|(n, name)| (*n, name.as_str(), ""))
+                .collect();
+            season_json(&episodes)
+        };
+        tmdb.mock(|when, then| {
+            when.path("/tv/900304/season/1")
+                .query_param("language", "de");
+            then.status(200)
+                .json_body(season(numbered("Folge")));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/tv/900304/season/1")
+                .matches(|req| {
+                    !req.query_params
+                        .as_ref()
+                        .is_some_and(|q| {
+                            q.iter()
+                                .any(|(k, _)| k == "language")
+                        })
+                });
+            then.status(200)
+                .json_body(season(numbered("Episode")));
+        });
+        let last = tmdb.mock(|when, then| {
+            when.path("/tv/900304")
+                .query_param("append_to_response", "season/1/episode/21/translations");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "season/1/episode/21/translations": { "translations": [
+                        { "iso_639_1": "en", "iso_3166_1": "US", "data": { "name": "The Last One" } }
+                    ] }
+                }));
+        });
+        let others = tmdb.mock(|when, then| {
+            when.path("/tv/900304")
+                .matches(|req| {
+                    req.query_params
+                        .as_ref()
+                        .is_some_and(|q| {
+                            q.iter()
+                                .any(|(_, v)| v.contains("episode/1/"))
+                        })
+                });
+            then.status(200)
+                .json_body(serde_json::json!({}));
+        });
+        let client = tmdb_client("test", &tmdb.base_url()).unwrap();
+        let season = localized_season(&client, 900304, 1, Some("de".into()), Some(21))
+            .await
+            .unwrap();
+        let episodes = season
+            .episodes
+            .as_deref()
+            .unwrap();
+        assert_eq!(episodes[20].name, "The Last One");
+        assert_eq!(episodes[0].name, "Folge 1");
+        last.assert_hits(1);
+        others.assert_hits(0);
     }
 }
