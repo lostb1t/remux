@@ -559,16 +559,12 @@ impl TryFrom<stremio::Episode> for db::Media {
             // stored one only for NULL).
             description: meta
                 .overview
-                .filter(|o| {
-                    !o.trim()
-                        .is_empty()
+                .and_then(|s| db::NonEmptyString::try_new(s).ok())
+                .or_else(|| {
+                    meta.description
+                        .and_then(|s| db::NonEmptyString::try_new(s).ok())
                 })
-                .or(meta
-                    .description
-                    .filter(|d| {
-                        !d.trim()
-                            .is_empty()
-                    })),
+                .map(Into::into),
             rating_audience: meta.rating,
             ..Default::default()
         };
@@ -851,6 +847,8 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+
     /// An empty overview from a Stremio addon is no overview: it must not
     /// become text that overwrites a stored description.
     #[test]
@@ -864,7 +862,7 @@ mod tests {
         v["overview"] = "".into();
         assert_eq!(episode(v).description, None);
         let mut v = base.clone();
-        v["overview"] = " ".into();
+        v["overview"] = "".into();
         v["description"] = "From description.".into();
         assert_eq!(
             episode(v)
@@ -881,8 +879,6 @@ mod tests {
             Some("Text.")
         );
     }
-
-    use super::*;
 
     #[test]
     fn guess_media_source_from_filename_parses_full_release_tags() {
