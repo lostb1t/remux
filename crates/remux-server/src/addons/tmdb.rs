@@ -526,7 +526,7 @@ impl From<&sdks::tmdb::Season> for db::Media {
             description: s
                 .overview
                 .clone()
-                .filter(|o| !o.is_empty()),
+                .and_then(|o| db::NonEmptyString::try_new(o).ok()),
             idx: Some(s.season_number),
             external_ids: tmdb_external_ids(
                 s.id,
@@ -569,7 +569,7 @@ impl From<&sdks::tmdb::Episode> for db::Media {
             description: ep
                 .overview
                 .clone()
-                .filter(|o| !o.is_empty()),
+                .and_then(|o| db::NonEmptyString::try_new(o).ok()),
             idx: Some(ep.episode_number),
             parent_idx: Some(ep.season_number),
             external_ids: tmdb_external_ids(
@@ -1548,7 +1548,9 @@ async fn fetch_tmdb_meta(
                 };
                 let mut patch = db::Media {
                     title: movie_details.title,
-                    description: movie_details.overview,
+                    description: movie_details
+                        .overview
+                        .and_then(|o| db::NonEmptyString::try_new(o).ok()),
                     released_at: movie_details
                         .release_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
@@ -1750,7 +1752,9 @@ async fn fetch_tmdb_meta(
                 };
                 let mut patch = db::Media {
                     title: tv_details.name,
-                    description: tv_details.overview,
+                    description: tv_details
+                        .overview
+                        .and_then(|o| db::NonEmptyString::try_new(o).ok()),
                     released_at: tv_details
                         .first_air_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
@@ -1945,7 +1949,7 @@ async fn fetch_tmdb_meta(
             let mut patch = db::Media {
                 description: details
                     .biography
-                    .filter(|b| !b.is_empty()),
+                    .and_then(|b| db::NonEmptyString::try_new(b).ok()),
                 released_at,
                 country: details
                     .place_of_birth
@@ -2902,7 +2906,8 @@ mod tests {
         assert_eq!(
             patch
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("From the surviving entry.")
         );
 

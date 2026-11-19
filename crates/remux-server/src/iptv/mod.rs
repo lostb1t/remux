@@ -110,7 +110,9 @@ pub async fn stream_import_epg(
             title: prog.title,
             kind: db::MediaKind::TvProgram,
             parent_id: Some(channel_id),
-            description: prog.description,
+            description: prog
+                .description
+                .and_then(|d| db::NonEmptyString::try_new(d).ok()),
             live_start: prog.start,
             live_end: prog.end,
             program_kind: prog.program_kind,

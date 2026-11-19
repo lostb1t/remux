@@ -592,7 +592,9 @@ impl YtDlpAddon {
             } else {
                 meta.title
             },
-            description: meta.description,
+            description: meta
+                .description
+                .and_then(|d| db::NonEmptyString::try_new(d).ok()),
             runtime: meta
                 .duration
                 .map(|d| d as i64),
@@ -1007,7 +1009,7 @@ mod tests {
     fn track(artist_name: Option<&str>, description: Option<&str>) -> db::Media {
         db::Media {
             title: "Hello".to_string(),
-            description: description.map(String::from),
+            description: description.and_then(|d| db::NonEmptyString::try_new(d).ok()),
             external_ids: db::ExternalIds {
                 artist_name: artist_name.map(String::from),
                 ..Default::default()

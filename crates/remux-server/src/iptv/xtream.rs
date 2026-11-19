@@ -355,7 +355,7 @@ fn vod_to_media(
         kind: db::MediaKind::TvChannel,
         description: v
             .plot
-            .filter(|s| !s.is_empty()),
+            .and_then(|s| db::NonEmptyString::try_new(s).ok()),
         released_at,
         rating_audience,
         external_ids: db::ExternalIds {
@@ -490,7 +490,7 @@ fn series_to_media(
         kind: db::MediaKind::TvChannel,
         description: s
             .plot
-            .filter(|s| !s.is_empty()),
+            .and_then(|s| db::NonEmptyString::try_new(s).ok()),
         released_at,
         rating_audience,
         external_ids: db::ExternalIds {

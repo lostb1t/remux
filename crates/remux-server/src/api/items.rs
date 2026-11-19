@@ -3783,7 +3783,14 @@ pub async fn update_item(
     if let Some(name) = payload.name {
         media.title = name;
     }
-    merge_option(&mut media.description, &payload.overview, true);
+    // An empty overview is the editor clearing it.
+    let clear_description = payload
+        .overview
+        .as_deref()
+        .is_some_and(str::is_empty);
+    if let Some(overview) = payload.overview {
+        media.description = db::NonEmptyString::try_new(overview).ok();
+    }
     if let Some(premiere_date) = payload.premiere_date {
         media.released_at = Some(premiere_date.naive_utc());
     } else if let Some(year) = payload.production_year {
@@ -3810,6 +3817,15 @@ pub async fn update_item(
         )
         .await
         .context_bad_request("Failed to save item")?;
+    if clear_description {
+        db::Media::clear_description(
+            &state
+                .ctx
+                .db,
+            &media.id,
+        )
+        .await?;
+    }
 
     if let Some(tags) = &payload.tags {
         set_tags(
@@ -6225,7 +6241,7 @@ mod tests {
             id,
             title: "Fields test movie".to_string(),
             kind: db::MediaKind::Movie,
-            description: Some("A test overview".to_string()),
+            description: db::NonEmptyString::try_new("A test overview").ok(),
             released_at: Some(Utc::now().naive_utc()),
             external_ids,
             ..Default::default()
@@ -9222,6 +9238,58 @@ mod tests {
             .unwrap();
             assert_eq!(people, vec![person.id], "the old People must survive");
         }
+    }
+
+    /// The editor clears an overview by sending it empty; leaving it out keeps it.
+    #[tokio::test]
+    async fn update_item_clears_an_overview_sent_empty() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = auth_header_with_token(&token);
+        let movie =
+            insert_media(db, "Overview Movie", db::MediaKind::Movie, "tt1000906").await;
+        let update = |body: serde_json::Value| {
+            server
+                .post(&format!("/items/{}", movie.id))
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
+                .json(&body)
+        };
+        let description = || async {
+            db::Media::get_by_id(db, &movie.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .description
+                .map(String::from)
+        };
+
+        update(serde_json::json!({ "Overview": "Plot." }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            description()
+                .await
+                .as_deref(),
+            Some("Plot.")
+        );
+        update(serde_json::json!({ "Name": "Overview Movie" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            description()
+                .await
+                .as_deref(),
+            Some("Plot.")
+        );
+        update(serde_json::json!({ "Overview": "" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(description().await, None);
     }
 
     async fn set_policy_filter(db: &sqlx::SqlitePool, filter: CollectionFilter) {

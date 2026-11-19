@@ -1664,7 +1664,7 @@ pub struct Media {
     pub streams_refreshed_at: Option<NaiveDateTime>,
 
     // meta
-    pub description: Option<String>,
+    pub description: Option<NonEmptyString>,
     pub released_at: Option<NaiveDateTime>,
     pub digital_released_at: Option<NaiveDateTime>,
     #[sqlx(json(nullable))]
@@ -2853,6 +2853,15 @@ impl Media {
     /// Invalidate the probe cache for a media source (e.g. after its URL changes).
     pub async fn clear_probe_data(db: &sqlx::SqlitePool, id: &Uuid) -> Result<()> {
         sqlx::query("UPDATE media SET probe_data = NULL WHERE id = ?1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    /// Clear a description `save` would keep: it keeps the stored one over NULL.
+    pub async fn clear_description(db: &sqlx::SqlitePool, id: &Uuid) -> Result<()> {
+        sqlx::query("UPDATE media SET description = NULL WHERE id = ?1")
             .bind(id)
             .execute(db)
             .await?;
@@ -8154,7 +8163,9 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
-            description: meta.description,
+            description: meta
+                .description
+                .and_then(|d| NonEmptyString::try_new(d).ok()),
             certification: meta
                 .certification
                 .clone(),
@@ -10500,7 +10511,7 @@ mod tests {
     ) -> Media {
         Media {
             title: "Hello".to_string(),
-            description: description.map(String::from),
+            description: description.and_then(|d| NonEmptyString::try_new(d).ok()),
             external_ids: ExternalIds {
                 artist_name: artist_name.map(String::from),
                 album_title: album_title.map(String::from),

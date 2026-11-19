@@ -4150,11 +4150,11 @@ mod tests {
     #[test]
     fn highest_priority_addon_wins_description() {
         let high = db::Media {
-            description: Some("from high priority".into()),
+            description: db::NonEmptyString::try_new("from high priority").ok(),
             ..Default::default()
         };
         let low = db::Media {
-            description: Some("from low priority".into()),
+            description: db::NonEmptyString::try_new("from low priority").ok(),
             ..Default::default()
         };
         // high priority addon is first (lower priority number, ORDER BY priority ASC)
@@ -4162,7 +4162,8 @@ mod tests {
         assert_eq!(
             result
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("from high priority")
         );
     }
@@ -4174,14 +4175,15 @@ mod tests {
             ..Default::default()
         };
         let low = db::Media {
-            description: Some("fallback".into()),
+            description: db::NonEmptyString::try_new("fallback").ok(),
             ..Default::default()
         };
         let result = accumulate(vec![high, low], true);
         assert_eq!(
             result
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("fallback")
         );
     }
@@ -4237,18 +4239,19 @@ mod tests {
     #[test]
     fn force_refresh_replaces_existing_media_values() {
         let patch = db::Media {
-            description: Some("new description".into()),
+            description: db::NonEmptyString::try_new("new description").ok(),
             ..Default::default()
         };
         let mut media = db::Media {
-            description: Some("old description".into()),
+            description: db::NonEmptyString::try_new("old description").ok(),
             ..Default::default()
         };
         apply_meta(&mut media, patch, true);
         assert_eq!(
             media
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("new description")
         );
     }
@@ -4256,18 +4259,19 @@ mod tests {
     #[test]
     fn no_force_refresh_preserves_existing_media_values() {
         let patch = db::Media {
-            description: Some("new description".into()),
+            description: db::NonEmptyString::try_new("new description").ok(),
             ..Default::default()
         };
         let mut media = db::Media {
-            description: Some("old description".into()),
+            description: db::NonEmptyString::try_new("old description").ok(),
             ..Default::default()
         };
         apply_meta(&mut media, patch, false);
         assert_eq!(
             media
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("old description")
         );
     }
@@ -4537,13 +4541,13 @@ mod tests {
     fn merge_media_respects_is_locked() {
         let mut target = db::Media {
             title: "User Title".to_string(),
-            description: Some("User Overview".to_string()),
+            description: db::NonEmptyString::try_new("User Overview").ok(),
             is_locked: true,
             ..Default::default()
         };
         let source = db::Media {
             title: "Provider Title".to_string(),
-            description: Some("Provider Overview".to_string()),
+            description: db::NonEmptyString::try_new("Provider Overview").ok(),
             ..Default::default()
         };
         merge_media(&mut target, &source, true);
@@ -4551,7 +4555,8 @@ mod tests {
         assert_eq!(
             target
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("User Overview")
         );
     }
@@ -4563,14 +4568,15 @@ mod tests {
             ..Default::default()
         };
         let source = db::Media {
-            description: Some("Provider Overview".to_string()),
+            description: db::NonEmptyString::try_new("Provider Overview").ok(),
             ..Default::default()
         };
         merge_media(&mut target, &source, true);
         assert_eq!(
             target
                 .description
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("Provider Overview"),
             "unlocked Overview must still be updated"
         );
