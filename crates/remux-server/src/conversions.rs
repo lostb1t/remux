@@ -553,9 +553,22 @@ impl TryFrom<stremio::Episode> for db::Media {
             runtime: meta
                 .runtime
                 .map(|d| d.num_seconds()),
+            // An addon may send an empty overview (Cinemeta does for most
+            // episodes of daily shows); that is no overview, and as text it
+            // would overwrite a stored description (the upsert keeps the
+            // stored one only for NULL).
             description: meta
                 .overview
-                .or(meta.description),
+                .filter(|o| {
+                    !o.trim()
+                        .is_empty()
+                })
+                .or(meta
+                    .description
+                    .filter(|d| {
+                        !d.trim()
+                            .is_empty()
+                    })),
             rating_audience: meta.rating,
             ..Default::default()
         };
@@ -837,6 +850,38 @@ fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An empty overview from a Stremio addon is no overview: it must not
+    /// become text that overwrites a stored description.
+    #[test]
+    fn empty_stremio_overview_is_no_overview() {
+        let episode = |v: serde_json::Value| -> db::Media {
+            db::Media::try_from(serde_json::from_value::<stremio::Episode>(v).unwrap())
+                .unwrap()
+        };
+        let base = serde_json::json!({ "id": "tt1:1:1", "name": "Ep", "season": 1, "episode": 1 });
+        let mut v = base.clone();
+        v["overview"] = "".into();
+        assert_eq!(episode(v).description, None);
+        let mut v = base.clone();
+        v["overview"] = " ".into();
+        v["description"] = "From description.".into();
+        assert_eq!(
+            episode(v)
+                .description
+                .as_deref(),
+            Some("From description.")
+        );
+        let mut v = base;
+        v["overview"] = "Text.".into();
+        assert_eq!(
+            episode(v)
+                .description
+                .as_deref(),
+            Some("Text.")
+        );
+    }
+
     use super::*;
 
     #[test]
