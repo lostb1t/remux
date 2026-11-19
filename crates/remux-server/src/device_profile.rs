@@ -1857,21 +1857,10 @@ mod tests {
         }
     }
 
-    fn device_4k(
-        learned: Option<bool>,
-        admin_choice: Option<bool>,
-    ) -> crate::db::auth::Device {
-        crate::db::auth::Device {
-            is_4k_capable: learned,
-            is_4k_capable_override: admin_choice,
-            ..Default::default()
-        }
-    }
-
-    /// The admin's choice stands in for what playback has shown; a profile
-    /// that states its own resolution limit still decides first.
+    /// A device's stored 4K value (unknown, supported, or not) counts only
+    /// where the profile states no resolution limit of its own.
     #[test]
-    fn admin_4k_choice_yields_to_an_explicit_profile() {
+    fn stored_4k_value_yields_to_an_explicit_profile() {
         let silent = DeviceProfile::default();
         let hd_ceiling = hevc_resolution_ceiling("1920", "1080");
         let uhd_ceiling = hevc_resolution_ceiling("3840", "2160");
@@ -1880,36 +1869,34 @@ mod tests {
         video.codec = Some("hevc".to_string());
         let source = source_with(video, audio_stream("aac", 2), true);
 
-        // (learned, admin's choice, fit when the profile states no ceiling)
+        // (stored value, fit when the profile states no ceiling)
         let cases = [
-            (None, None, FourKFit::Downscaled),
-            (Some(true), None, FourKFit::Native),
-            (None, Some(true), FourKFit::Native),
-            (Some(true), Some(true), FourKFit::Native),
-            (None, Some(false), FourKFit::Downscaled),
-            (Some(true), Some(false), FourKFit::Downscaled),
+            (None, FourKFit::Downscaled),
+            (Some(true), FourKFit::Native),
+            (Some(false), FourKFit::Downscaled),
         ];
-        for (learned, admin_choice, without_ceiling) in cases {
-            let supports_4k = device_4k(learned, admin_choice).supports_4k();
+        for (stored, without_ceiling) in cases {
+            // As the callers pass the session device's `is_4k_capable`.
+            let is_4k_capable = stored == Some(true);
             assert_eq!(
-                four_k_fit(&source, Some(&silent), supports_4k),
+                four_k_fit(&source, Some(&silent), is_4k_capable),
                 without_ceiling,
-                "learned {learned:?}, admin {admin_choice:?}, no ceiling"
+                "{stored:?}, no ceiling"
             );
             assert_eq!(
-                four_k_fit(&source, None, supports_4k),
+                four_k_fit(&source, None, is_4k_capable),
                 without_ceiling,
-                "learned {learned:?}, admin {admin_choice:?}, no profile"
+                "{stored:?}, no profile"
             );
             assert_eq!(
-                four_k_fit(&source, Some(&hd_ceiling), supports_4k),
+                four_k_fit(&source, Some(&hd_ceiling), is_4k_capable),
                 FourKFit::Unsupported,
-                "learned {learned:?}, admin {admin_choice:?}, 1080p ceiling"
+                "{stored:?}, 1080p ceiling"
             );
             assert_eq!(
-                four_k_fit(&source, Some(&uhd_ceiling), supports_4k),
+                four_k_fit(&source, Some(&uhd_ceiling), is_4k_capable),
                 FourKFit::Native,
-                "learned {learned:?}, admin {admin_choice:?}, 4K ceiling"
+                "{stored:?}, 4K ceiling"
             );
         }
     }

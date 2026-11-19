@@ -19,7 +19,7 @@ pub use form::{FormActions, FormGroup, Switch, ToggleRow};
 pub use metrics::MetricsCard;
 pub use modal::{ConfirmDialog, Modal};
 pub use pagination::PaginationBar;
-pub use server_info::{MediaStatsCard, ServerInfoCard};
+pub use server_info::{KvRow, MediaStatsCard, ServerInfoCard};
 pub use sessions::{ActivityCard, SessionsCard};
 pub use states::{EmptyState, ErrorAlert, LoadingText, SuccessAlert};
 pub use tasks::TasksCard;

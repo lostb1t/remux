@@ -1513,9 +1513,6 @@ pub struct DeviceInfoRemux {
     pub user_id: Option<Uuid>,
     pub is_current_session: Option<bool>,
     pub four_k: Option<FourKSupport>,
-    /// Whether playback has shown the device can play 4K, which is what
-    /// counts while `four_k` is Auto.
-    pub four_k_learned: Option<bool>,
 }
 
 /// Whether a device is treated as able to show 4K when versions are ranked.
@@ -1534,8 +1531,8 @@ pub struct DeviceInfoRemux {
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum FourKSupport {
-    /// Learned from playback: set once the device has played 4K for ten
-    /// minutes.
+    /// Not known yet. Becomes Supported once the device has played 4K for
+    /// ten minutes.
     #[default]
     Auto,
     Supported,

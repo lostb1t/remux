@@ -528,10 +528,10 @@ mod tests {
             .assert_status(StatusCode::NOT_FOUND);
     }
 
-    /// The list says whether playback has shown 4K, so the dashboard can tell
-    /// what Auto comes to, and nothing else in it moves.
+    /// What playback learns shows in the list as Supported, and nothing else
+    /// in it moves.
     #[tokio::test]
-    async fn the_device_list_says_whether_4k_was_learned() {
+    async fn the_device_list_shows_learned_4k_as_supported() {
         let (server, guard, token) = authenticated_server().await;
         let ctx = &guard.0;
         let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
@@ -545,7 +545,7 @@ mod tests {
             .add_header(http::header::AUTHORIZATION, auth.clone())
             .await
             .json();
-        assert_eq!(before["Items"][0]["Remux"]["four_k_learned"], json!(false));
+        assert_eq!(before["Items"][0]["Remux"]["four_k"], json!("Auto"));
 
         crate::db::auth::Device::mark_4k_capable(&ctx.db, user_id, "test-device")
             .await
@@ -556,11 +556,10 @@ mod tests {
             .add_header(http::header::AUTHORIZATION, auth)
             .await
             .json();
-        assert_eq!(after["Items"][0]["Remux"]["four_k_learned"], json!(true));
-        assert_eq!(after["Items"][0]["Remux"]["four_k"], json!("Auto"));
+        assert_eq!(after["Items"][0]["Remux"]["four_k"], json!("Supported"));
 
         // Each request moves the device's last activity, so leave that out.
-        before["Items"][0]["Remux"]["four_k_learned"] = json!(true);
+        before["Items"][0]["Remux"]["four_k"] = json!("Supported");
         for body in [&mut before, &mut after] {
             body["Items"][0]
                 .as_object_mut()

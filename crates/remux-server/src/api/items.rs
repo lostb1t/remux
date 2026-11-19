@@ -2027,7 +2027,8 @@ async fn item_for_user(
         device_profile: persisted_device_profile.as_ref(),
         is_4k_capable: session
             .device
-            .supports_4k(),
+            .is_4k_capable
+            == Some(true),
         subtitle_mode,
         explicit_subtitle_index: None,
         // MaxStaticBitrate is the most this device takes of a file as it is,
@@ -2447,7 +2448,8 @@ async fn item_for_user(
                 device_profile: Some(device_profile),
                 is_4k_capable: session
                     .device
-                    .supports_4k(),
+                    .is_4k_capable
+                    == Some(true),
                 subtitle_mode,
                 explicit_subtitle_index: None,
                 max_bitrate: device_profile.max_streaming_bitrate,

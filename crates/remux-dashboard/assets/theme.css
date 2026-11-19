@@ -409,27 +409,9 @@ html, body {
 .device-col-time   { flex: 0 0 auto; padding: 8px 12px; text-align: right; font-family: var(--font-mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
 .device-col-action { flex: 0 0 auto; padding: 8px 20px 8px 12px; display: flex; align-items: center; gap: 10px; }
 
-.device-hint { padding: 6px 20px; border-bottom: 1px solid var(--border); }
+.field-hint.device-4k-on { color: var(--success); }
 
-.device-4k {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: .65rem;
-  font-weight: 600;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.device-4k-on { color: var(--success); }
-.select-input.device-4k-select {
-  width: auto;
-  height: 28px;
-  padding: 0 8px;
-  font-size: .7rem;
-}
+.device-details .kv-value { text-align: right; overflow-wrap: anywhere; }
 
 /* Truncate long app version strings (e.g. git-hash builds) */
 .device-col-app .session-client-badge {
