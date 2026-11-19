@@ -2051,8 +2051,8 @@ async fn item_for_user(
         .stream_groups_auto_sort
         .unwrap_or(false);
 
-    // Items detail itself never shows subtitles (embedded or addon external —
-    // see the media_streams-stripping block below), but it still warms the
+    // Items detail itself never shows embedded or add-on subtitles (see the
+    // media_streams-stripping block below), but it still warms the
     // segment cache in the background so the PlaybackInfo call that follows a
     // few seconds later doesn't pay the cold-fetch cost.
     if needs_streams {
@@ -2104,7 +2104,10 @@ async fn item_for_user(
     } else {
         None
     };
-    if want_streams && media.kind == db::MediaKind::Stream {
+    // A stream or trailer plays its own URL, so it is its own source.
+    if want_streams
+        && matches!(media.kind, db::MediaKind::Stream | db::MediaKind::Trailer)
+    {
         media.sources = Some(vec![media.clone()]);
     } else if want_streams
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
@@ -2383,24 +2386,75 @@ async fn item_for_user(
         }]);
     }
 
-    // Items detail never advertises subtitle tracks — neither embedded (from
-    // probe data) nor addon-external. Addon subtitle fetches are the slow
-    // part of building this response (multi-second network round trips per
-    // addon), most clients never surface subtitles on a details page anyway,
-    // and every real client calls PlaybackInfo before it actually starts
-    // playback — that's the one place subtitles (embedded + external) get
-    // advertised, with indexes that stay consistent with the download
-    // endpoint. Strip rather than just not-append, so a stale/cached embedded
-    // subtitle entry from probe data doesn't leak through either.
+    // Items detail never advertises embedded or add-on subtitle tracks.
+    // Addon subtitle fetches are the slow part of building this response
+    // (multi-second network round trips per addon), and which embedded ones
+    // PlaybackInfo keeps depends on the device; both get advertised there,
+    // with indexes that stay consistent with the download endpoint. Strip
+    // rather than just not-append, so a stale/cached embedded subtitle entry
+    // from probe data doesn't leak through either.
+    //
+    // The subtitle files next to the video are the exception, as in
+    // Jellyfin: a local lookup, at the indexes PlaybackInfo gives them (see
+    // `local_sidecars`). Android TV hands an item to an external player
+    // from this response alone.
     if want_streams
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     {
+        let rows = media
+            .sources
+            .clone()
+            .unwrap_or_default();
+        let local_subtitles = if rows.is_empty() {
+            Vec::new()
+        } else {
+            let mut item = media.clone();
+            state
+                .ctx
+                .addons
+                .fetch_local_subtitles(
+                    &mut item,
+                    &state.ctx,
+                    Some(
+                        session
+                            .user
+                            .id,
+                    ),
+                )
+                .await
+        };
         if let Some(ref mut sources) = base_item.media_sources {
-            for source in sources.iter_mut() {
+            for (i, source) in sources
+                .iter_mut()
+                .enumerate()
+            {
+                let sidecar_start = crate::api::subtitles::sidecar_block_start(source);
                 source
                     .media_streams
                     .retain(|s| s.type_ != api::MediaStreamType::Subtitle);
                 source.default_subtitle_stream_index = None;
+                let (Some(start), Some(row)) = (sidecar_start, rows.get(i)) else {
+                    continue;
+                };
+                let sidecars = crate::api::subtitles::local_sidecars(
+                    &local_subtitles,
+                    row.stream_info
+                        .as_ref()
+                        .and_then(|info| {
+                            info.filename
+                                .as_deref()
+                        }),
+                );
+                crate::api::subtitles::push_local_sidecars(
+                    source,
+                    start,
+                    &sidecars,
+                    media.id,
+                    session
+                        .device
+                        .access_token
+                        .expose(),
+                );
             }
         }
     }
@@ -7056,6 +7110,185 @@ mod tests {
         );
     }
 
+    /// A subtitle file next to the video is listed on the item at the index
+    /// PlaybackInfo gives it, and served at that index without a session:
+    /// Android TV hands the item's subtitles to an external player, which
+    /// fetches them with no credentials.
+    #[tokio::test]
+    async fn a_sidecar_subtitle_is_listed_on_the_item_like_in_playbackinfo() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now().naive_utc();
+
+        let addon = crate::addons::addon::Addon {
+            id: Uuid::new_v4(),
+            name: "local".to_string(),
+            preset: remux_sdks::remux::AddonPresetRef {
+                kind: "opendal-local".to_string(),
+                config: serde_json::json!({
+                    "media_kind": "movie",
+                    "paths": [dir.path().to_str().unwrap()],
+                })
+                .into(),
+            },
+            resources: vec![
+                remux_sdks::stremio::ResourceType::Stream,
+                remux_sdks::stremio::ResourceType::Subtitles,
+            ],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: true,
+            http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+        let sub_name = "Sidecar.Movie.2020.hu.srt";
+        let sub_path = dir
+            .path()
+            .join(sub_name);
+        std::fs::write(&sub_path, "1\n00:00:01,000 --> 00:00:02,000\nSzia\n").unwrap();
+        sqlx::query(
+            "INSERT INTO opendal_files (id, addon_id, media_kind, path, name, imdb_id, scanned_at) \
+             VALUES (?, ?, 'subtitle', ?, ?, 'tt7000001', ?)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(addon.id)
+        .bind(sub_path.to_str().unwrap())
+        .bind(sub_name)
+        .bind(now)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        let movie =
+            insert_media(&ctx.db, "Sidecar Movie", db::MediaKind::Movie, "tt7000001")
+                .await;
+        let id = movie.id;
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        let mut stream = db::Media {
+            title: "Sidecar.Movie.2020.mkv".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    "Sidecar.Movie.2020.mkv".into(),
+                ),
+                filename: Some("Sidecar.Movie.2020.mkv".to_string()),
+                ..Default::default()
+            }),
+            probe_data: Some(crate::api::MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                bitrate: Some(8_000_000),
+                run_time_ticks: Some(100_000_000),
+                media_streams: vec![
+                    crate::api::MediaStream {
+                        codec: Some("h264".to_string()),
+                        type_: crate::api::MediaStreamType::Video,
+                        index: 0,
+                        width: Some(1920),
+                        height: Some(1080),
+                        ..Default::default()
+                    },
+                    crate::api::MediaStream {
+                        codec: Some("aac".to_string()),
+                        type_: crate::api::MediaStreamType::Audio,
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                remux: Some(remux_sdks::remux::MediaSourceRemuxInfo {
+                    source: Some(crate::api::ProbeOrigin::Ffprobe),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        stream
+            .save(&ctx.db)
+            .await
+            .unwrap();
+
+        let sidecar = |body: &serde_json::Value| {
+            body["MediaSources"][0]["MediaStreams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["Type"] == "Subtitle" && s["Language"] == "hu")
+                .map(|s| {
+                    (
+                        s["Index"]
+                            .as_i64()
+                            .unwrap(),
+                        s["IsExternal"].clone(),
+                        s["Path"].clone(),
+                    )
+                })
+        };
+        let item: serde_json::Value = server
+            .get(&format!("/items/{id}"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("Fields", "MediaSources")])
+            .await
+            .json();
+        let on_item = sidecar(&item).expect("the item lists the sidecar");
+        assert_eq!(
+            on_item,
+            (2, serde_json::json!(true), serde_json::json!(sub_name))
+        );
+
+        let playback: serde_json::Value = server
+            .post(&format!("/items/{id}/playbackinfo"))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&serde_json::json!({ "MaxStreamingBitrate": 100_000_000 }))
+            .await
+            .json();
+        assert_eq!(sidecar(&playback).map(|(index, ..)| index), Some(on_item.0));
+
+        let resp = server
+            .get(&format!(
+                "/videos/{id}/{}/subtitles/{}/stream.srt",
+                item["MediaSources"][0]["Id"]
+                    .as_str()
+                    .unwrap(),
+                on_item.0
+            ))
+            .await;
+        resp.assert_status_ok();
+        assert!(
+            resp.text()
+                .contains("Szia")
+        );
+    }
+
     async fn insert_group_container(
         db: &sqlx::SqlitePool,
         title: &str,
@@ -7940,6 +8173,36 @@ mod tests {
 
         resp.assert_status_ok();
         assert_api_keys_are_real(&resp.json::<serde_json::Value>(), &token);
+    }
+
+    /// A trailer opened by id is playable: it lists itself as its source, so
+    /// clients (Swiftfin) don't take it for a missing, virtual item.
+    #[tokio::test]
+    async fn a_trailer_opens_as_its_own_source() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let trailer =
+            insert_test_source_of_kind(&guard.0, db::MediaKind::Trailer).await;
+
+        let resp = server
+            .get(&format!("/items/{}", trailer.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let body = resp.json::<serde_json::Value>();
+        assert_eq!(body["Type"], "Trailer");
+        assert_ne!(body["LocationType"], "Virtual");
+        assert_eq!(
+            body["MediaSources"][0]["Id"],
+            trailer
+                .id
+                .simple()
+                .to_string()
+        );
     }
 
     /// Android TV calls `/items?parentId=<season>&startIndex=1` with no SortBy and

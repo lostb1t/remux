@@ -980,6 +980,11 @@ impl SubtitleQuery {
 #[async_trait]
 pub trait SubtitleAddon: Send + Sync {
     fn supports(&self, media: &db::Media) -> bool;
+    /// Its subtitles are files next to the library's videos, read from the
+    /// database rather than a provider over the network.
+    fn is_local(&self) -> bool {
+        false
+    }
     async fn subtitle_fetch(
         &self,
         media: &db::Media,
@@ -3165,6 +3170,46 @@ impl AddonService {
         if !skipped_unreachable {
             ctx.store
                 .save(cache_key, subs.clone(), SUBTITLES_TTL);
+        }
+        subs
+    }
+
+    /// The subtitle files next to the library's videos of `media`: only the
+    /// local addons, read fresh from the database, so cheap enough for an
+    /// item listing and the same in every response that numbers them.
+    pub async fn fetch_local_subtitles(
+        &self,
+        media: &mut db::Media,
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+    ) -> Vec<SubtitleInfo> {
+        if media.kind == db::MediaKind::Episode {
+            media
+                .grandparent(&ctx.db)
+                .await
+                .ok();
+        }
+        let addons = self
+            .addons_for::<dyn SubtitleAddon>(media, &ctx.db, user_id)
+            .await;
+        let mut subs = vec![];
+        for r in &addons {
+            let Some(addon) = r
+                .subtitle
+                .as_ref()
+                .filter(|a| a.is_local())
+            else {
+                continue;
+            };
+            match addon
+                .subtitle_fetch(media, &SubtitleQuery::default(), &ctx.db)
+                .await
+            {
+                Ok(s) => subs.extend(s),
+                Err(e) => {
+                    warn!(addon = %r.row.name, error = %e, "local subtitles failed")
+                }
+            }
         }
         subs
     }

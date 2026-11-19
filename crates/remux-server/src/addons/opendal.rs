@@ -671,6 +671,10 @@ impl IndexAddon for OpendalAddon {
 
 #[async_trait]
 impl SubtitleAddon for OpendalAddon {
+    fn is_local(&self) -> bool {
+        true
+    }
+
     fn supports(&self, media: &db::Media) -> bool {
         match self.media_kind {
             OpendalKind::Movie => {

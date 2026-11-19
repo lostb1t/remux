@@ -4682,10 +4682,14 @@ impl Media {
             }
             // Like Jellyfin's extras, a trailer is nobody's child and no
             // library item: it is only listed as its owner's local trailer.
+            // Asked for by id it is found, so a client can open and play it.
             if filter
                 .kind
                 .as_ref()
                 .is_none_or(|kinds| kinds.is_empty())
+                && filter
+                    .id
+                    .is_none()
             {
                 qb.push(" AND kind != 'trailer'");
             }
@@ -15750,6 +15754,58 @@ mod trailer_tests {
                 }
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_trailer_is_found_by_id_but_never_listed() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let mut item =
+            movie(Some(vec![direct("https://cdn.example/a.mp4", "A 1080p")]));
+        item.save(db)
+            .await
+            .unwrap();
+        let trailer = Media::trailer_rows(db, &item.id)
+            .await
+            .unwrap()
+            .remove(0);
+
+        let by_id = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                id: Some(vec![trailer.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .records;
+        assert_eq!(
+            by_id
+                .iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            [trailer.id]
+        );
+
+        let listed = Media::get_by_filter(db, &MediaFilter::default())
+            .await
+            .unwrap()
+            .records;
+        assert!(
+            listed
+                .iter()
+                .all(|m| m.kind != MediaKind::Trailer)
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|m| m.id == item.id)
+        );
     }
 
     #[tokio::test]

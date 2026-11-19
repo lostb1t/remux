@@ -1512,6 +1512,31 @@ pub struct DeviceInfoRemux {
     pub remote_end_point: Option<String>,
     pub user_id: Option<Uuid>,
     pub is_current_session: Option<bool>,
+    pub four_k: Option<FourKSupport>,
+}
+
+/// Whether a device is treated as able to show 4K when versions are ranked.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum FourKSupport {
+    /// Not known yet. Becomes Supported once the device has played 4K for
+    /// ten minutes.
+    #[default]
+    Auto,
+    Supported,
+    Unsupported,
 }
 
 // Jellyfin-compatible activity log entry shape.
@@ -5918,6 +5943,40 @@ impl Endpoint for DeleteDevice {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         self
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PatchDeviceRequest {
+    pub four_k: FourKSupport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PatchDevice {
+    pub id: String,
+    #[serde(rename = "userId")]
+    pub user_id: Uuid,
+    #[serde(skip)]
+    pub patch: PatchDeviceRequest,
+}
+
+impl Endpoint for PatchDevice {
+    type Output = ();
+
+    fn path(&self) -> String {
+        "/remux/devices".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::PATCH
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.patch).unwrap_or_default())
     }
 }
 
