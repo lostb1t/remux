@@ -5,8 +5,9 @@ use axum::Json;
 use super::subtitles::{
     SidecarSubtitleRoute, SubtitleDedupSettings, append_external_subtitles,
     drop_unsupported_embedded_subtitles_with_external_match,
-    filter_external_subtitles_for_source, inject_sidecar_subtitles, provider_filename,
-    save_sidecar_subtitle_routes,
+    filter_external_subtitles_for_source, inject_sidecar_subtitles, local_sidecars,
+    provider_filename, push_local_sidecars, save_sidecar_subtitle_routes,
+    sidecar_block_start, without_sidecars,
 };
 use axum::{
     body::Body,
@@ -553,6 +554,26 @@ async fn items_playbackinfo_inner(
         }
     );
     let probed = probed?;
+    // The files next to the video, numbered as a block right after each
+    // source's own streams, the same way the item lists them.
+    let local_subtitles = match subtitle_media.clone() {
+        Some(mut item) => {
+            state
+                .ctx
+                .addons
+                .fetch_local_subtitles(
+                    &mut item,
+                    &state.ctx,
+                    Some(
+                        session
+                            .user
+                            .id,
+                    ),
+                )
+                .await
+        }
+        None => Vec::new(),
+    };
     let item_runtime_seconds = subtitle_media
         .as_ref()
         .and_then(|item| item.runtime);
@@ -598,6 +619,8 @@ async fn items_playbackinfo_inner(
         external_subtitles,
     } in probed.results
     {
+        // Before any stream is dropped for the device, as the item does.
+        let sidecar_start = sidecar_block_start(&source);
         // Metadata-only torrent probes may not know the container duration yet.
         // Keep the authoritative Movie/Episode duration in PlaybackInfo so
         // clients do not treat a normal VOD source as an indefinite stream.
@@ -644,6 +667,33 @@ async fn items_playbackinfo_inner(
                 device_profile.as_ref(),
             );
         }
+
+        let external_subtitles = match sidecar_start {
+            Some(start) => {
+                let sidecars = local_sidecars(
+                    &local_subtitles,
+                    effective_stream
+                        .stream_info
+                        .as_ref()
+                        .and_then(|info| {
+                            info.filename
+                                .as_deref()
+                        }),
+                );
+                push_local_sidecars(
+                    &mut source,
+                    start,
+                    &sidecars,
+                    id,
+                    session
+                        .device
+                        .access_token
+                        .expose(),
+                );
+                without_sidecars(&external_subtitles, &sidecars)
+            }
+            None => external_subtitles,
+        };
 
         // Resolve default audio/subtitle stream indexes for this source. These are
         // per-request API values (never persisted); resolving before the transcode
@@ -1113,7 +1163,7 @@ async fn items_playbackinfo_inner(
     if session
         .device
         .is_4k_capable
-        != Some(true)
+        .is_none()
     {
         crate::services::four_k_capability::remember_sources(
             &state.ctx,

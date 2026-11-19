@@ -126,7 +126,10 @@ pub(crate) fn is_release_match(
 /// (`Movie.WEB-DL.mkv` owns `Movie.WEB-DL.en.forced.srt`, not
 /// `Movie.BluRay.en.srt`). With no source filename there is nothing to tell
 /// them apart, so every sidecar counts.
-fn is_local_sidecar(sub: &SubtitleInfo, source_filename: Option<&str>) -> bool {
+pub(crate) fn is_local_sidecar(
+    sub: &SubtitleInfo,
+    source_filename: Option<&str>,
+) -> bool {
     if !matches!(
         sub.url,
         Some(

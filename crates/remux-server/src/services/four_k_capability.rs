@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -19,7 +19,6 @@ const MAX_REPORT_GAP: Duration = Duration::from_secs(3 * 60);
 const OBSERVATION_TTL: Duration = Duration::from_secs(60 * 60);
 
 type SessionKey = (Uuid, String, String);
-type DeviceKey = (Uuid, String);
 
 struct Observation {
     source_id: String,
@@ -31,7 +30,6 @@ struct Observation {
 #[derive(Default)]
 struct TrackingState {
     sessions: HashMap<SessionKey, Observation>,
-    confirmed: HashSet<DeviceKey>,
 }
 
 pub struct FourKCapabilitySubscriber {
@@ -103,12 +101,6 @@ impl FourKCapabilitySubscriber {
                 .state
                 .lock()
                 .unwrap();
-            if state
-                .confirmed
-                .contains(&device_key)
-            {
-                return Ok(());
-            }
             state
                 .sessions
                 .retain(|_, value| {
@@ -173,14 +165,12 @@ impl FourKCapabilitySubscriber {
                 &info.device_id,
             )
             .await?;
-            let mut state = self
-                .state
+            // Reports stop once the device's value is known (api/session.rs).
+            // Nothing is remembered here, so if an admin sets it back to Auto
+            // it can be learned again.
+            self.state
                 .lock()
-                .unwrap();
-            state
-                .confirmed
-                .insert(device_key.clone());
-            state
+                .unwrap()
                 .sessions
                 .retain(|key, _| {
                     (
@@ -281,4 +271,92 @@ fn source_key(
     source_id: &str,
 ) -> String {
     format!("observed-4k-source:{user_id}:{device_id}:{session_id}:{source_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::FourKSupport, integration_test::authenticated_server,
+        signals::PlaybackContext,
+    };
+    use sqlx::SqlitePool;
+
+    /// Ten minutes of 4K reports, two and a half minutes apart.
+    async fn play_4k_for_ten_minutes(
+        subscriber: &FourKCapabilitySubscriber,
+        user_id: Uuid,
+        session_id: &str,
+    ) {
+        let source_id = Uuid::new_v4().to_string();
+        subscriber
+            .ctx
+            .store
+            .save(
+                source_key(&user_id, "test-device", session_id, &source_id),
+                (),
+                Duration::from_secs(60),
+            );
+        let start = Instant::now();
+        let step = Duration::from_secs(150);
+        for i in 0..=4u32 {
+            subscriber
+                .observe(PlaybackPosition {
+                    context: PlaybackContext {
+                        user_id,
+                        position_ticks: i64::from(i) * 150 * 10_000_000,
+                        session_id: session_id.to_string(),
+                        device_id: "test-device".to_string(),
+                        media_source_id: Some(source_id.clone()),
+                        ..Default::default()
+                    },
+                    reported_at: start + step * i,
+                    video_is_copied: true,
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn stored(db: &SqlitePool, user_id: Uuid) -> Option<bool> {
+        sqlx::query_scalar(
+            "SELECT is_4k_capable FROM devices WHERE user_id = ? AND id = 'test-device'",
+        )
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    /// Learning leaves an admin's choice alone, and works again after the
+    /// admin sets the device back to Auto, without a restart.
+    #[tokio::test]
+    async fn learning_respects_the_admin_and_resumes_after_auto() {
+        let (_server, guard, _token) = authenticated_server().await;
+        let ctx = &guard.0;
+        let db = &ctx.db;
+        let subscriber = FourKCapabilitySubscriber::new(ctx.clone());
+        let user_id: Uuid =
+            sqlx::query_scalar("SELECT user_id FROM devices WHERE id = 'test-device'")
+                .fetch_one(db)
+                .await
+                .unwrap();
+        assert_eq!(stored(db, user_id).await, None);
+
+        play_4k_for_ten_minutes(&subscriber, user_id, "s1").await;
+        assert_eq!(stored(db, user_id).await, Some(true));
+
+        Device::set_4k_support(db, user_id, "test-device", FourKSupport::Unsupported)
+            .await
+            .unwrap();
+        play_4k_for_ten_minutes(&subscriber, user_id, "s2").await;
+        assert_eq!(stored(db, user_id).await, Some(false));
+
+        Device::set_4k_support(db, user_id, "test-device", FourKSupport::Auto)
+            .await
+            .unwrap();
+        assert_eq!(stored(db, user_id).await, None);
+        play_4k_for_ten_minutes(&subscriber, user_id, "s3").await;
+        assert_eq!(stored(db, user_id).await, Some(true));
+    }
 }

@@ -859,10 +859,13 @@ mod tests {
         let mut v = base.clone();
         v["overview"] = "".into();
         assert_eq!(episode(v), None);
-        let mut v = base;
+        let mut v = base.clone();
         v["overview"] = "".into();
         v["description"] = "From description.".into();
         assert_eq!(episode(v).as_deref(), Some("From description."));
+        let mut v = base;
+        v["overview"] = "Text.".into();
+        assert_eq!(episode(v).as_deref(), Some("Text."));
     }
 
     #[test]

@@ -433,7 +433,7 @@ pub async fn report_playback_progress(
             && session
                 .device
                 .is_4k_capable
-                != Some(true)
+                .is_none()
         {
             state
                 .ctx
