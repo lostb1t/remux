@@ -721,7 +721,7 @@ async fn ensure_subtitle_cached(
 )]
 pub async fn subtitles_stream(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: std::result::Result<auth::AuthSession, axum_anyhow::ApiError>,
     Path((item_id, media_source_id, stream_index, _start_ticks, format)): Path<(
         Uuid,
         Uuid,
@@ -747,7 +747,7 @@ pub async fn subtitles_stream(
 #[get("/videos/{item_id}/{media_source_id}/subtitles/{stream_index}/stream.{format}")]
 pub async fn subtitles_stream_tickless(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: std::result::Result<auth::AuthSession, axum_anyhow::ApiError>,
     Path((item_id, media_source_id, stream_index, format)): Path<(
         Uuid,
         Uuid,
@@ -1164,6 +1164,154 @@ fn next_external_subtitle_index(
         .map_or(0, |index| index + 1)
 }
 
+/// The subtitle files next to this source's video (see
+/// `is_local_sidecar`), in a fixed order. They are listed on the item and in
+/// PlaybackInfo as one block right after the source's own streams, at the
+/// same indexes in both: a client that never calls PlaybackInfo (Android TV
+/// handing an item to an external player) still gets them, and the download
+/// endpoint resolves them without the add-on list. Not capped per language
+/// nor deduplicated against embedded tracks: someone put each one there.
+pub(crate) fn local_sidecars(
+    subs: &[crate::addons::SubtitleInfo],
+    source_filename: Option<&str>,
+) -> Vec<crate::addons::SubtitleInfo> {
+    let mut sidecars: Vec<_> = subs
+        .iter()
+        .filter(|sub| crate::subtitle_selection::is_local_sidecar(sub, source_filename))
+        .cloned()
+        .collect();
+    sidecars.sort_by(|a, b| subtitle_path_hint(a).cmp(subtitle_path_hint(b)));
+    sidecars
+}
+
+/// `subs` without the ones in the sidecar block, which are numbered there.
+pub(crate) fn without_sidecars(
+    subs: &[crate::addons::SubtitleInfo],
+    sidecars: &[crate::addons::SubtitleInfo],
+) -> Vec<crate::addons::SubtitleInfo> {
+    subs.iter()
+        .filter(|sub| {
+            !sidecars
+                .iter()
+                .any(|s| {
+                    s.id == sub.id && subtitle_path_hint(s) == subtitle_path_hint(sub)
+                })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Where the sidecar block starts: after every stream the source's probe
+/// found, before any is dropped for the device, so the item, PlaybackInfo and
+/// the download endpoint agree. `None` without real probe data, whose
+/// streams may still change.
+pub(crate) fn sidecar_block_start(source: &api::MediaSourceInfo) -> Option<i64> {
+    has_real_probe_data(source).then(|| {
+        source
+            .media_streams
+            .iter()
+            .map(|s| s.index)
+            .max()
+            .map_or(0, |index| index + 1)
+    })
+}
+
+/// Adds the sidecar block to `source` from `start`.
+pub(crate) fn push_local_sidecars(
+    source: &mut api::MediaSourceInfo,
+    start: i64,
+    sidecars: &[crate::addons::SubtitleInfo],
+    item_id: Uuid,
+    api_key: &str,
+) {
+    for (offset, sub) in sidecars
+        .iter()
+        .enumerate()
+    {
+        let index = start + offset as i64;
+        let mut stream = crate::conversions::subtitle_to_media_stream(sub);
+        stream.index = index;
+        // Clients without PlaybackInfo's DeliveryUrl tell the format by it.
+        stream.path = sub
+            .filename
+            .clone();
+        stream.delivery_url = Some(format!(
+            "/Videos/{item_id}/{source_id}/Subtitles/{index}/0/Stream.vtt?ApiKey={api_key}",
+            source_id = source.id,
+        ));
+        source
+            .media_streams
+            .push(stream);
+    }
+}
+
+/// Serves `stream_index` when it falls in the source's sidecar block. Needs
+/// no session: Jellyfin serves subtitles without one, and an external player
+/// handed the URL has none.
+async fn local_sidecar_response(
+    state: &AppState,
+    item_id: Uuid,
+    selected_id: Uuid,
+    stream_index: i64,
+    format: &str,
+    user_id: Option<Uuid>,
+) -> Option<Response<Body>> {
+    let source = crate::services::StreamService::lookup(
+        &state.ctx,
+        item_id,
+        Some(selected_id),
+        None,
+        user_id,
+    )
+    .await
+    .ok()?;
+    let start = sidecar_block_start(
+        source
+            .probe_data
+            .as_ref()?,
+    )?;
+    let offset = usize::try_from(stream_index - start).ok()?;
+    let mut item = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await
+    .ok()
+    .flatten()?;
+    let subs = state
+        .ctx
+        .addons
+        .fetch_local_subtitles(&mut item, &state.ctx, user_id)
+        .await;
+    let sidecars = local_sidecars(
+        &subs,
+        source
+            .stream_info
+            .as_ref()
+            .and_then(|info| {
+                info.filename
+                    .as_deref()
+            }),
+    );
+    let descriptor = sidecars
+        .get(offset)?
+        .url
+        .as_ref()?;
+    Some(
+        match fetch_external_subtitle_bytes(state, descriptor).await {
+            Ok(bytes) => {
+                external_subtitle_response(bytes, &format.to_ascii_lowercase())
+            }
+            Err(error) => {
+                warn!(%error, %item_id, stream_index, "sidecar subtitle unavailable");
+                (StatusCode::NOT_FOUND, "subtitle unavailable").into_response()
+            }
+        },
+    )
+}
+
 pub(crate) fn inject_sidecar_subtitles(
     source: &mut api::MediaSourceInfo,
     subtitles: Vec<crate::addons::SubtitleInfo>,
@@ -1254,12 +1402,30 @@ async fn sidecar_subtitle_response(
 
 async fn subtitles_stream_inner(
     state: AppState,
-    session: auth::AuthSession,
+    session: std::result::Result<auth::AuthSession, axum_anyhow::ApiError>,
     item_id: Uuid,
     media_source_id: Uuid,
     stream_index: i64,
     format: String,
-) -> Result<impl IntoResponse> {
+) -> Result<Response<Body>> {
+    let session = match session {
+        Ok(session) => session,
+        Err(e) => {
+            return match local_sidecar_response(
+                &state,
+                item_id,
+                media_source_id,
+                stream_index,
+                &format,
+                None,
+            )
+            .await
+            {
+                Some(response) => Ok(response),
+                None => Err(e),
+            };
+        }
+    };
     // The URL carries no PlaySessionId: use the stream this device's last
     // PlaybackInfo selected for the source id. After a probe fallback, or with
     // an auto-play id, resolving the id directly picks another release.
@@ -1294,6 +1460,22 @@ async fn subtitles_stream_inner(
     {
         return Ok(response);
     }
+    if let Some(response) = local_sidecar_response(
+        &state,
+        item_id,
+        selected_id,
+        stream_index,
+        &format,
+        Some(
+            session
+                .user
+                .id,
+        ),
+    )
+    .await
+    {
+        return Ok(response);
+    }
 
     // Try to resolve as an external subtitle injected during PlaybackInfo.
     // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
@@ -1321,6 +1503,43 @@ async fn subtitles_stream_inner(
         .await
         .ok();
         if let Some(ref source) = source_media {
+            // The sidecar block sits before the add-on subtitles, as in
+            // PlaybackInfo, and was answered above.
+            let sidecars = match source
+                .probe_data
+                .as_ref()
+                .and_then(sidecar_block_start)
+            {
+                Some(start) => {
+                    let local = state
+                        .ctx
+                        .addons
+                        .fetch_local_subtitles(
+                            &mut item_media,
+                            &state.ctx,
+                            Some(
+                                session
+                                    .user
+                                    .id,
+                            ),
+                        )
+                        .await;
+                    let sidecars = local_sidecars(
+                        &local,
+                        source
+                            .stream_info
+                            .as_ref()
+                            .and_then(|info| {
+                                info.filename
+                                    .as_deref()
+                            }),
+                    );
+                    (start..start + sidecars.len() as i64)
+                        .zip(sidecars)
+                        .collect::<Vec<_>>()
+                }
+                None => Vec::new(),
+            };
             let device_profile = crate::jellyfin_client::merge_device_profile_subtitles(
                 &session.device,
                 session
@@ -1418,7 +1637,12 @@ async fn subtitles_stream_inner(
                     .as_deref()
                     .into_iter()
                     .flatten()
-                    .map(|entry| entry.index),
+                    .map(|entry| entry.index)
+                    .chain(
+                        sidecars
+                            .iter()
+                            .map(|(index, _)| *index),
+                    ),
             );
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
@@ -1472,6 +1696,11 @@ async fn subtitles_stream_inner(
                         );
                         probe
                     });
+                let sidecar_subs: Vec<_> = sidecars
+                    .into_iter()
+                    .map(|(_, sub)| sub)
+                    .collect();
+                let subs = without_sidecars(&subs, &sidecar_subs);
                 let scored = filter_external_subtitles_for_source(
                     &resolved_probe.unwrap_or_default(),
                     source
@@ -1794,10 +2023,10 @@ pub(crate) fn filter_external_subtitles_for_source<'a>(
 }
 
 /// Add prefetched subtitles to real-probed sources. Only called from
-/// PlaybackInfo — Items detail deliberately never shows subtitle tracks (see
-/// the stripping step in `items.rs`), so index alignment only has to hold
-/// within a single PlaybackInfo response and the download endpoint that
-/// follows it.
+/// PlaybackInfo — Items detail shows only the sidecar block (see
+/// `local_sidecars`), which comes before these, so their index alignment
+/// only has to hold within a single PlaybackInfo response and the download
+/// endpoint that follows it.
 pub(crate) fn append_external_subtitles(
     media_sources: &mut [api::MediaSourceInfo],
     subs: &[crate::addons::SubtitleInfo],
