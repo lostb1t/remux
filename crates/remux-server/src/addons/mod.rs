@@ -2612,6 +2612,9 @@ impl AddonService {
             gp.external_ids = media
                 .external_ids
                 .clone();
+            gp.original_language = media
+                .original_language
+                .clone();
             if let Some(rels) = media
                 .relations
                 .as_ref()

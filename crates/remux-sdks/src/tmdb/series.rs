@@ -146,15 +146,19 @@ pub struct Season {
     pub external_ids: Option<super::ExternalIds>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeasonEndpoint {
+    #[serde(skip)]
     pub series_id: i64,
+    #[serde(skip)]
     pub season_number: i64,
 
     // #[builder(default = "en")]
     pub language: Option<String>,
 
     //#[builder(default = "Some(vec![\"images\".to_string(), \"external_ids\".to_string()])")]
+    #[serde(serialize_with = "serialize_comma_opt")]
     pub append_to_response: Option<Vec<String>>,
 }
 
@@ -165,6 +169,10 @@ impl Endpoint for SeasonEndpoint {
 
     fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -407,9 +415,192 @@ impl From<std::collections::HashMap<String, serde_json::Value>>
     }
 }
 
+/// The translations of up to [`MAX_APPENDS`] episodes of one season in a
+/// single call, like [`EpisodeExternalIdsBatchEndpoint`]: the name and
+/// overview of each episode in every language TMDB has an entry for (fields
+/// nobody translated are empty). The same append on the season endpoint is
+/// ignored by TMDB, hence the series endpoint.
+#[derive(Debug, Clone)]
+pub struct EpisodeTranslationsBatchEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+    pub episode_numbers: Vec<i64>,
+}
+
+impl Endpoint for EpisodeTranslationsBatchEndpoint {
+    type Output = EpisodeTranslationsBatch;
+
+    fn path(&self) -> String {
+        format!("tv/{}", self.series_id)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        let appends = self
+            .episode_numbers
+            .iter()
+            .map(|e| format!("season/{}/episode/{e}/translations", self.season_number))
+            .collect::<Vec<_>>()
+            .join(",");
+        [("append_to_response", appends)]
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "std::collections::HashMap<String, serde_json::Value>")]
+pub struct EpisodeTranslationsBatch {
+    pub episodes: Vec<EpisodeTranslations>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpisodeTranslations {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub translations: Vec<EpisodeTranslation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpisodeTranslation {
+    #[serde(default)]
+    pub iso_639_1: String,
+    #[serde(default)]
+    pub iso_3166_1: String,
+    #[serde(default)]
+    pub data: EpisodeTranslationData,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpisodeTranslationData {
+    pub name: Option<String>,
+    pub overview: Option<String>,
+}
+
+impl EpisodeTranslationsBatch {
+    pub fn get(
+        &self,
+        season_number: i64,
+        episode_number: i64,
+    ) -> Option<&[EpisodeTranslation]> {
+        self.episodes
+            .iter()
+            .find(|e| {
+                e.season_number == season_number && e.episode_number == episode_number
+            })
+            .map(|e| {
+                e.translations
+                    .as_slice()
+            })
+    }
+}
+
+/// Keeps only the appended `season/S/episode/E/translations` entries of the
+/// series response, not the series itself.
+impl From<std::collections::HashMap<String, serde_json::Value>>
+    for EpisodeTranslationsBatch
+{
+    fn from(response: std::collections::HashMap<String, serde_json::Value>) -> Self {
+        #[derive(Deserialize)]
+        struct Entry {
+            #[serde(default)]
+            translations: Vec<EpisodeTranslation>,
+        }
+        let episodes = response
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let rest = key.strip_prefix("season/")?;
+                let (season, rest) = rest.split_once("/episode/")?;
+                let episode = rest.strip_suffix("/translations")?;
+                Some(EpisodeTranslations {
+                    season_number: season
+                        .parse()
+                        .ok()?,
+                    episode_number: episode
+                        .parse()
+                        .ok()?,
+                    translations: serde_json::from_value::<Entry>(value)
+                        .ok()?
+                        .translations,
+                })
+            })
+            .collect();
+        Self { episodes }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn season_endpoint_sends_its_language() {
+        let ep = SeasonEndpoint {
+            series_id: 1,
+            season_number: 2,
+            language: Some("de".into()),
+            append_to_response: None,
+        };
+        assert_eq!(ep.path(), "tv/1/season/2");
+        assert_eq!(ep.query(), vec![("language".to_string(), "de".to_string())]);
+        let ep = SeasonEndpoint {
+            language: None,
+            ..ep
+        };
+        assert!(
+            ep.query()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn episode_translation_batches_keep_only_the_appended_episodes() {
+        let endpoint = EpisodeTranslationsBatchEndpoint {
+            series_id: 65942,
+            season_number: 0,
+            episode_numbers: vec![1, 2],
+        };
+        assert_eq!(endpoint.path(), "tv/65942");
+        let query = serde_json::to_value(endpoint.query_params()).unwrap();
+        assert_eq!(
+            query[0][1],
+            "season/0/episode/1/translations,season/0/episode/2/translations"
+        );
+        let batch: EpisodeTranslationsBatch = serde_json::from_value(serde_json::json!({
+            "id": 65942,
+            "name": "Re:ZERO",
+            "season/0/episode/1/translations": {"translations": [
+                {"iso_639_1": "de", "iso_3166_1": "DE", "data": {"name": "", "overview": ""}},
+                {"iso_639_1": "en", "iso_3166_1": "US", "data": {"name": "Otto's Diary", "overview": "Otto writes."}}
+            ]},
+            "season/0/episode/2/translations": {"translations": []}
+        }))
+        .unwrap();
+        assert_eq!(
+            batch
+                .episodes
+                .len(),
+            2
+        );
+        let ep1 = batch
+            .get(0, 1)
+            .unwrap();
+        assert_eq!(
+            ep1[1]
+                .data
+                .name
+                .as_deref(),
+            Some("Otto's Diary")
+        );
+        assert!(
+            batch
+                .get(0, 2)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            batch
+                .get(1, 1)
+                .is_none()
+        );
+    }
 
     #[test]
     fn episode_id_batches_keep_only_the_appended_episodes() {
