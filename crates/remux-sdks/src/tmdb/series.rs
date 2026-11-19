@@ -146,15 +146,19 @@ pub struct Season {
     pub external_ids: Option<super::ExternalIds>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeasonEndpoint {
+    #[serde(skip)]
     pub series_id: i64,
+    #[serde(skip)]
     pub season_number: i64,
 
     // #[builder(default = "en")]
     pub language: Option<String>,
 
     //#[builder(default = "Some(vec![\"images\".to_string(), \"external_ids\".to_string()])")]
+    #[serde(serialize_with = "serialize_comma_opt")]
     pub append_to_response: Option<Vec<String>>,
 }
 
@@ -165,6 +169,10 @@ impl Endpoint for SeasonEndpoint {
 
     fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -410,6 +418,26 @@ impl From<std::collections::HashMap<String, serde_json::Value>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn season_endpoint_sends_its_language() {
+        let ep = SeasonEndpoint {
+            series_id: 1,
+            season_number: 2,
+            language: Some("de".into()),
+            append_to_response: None,
+        };
+        assert_eq!(ep.path(), "tv/1/season/2");
+        assert_eq!(ep.query(), vec![("language".to_string(), "de".to_string())]);
+        let ep = SeasonEndpoint {
+            language: None,
+            ..ep
+        };
+        assert!(
+            ep.query()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn episode_id_batches_keep_only_the_appended_episodes() {
