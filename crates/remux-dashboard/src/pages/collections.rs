@@ -1543,12 +1543,14 @@ pub fn CollectionForm(
             if col_type.read().as_str() != "collections" {
                 ToggleRow {
                     label: "Latest: Unplayed Only",
+                    description: "Hides watched items from Latest, which clients usually show as a home row.",
                     checked: *latest_auto_unplayed.read(),
                     on_change: move |v| latest_auto_unplayed.set(v),
                 }
 
                 ToggleRow {
                     label: "Latest: Sort by Digital Release",
+                    description: "Sorts Latest by digital release date, which clients usually show as a home row.",
                     checked: *latest_sort_digital.read(),
                     on_change: move |v| latest_sort_digital.set(v),
                 }

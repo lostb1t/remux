@@ -1165,11 +1165,13 @@ fn db_media_to_item_inner(
     // several dlients require at least one stream. `Stream` is here because
     // Android TV refetches an item by MediaSource id when a version is picked
     // and reads `MediaSources` off that response without a PlaybackInfo call.
+    // A trailer plays its own URL, like a stream.
     if !hide_sources
         && (media.kind == db::MediaKind::Movie
             || media.kind == db::MediaKind::Episode
             || media.kind == db::MediaKind::Track
-            || media.kind == db::MediaKind::Stream)
+            || media.kind == db::MediaKind::Stream
+            || media.kind == db::MediaKind::Trailer)
     {
         item.can_download = Some(true);
         if media.kind != db::MediaKind::Track {
