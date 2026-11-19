@@ -380,7 +380,8 @@ impl Task for JellyfinImportTask {
                         external_ids: ext,
                         description: item
                             .overview
-                            .clone(),
+                            .clone()
+                            .and_then(|s| db::NonEmptyString::try_new(s).ok()),
                         released_at,
                         runtime,
                         ..Default::default()

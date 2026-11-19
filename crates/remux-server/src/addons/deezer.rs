@@ -216,7 +216,11 @@ impl DeezerAddon {
                                 .duration
                                 .map(|s| s as i64),
                             released_at,
-                            description: Some(format!("by {}", track_artist)),
+                            description: db::NonEmptyString::try_new(format!(
+                                "by {}",
+                                track_artist
+                            ))
+                            .ok(),
                             idx: track
                                 .track_position
                                 .or(Some(list_pos as i64 + 1)),
@@ -275,11 +279,12 @@ impl DeezerAddon {
                         .duration
                         .map(|s| s as i64),
                     released_at,
-                    description: Some(format!(
+                    description: db::NonEmptyString::try_new(format!(
                         "by {}",
                         t.artist
                             .name
-                    )),
+                    ))
+                    .ok(),
                     idx: t.track_position,
                     parent_idx: t.disk_number,
                     external_ids: db::ExternalIds {
@@ -373,7 +378,7 @@ impl DeezerAddon {
             title: a.title,
             kind: db::MediaKind::Album,
             released_at,
-            description: Some(desc_parts.join(" · ")),
+            description: db::NonEmptyString::try_new(desc_parts.join(" · ")).ok(),
             runtime: a
                 .duration
                 .map(|s| s as i64),
@@ -524,7 +529,11 @@ impl DeezerAddon {
                         .duration
                         .map(|s| s as i64),
                     released_at,
-                    description: Some(format!("by {}", track_artist)),
+                    description: db::NonEmptyString::try_new(format!(
+                        "by {}",
+                        track_artist
+                    ))
+                    .ok(),
                     idx: track
                         .track_position
                         .or(Some(list_pos as i64 + 1)),
@@ -1163,7 +1172,8 @@ fn build_playlist_media(playlist: &dz::Playlist) -> db::Media {
         collection_media_kind: Some(db::CollectionMediaKind::Music),
         description: playlist
             .description
-            .clone(),
+            .clone()
+            .and_then(|d| db::NonEmptyString::try_new(d).ok()),
         external_ids: db::ExternalIds {
             deezer_playlist: Some(playlist.id as i64),
             ..Default::default()
@@ -1200,12 +1210,13 @@ fn playlist_track_to_media(track: &dz::PlaylistTrack) -> db::Media {
         kind: db::MediaKind::Track,
         runtime: Some(track.duration as i64),
         released_at,
-        description: Some(format!(
+        description: db::NonEmptyString::try_new(format!(
             "by {}",
             track
                 .artist
                 .name
-        )),
+        ))
+        .ok(),
         external_ids: db::ExternalIds {
             deezer_track: Some(track.id as i64),
             deezer_album: Some(
@@ -1268,11 +1279,12 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
         runtime: t
             .duration
             .map(|s| s as i64),
-        description: Some(format!(
+        description: db::NonEmptyString::try_new(format!(
             "by {}",
             t.artist
                 .name
-        )),
+        ))
+        .ok(),
         parent_id: Some(album_id),
         grandparent_id: Some(artist_id),
         external_ids: db::ExternalIds {
@@ -1342,11 +1354,12 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
         ),
         title: a.title,
         kind: db::MediaKind::Album,
-        description: Some(format!(
+        description: db::NonEmptyString::try_new(format!(
             "by {}",
             a.artist
                 .name
-        )),
+        ))
+        .ok(),
         album_kind: a
             .record_type
             .as_deref()

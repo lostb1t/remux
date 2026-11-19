@@ -1981,7 +1981,7 @@ mod tests {
     ) -> db::Media {
         db::Media {
             title: title.to_string(),
-            description: description.map(String::from),
+            description: description.and_then(|d| db::NonEmptyString::try_new(d).ok()),
             grandparent: grandparent_title.map(|t| db::Media::stub(Uuid::new_v4(), t)),
             external_ids: db::ExternalIds {
                 artist_name: artist_name.map(String::from),

@@ -446,7 +446,8 @@ fn db_media_to_item_inner(
         ),
         overview: media
             .description
-            .clone(),
+            .clone()
+            .map(Into::into),
         play_access: Some("Full".to_string()),
         can_delete: Some(false),
         can_download: Some(false),
