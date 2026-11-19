@@ -407,7 +407,11 @@ html, body {
 .device-col-name   { flex: 1 1 0; min-width: 0; padding: 8px 12px 8px 20px; }
 .device-col-app    { flex: 0 0 auto; padding: 8px 12px; max-width: 180px; min-width: 0; }
 .device-col-time   { flex: 0 0 auto; padding: 8px 12px; text-align: right; font-family: var(--font-mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
-.device-col-action { flex: 0 0 auto; padding: 8px 20px 8px 12px; }
+.device-col-action { flex: 0 0 auto; padding: 8px 20px 8px 12px; display: flex; align-items: center; gap: 10px; }
+
+.field-hint.device-4k-on { color: var(--success); }
+
+.device-details .kv-value { text-align: right; overflow-wrap: anywhere; }
 
 /* Truncate long app version strings (e.g. git-hash builds) */
 .device-col-app .session-client-badge {
@@ -428,7 +432,7 @@ html, body {
     align-items: center;
   }
   .device-col-name   { grid-area: name;   padding: 8px 12px 2px 20px; }
-  .device-col-action { grid-area: action; padding: 8px 20px 2px 12px; align-self: center; }
+  .device-col-action { grid-area: action; padding: 8px 20px 2px 12px; align-self: center; flex-wrap: wrap; justify-content: flex-end; }
   .device-col-app    { grid-area: app;    padding: 2px 12px 8px; }
   .device-col-app .session-client-badge { display: inline-block; }
   .device-col-time   { grid-area: time;   padding: 2px 12px 8px; text-align: right; white-space: nowrap; }
