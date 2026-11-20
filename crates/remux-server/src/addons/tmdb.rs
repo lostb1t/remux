@@ -786,10 +786,11 @@ async fn tmdb_season_episodes(
 }
 
 /// A season in the metadata language. TMDB answers an episode nobody
-/// translated with a made-up name ("Folge 26") and an empty overview, so such
-/// an episode takes its name and overview from TMDB's default-language answer
-/// when that has an overview. That is one more call, cached, and only for a
-/// season with such an episode.
+/// translated with a made-up name ("Folge 26") and an empty overview, so an
+/// episode without an overview takes its name and overview from TMDB's
+/// default-language answer. That answer has the real name even when nobody
+/// wrote an overview yet, as for new episodes and specials. That is one more
+/// call, cached, and only for a season with such an episode.
 async fn localized_season(
     client: &sdks::RestClient<sdks::BearerAuth>,
     series_id: i64,
@@ -848,7 +849,7 @@ async fn localized_season(
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .find(|d| d.episode_number == episode.episode_number && !untranslated(d))
+            .find(|d| d.episode_number == episode.episode_number)
         {
             episode.name = fallback
                 .name
@@ -3028,9 +3029,9 @@ mod tests {
         })
     }
 
-    /// An episode nobody translated comes back with a made-up name and no
-    /// overview; it takes both from TMDB's default-language answer, while a
-    /// translated one and one no language describes keep their own.
+    /// An episode without an overview in the metadata language takes its name
+    /// and overview from TMDB's default-language answer, also when that has no
+    /// overview either. A translated one keeps its own.
     #[tokio::test]
     async fn untranslated_episodes_fall_back_to_the_default_language() {
         let tmdb = httpmock::MockServer::start();
@@ -3042,6 +3043,7 @@ mod tests {
                     (1, "Der Anfang", "Es beginnt."),
                     (2, "Folge 2", ""),
                     (3, "Folge 3", ""),
+                    (4, "Folge 4", ""),
                 ]));
         });
         let default = tmdb.mock(|when, then| {
@@ -3058,7 +3060,8 @@ mod tests {
                 .json_body(season_json(&[
                     (1, "The Beginning", "It begins."),
                     (2, "The Promise", "Subaru wakes up."),
-                    (3, "Episode 3", ""),
+                    (3, "Curb Your Expectations", ""),
+                    (4, "Episode 4", ""),
                 ]));
         });
         let client = tmdb_client("test", &tmdb.base_url()).unwrap();
@@ -3084,7 +3087,8 @@ mod tests {
             vec![
                 ("Der Anfang", Some("Es beginnt.")),
                 ("The Promise", Some("Subaru wakes up.")),
-                ("Folge 3", Some("")),
+                ("Curb Your Expectations", Some("")),
+                ("Episode 4", Some("")),
             ]
         );
         default.assert_hits(1);
