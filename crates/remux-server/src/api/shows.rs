@@ -2463,6 +2463,149 @@ pub(crate) mod test {
         );
     }
 
+    /// A season without dates of its own is shown once it has a released
+    /// episode (TMDB's season list often carries no date, e.g. most of One
+    /// Piece's seasons).
+    #[tokio::test]
+    async fn seasons_shows_null_date_season_with_a_released_episode() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let cfg = api::ServerConfiguration {
+            filter_by_digital_release_date: true,
+            digital_release_buffer_days: 0,
+            ..Default::default()
+        };
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
+
+        let now = Utc::now().naive_utc();
+        let past = now - chrono::Duration::days(365);
+
+        let mut series = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: db::NonEmptyString::try_new(
+                        "tt_seasons_null_aired_001".to_string(),
+                    )
+                    .ok(),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: "NullAiredSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new(
+                    "tt_seasons_null_aired_001".to_string(),
+                )
+                .ok(),
+                ..Default::default()
+            },
+            digital_released_at: Some(past),
+            released_at: Some(past),
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season1 = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:1", series.id),
+            ),
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            digital_released_at: Some(past),
+            released_at: Some(past),
+            ..Default::default()
+        };
+        season1
+            .save(db)
+            .await
+            .unwrap();
+
+        // Season 2: TVDB knows it exists but has no air date yet.
+        let mut season2 = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Season,
+                &format!("{}:2", series.id),
+            ),
+            title: "Season 2".to_string(),
+            kind: db::MediaKind::Season,
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(2),
+            digital_released_at: None,
+            released_at: None,
+            ..Default::default()
+        };
+        season2
+            .save(db)
+            .await
+            .unwrap();
+        let mut episode = db::Media {
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Episode,
+                &format!("{}:2:1", series.id),
+            ),
+            title: "Aired".to_string(),
+            kind: db::MediaKind::Episode,
+            grandparent_id: Some(series.id),
+            parent_id: Some(season2.id),
+            parent_idx: Some(2),
+            idx: Some(1),
+            released_at: Some(past),
+            ..Default::default()
+        };
+        episode
+            .save(db)
+            .await
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/shows/{}/seasons", series.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        let numbers: Vec<i64> = items
+            .iter()
+            .map(|i| {
+                i["IndexNumber"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            vec![1, 2],
+            "Season 2 has an aired episode; got: {items:?}"
+        );
+    }
+
     #[tokio::test]
     async fn episodes_filters_by_season_number_including_specials() {
         use crate::integration_test::{auth_header_with_token, authenticated_server};

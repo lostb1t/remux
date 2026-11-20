@@ -8730,8 +8730,21 @@ pub fn push_release_date_filter(
         ))
         .push_bind(threshold)
         .push(format!(
-            " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year'))))"
-        ));
+            " AND NOT ({a}kind = 'movie' AND {a}released_at > date('now', '-1 year')))"
+        ))
+        // Branch 3: a season without a date of its own (TMDB's season list
+        // often has none, e.g. most of One Piece's) is shown once one of its
+        // episodes is released, as Jellyfin shows every season that isn't
+        // missing. Only evaluated for undated seasons.
+        .push(format!(
+            " OR ({a}kind = 'season' AND {a}digital_released_at IS NULL \
+              AND {a}released_at IS NULL \
+              AND EXISTS (SELECT 1 FROM media e WHERE e.parent_id = {a}id \
+                AND e.kind = 'episode' \
+                AND COALESCE(e.digital_released_at, e.released_at) <= "
+        ))
+        .push_bind(threshold)
+        .push(")))");
     }
 }
 
