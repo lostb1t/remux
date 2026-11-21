@@ -2811,6 +2811,7 @@ impl AddonService {
         // (`get_direct_children`, `refresh_meta`, `level2_write` below) —
         // `level2_season` just gives them a common per-season parent so a
         // trace viewer groups one season's work together.
+        let written_episodes = std::sync::Mutex::new(Vec::<db::Media>::new());
         futures::stream::iter(level1_ok)
             .for_each_concurrent(concurrency, |child| {
                 let svc = self.clone();
@@ -2819,6 +2820,7 @@ impl AddonService {
                 let semaphore = Arc::clone(&semaphore);
                 let gp_stub = gp_stub.clone();
                 let existing_l2 = &existing_l2;
+                let written_episodes = &written_episodes;
                 async move {
                     // Created here (first poll), not synchronously in the
                     // `for_each_concurrent` closure — a season stuck waiting
@@ -2897,6 +2899,22 @@ impl AddonService {
                             if let Err(e) = db::Media::upsert(&ctx.db, chunk).await {
                                 error!(error = %e, "failed to upsert grandchildren");
                             } else {
+                                written_episodes
+                                    .lock()
+                                    .expect("written episodes lock")
+                                    .extend(
+                                        chunk
+                                            .iter()
+                                            .filter(|gc| gc.kind == db::MediaKind::Episode)
+                                            .map(|gc| db::Media {
+                                                id: gc.id,
+                                                kind: db::MediaKind::Episode,
+                                                idx: gc.idx,
+                                                parent_idx: gc.parent_idx,
+                                                external_ids: gc.external_ids.clone(),
+                                                ..Default::default()
+                                            }),
+                                    );
                                 db::UserMediaState::remap_orphaned_for(&ctx.db, chunk).await;
                                 save_pending_relations(&ctx, chunk).await;
                                 save_pending_tags(&ctx, chunk).await;
@@ -2911,6 +2929,26 @@ impl AddonService {
                 }
             })
             .await;
+
+        let written_episodes = written_episodes
+            .into_inner()
+            .expect("written episodes lock");
+        match db::Media::remove_renumbered_episodes(
+            &ctx.db,
+            actual_root_id,
+            &media.external_ids,
+            &written_episodes,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(removed) => {
+                info!(id = %actual_root_id, removed, "removed renumbered episodes")
+            }
+            Err(e) => {
+                warn!(id = %actual_root_id, error = %e, "failed to remove renumbered episodes")
+            }
+        }
 
         self.notify_series_done(&media);
         actual_root_id
