@@ -662,7 +662,6 @@ pub(crate) fn apply_subtitle_delivery(
             ));
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
             stream.is_external_url = Some(false);
-            stream.is_external = false;
         };
         if stream.is_external {
             // Already an external URL — no extraction involved, feasibility
@@ -1674,6 +1673,10 @@ mod tests {
                 .unwrap_or_default()
                 .contains("ApiKey=real-token"),
             "external stream should still carry a working delivery URL"
+        );
+        assert!(
+            text.is_external,
+            "a subtitle file stays external, as Jellyfin reports it"
         );
     }
 }
