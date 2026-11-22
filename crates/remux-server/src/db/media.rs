@@ -186,6 +186,21 @@ impl From<remux_sdks::stremio::MetaTrailer> for Trailer {
     }
 }
 
+/// A media column a forced metadata refresh clears when no addon returns it
+/// any more. Displays as its column name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
+#[strum(serialize_all = "snake_case")]
+pub enum ClearedField {
+    Description,
+    Runtime,
+    ReleasedAt,
+    DigitalReleasedAt,
+    Country,
+    OriginalLanguage,
+    Status,
+    EndDate,
+}
+
 const TRAILER_NAMESPACE: Uuid =
     Uuid::from_u128(0x5b0e_7a1d_93c4_4f2e_8d61_2c7f_a4e9_0b38);
 
@@ -1734,6 +1749,11 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
+    /// Fields no addon returns any more, written as NULL by
+    /// [`Media::upsert`]: the upsert otherwise keeps a stored value for NULL.
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub cleared: Vec<ClearedField>,
     /// Preloaded direct parent (season, album, channel, etc.). `Arc`, not
     /// `Box`: this gets cloned once per child when fanning out a season's/
     /// series' children (see `process_meta_item_inner`), and a `Box` clone
@@ -3164,6 +3184,26 @@ impl Media {
                      WHERE media_images.path LIKE 'http%' \
                        AND media_images.path <> excluded.path",
                 );
+                qb.build()
+                    .execute(&mut *tx)
+                    .await?;
+            }
+
+            for item in chunk
+                .iter()
+                .filter(|item| {
+                    !item
+                        .cleared
+                        .is_empty()
+                })
+            {
+                let mut qb = sqlx::QueryBuilder::new("UPDATE media SET ");
+                let mut sep = qb.separated(", ");
+                for field in &item.cleared {
+                    sep.push(format!("{field} = NULL"));
+                }
+                qb.push(" WHERE id = ")
+                    .push_bind(item.id);
                 qb.build()
                     .execute(&mut *tx)
                     .await?;
@@ -15745,6 +15785,49 @@ mod trailer_tests {
             trailers,
             ..Default::default()
         }
+    }
+
+    /// A field listed as cleared is written as NULL; any other field left
+    /// out keeps its stored value, as before.
+    #[tokio::test]
+    async fn upsert_writes_cleared_fields_as_null() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+
+        let mut item = movie(None);
+        item.description = NonEmptyString::try_new("A dream.".to_string()).ok();
+        item.runtime = Some(8880);
+        item.country = Some("US".into());
+        Media::upsert(db, &[item.clone()])
+            .await
+            .unwrap();
+
+        item.description = None;
+        item.runtime = None;
+        item.country = None;
+        item.cleared = vec![ClearedField::Description, ClearedField::Runtime];
+        Media::upsert(db, &[item.clone()])
+            .await
+            .unwrap();
+
+        let (description, runtime, country): (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT description, runtime, country FROM media WHERE id = ?",
+        )
+        .bind(item.id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(description, None);
+        assert_eq!(runtime, None);
+        assert_eq!(country.as_deref(), Some("US"));
     }
 
     async fn trailer_urls(db: &SqlitePool, owner: &Uuid) -> Vec<String> {
