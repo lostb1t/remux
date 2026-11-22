@@ -4874,6 +4874,223 @@ mod tests {
         }
     }
 
+    /// Lists a series as two seasons; once `renumbered`, its S1E13 is S2E1.
+    struct RenumberingTree {
+        renumbered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl TreeAddon for RenumberingTree {
+        fn supports(&self, root: &db::Media) -> bool {
+            matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
+        }
+
+        async fn get_children(
+            &self,
+            root: &db::Media,
+            _ctx: &AppContext,
+        ) -> anyhow::Result<Option<Vec<db::Media>>> {
+            let series_key = "renumbering";
+            if root.kind == db::MediaKind::Series {
+                return Ok(Some(
+                    [1, 2]
+                        .map(|idx| db::Media {
+                            id: db::Media::season_id(series_key, idx),
+                            kind: db::MediaKind::Season,
+                            title: format!("Season {idx}"),
+                            idx: Some(idx),
+                            parent_id: Some(root.id),
+                            grandparent_id: Some(root.id),
+                            ..Default::default()
+                        })
+                        .into(),
+                ));
+            }
+            let renumbered = self
+                .renumbered
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let episodes: &[(i64, i64, i64)] = match (root.idx, renumbered) {
+                (Some(1), false) => &[(1, 12, 112), (1, 13, 113)],
+                (Some(1), true) => &[(1, 12, 112)],
+                (Some(2), false) => &[(2, 2, 202)],
+                (Some(2), true) => &[(2, 1, 113), (2, 2, 202)],
+                _ => &[],
+            };
+            Ok(Some(
+                episodes
+                    .iter()
+                    .map(|&(season, idx, tvdb)| db::Media {
+                        id: db::Media::episode_id(series_key, season, idx),
+                        kind: db::MediaKind::Episode,
+                        title: format!("Episode {tvdb}"),
+                        idx: Some(idx),
+                        parent_idx: Some(season),
+                        parent_id: Some(root.id),
+                        grandparent_id: root.parent_id,
+                        external_ids: db::ExternalIds {
+                            tvdb: Some(tvdb),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+        }
+    }
+
+    /// Answers every item with itself.
+    struct EchoMeta;
+
+    #[async_trait]
+    impl MetaAddon for EchoMeta {
+        async fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn meta_fetch(
+            &self,
+            media: &db::Media,
+            _ctx: &AppContext,
+            _config: &crate::api::ServerConfiguration,
+        ) -> Result<Option<db::Media>> {
+            Ok(Some(media.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_removes_the_episode_its_source_renumbered() {
+        let renumbered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "renumbering".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Meta],
+                types: vec![],
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: false,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                tree: Some(std::sync::Arc::new(RenumberingTree {
+                    renumbered: renumbered.clone(),
+                })),
+                meta: Some(std::sync::Arc::new(EchoMeta)),
+                ..Default::default()
+            },
+        };
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        };
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        let config = Arc::new(db::Settings::get_config_or_default(&ctx.db).await);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+        let series = db::Media {
+            id: uuid::Uuid::new_v4(),
+            kind: db::MediaKind::Series,
+            title: "Renumbered Series".into(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(424242),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let episode_by_tvdb = |tvdb: i64| {
+            let db = ctx
+                .db
+                .clone();
+            async move {
+                sqlx::query_as::<_, (uuid::Uuid, i64, i64)>(
+                    "SELECT id, parent_idx, idx FROM media \
+                     WHERE kind = 'episode' AND json_extract(external_ids, '$.tvdb') = ?",
+                )
+                .bind(tvdb)
+                .fetch_all(&db)
+                .await
+                .unwrap()
+            }
+        };
+
+        let series_id = service
+            .process_meta_item(
+                series.clone(),
+                ctx.clone(),
+                false,
+                config.clone(),
+                semaphore.clone(),
+            )
+            .await;
+        let before = episode_by_tvdb(113).await;
+        assert_eq!(before.len(), 1);
+        let (old_id, _, _) = before[0];
+        let user = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, play_count) VALUES (?, ?, 1)",
+        )
+        .bind(user)
+        .bind(old_id)
+        .execute(&ctx.db)
+        .await
+        .unwrap();
+
+        renumbered.store(true, std::sync::atomic::Ordering::SeqCst);
+        service
+            .process_meta_item(
+                db::Media {
+                    id: series_id,
+                    ..series
+                },
+                ctx.clone(),
+                false,
+                config,
+                semaphore,
+            )
+            .await;
+
+        let after = episode_by_tvdb(113).await;
+        assert_eq!(after.len(), 1, "the episode shows up once: {after:?}");
+        let (new_id, season, episode) = after[0];
+        assert_eq!((season, episode), (2, 1));
+        assert_ne!(new_id, old_id);
+        let watched: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT media_id FROM user_media_state WHERE user_id = ?",
+        )
+        .bind(user)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(watched, [new_id]);
+        // The episodes that kept their number are untouched.
+        assert_eq!(
+            episode_by_tvdb(112)
+                .await
+                .len(),
+            1
+        );
+        assert_eq!(
+            episode_by_tvdb(202)
+                .await
+                .len(),
+            1
+        );
+    }
+
     fn stream_only_runtime_with_tree(
         called: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> AddonRuntime {

@@ -10174,6 +10174,13 @@ mod tests {
             written(3, ext(Some(30), Some(300))),
             written(4, ext(Some(40), Some(300))),
             written(5, ext(Some(50), None)),
+            written(
+                6,
+                ExternalIds {
+                    imdb: super::NonEmptyString::try_new("tt600".to_string()).ok(),
+                    ..Default::default()
+                },
+            ),
         ];
         let stored = vec![
             (Uuid::from_u128(10), ext(Some(13), Some(113))),
@@ -10185,6 +10192,14 @@ mod tests {
             // Its ids point at two different episodes.
             (Uuid::from_u128(13), ext(Some(30), Some(113))),
             (Uuid::from_u128(14), ext(Some(50), None)),
+            // Only by IMDb id.
+            (
+                Uuid::from_u128(15),
+                ExternalIds {
+                    imdb: super::NonEmptyString::try_new("tt600".to_string()).ok(),
+                    ..Default::default()
+                },
+            ),
         ];
         let moves: Vec<(u128, u128)> = renumbered_episodes(&stored, &written)
             .into_iter()
@@ -10196,7 +10211,7 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(moves, [(10, 1), (14, 5)]);
+        assert_eq!(moves, [(10, 1), (14, 5), (15, 6)]);
     }
 
     #[tokio::test]
@@ -10270,6 +10285,42 @@ mod tests {
         .execute(db)
         .await
         .unwrap();
+        // Another user already has state on both: merged, not lost.
+        let both = Uuid::new_v4();
+        for (media_id, play_count, favorite) in [(old.id, 3, true), (new.id, 1, false)]
+        {
+            sqlx::query(
+                "INSERT INTO user_media_state (user_id, media_id, play_count, favorite) VALUES (?, ?, ?, ?)",
+            )
+            .bind(both)
+            .bind(media_id)
+            .bind(play_count)
+            .bind(favorite)
+            .execute(db)
+            .await
+            .unwrap();
+        }
+        // A person of the old episode.
+        let person = Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Person,
+            title: "Person".into(),
+            ..Default::default()
+        };
+        person
+            .clone()
+            .save(db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO media_relations (relation_id, left_media_id, right_media_id) VALUES (?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(old.id)
+        .bind(person.id)
+        .execute(db)
+        .await
+        .unwrap();
         let playlist = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO media_relations (relation_id, left_media_id, right_media_id) VALUES (?, ?, ?)",
@@ -10325,6 +10376,22 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(entry, new.id);
+        let merged: Vec<(Uuid, i64, bool)> = sqlx::query_as(
+            "SELECT media_id, play_count, favorite FROM user_media_state WHERE user_id = ?",
+        )
+        .bind(both)
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(merged, [(new.id, 3, true)]);
+        let old_links: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM media_relations WHERE left_media_id = ?",
+        )
+        .bind(old.id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(old_links, 0);
     }
 
     #[test]
