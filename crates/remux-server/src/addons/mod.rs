@@ -526,6 +526,91 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     }
 }
 
+/// Clears the fields of `target` that `source`, everything the addons
+/// returned, leaves empty, unless the field is locked. Trailers become an
+/// empty list, so their rows are deleted too.
+fn clear_missing(target: &mut db::Media, source: &db::Media) {
+    use db::{ClearedField as F, MetadataField as Locked};
+
+    fn clear<T>(
+        target: &mut Option<T>,
+        source: &Option<T>,
+        field: F,
+        cleared: &mut Vec<F>,
+    ) {
+        if source.is_none() && target.is_some() {
+            *target = None;
+            cleared.push(field);
+        }
+    }
+
+    let mut cleared = Vec::new();
+    if !target.is_field_locked(&Locked::Overview) {
+        clear(
+            &mut target.description,
+            &source.description,
+            F::Description,
+            &mut cleared,
+        );
+    }
+    if !target.is_field_locked(&Locked::Runtime) {
+        clear(
+            &mut target.runtime,
+            &source.runtime,
+            F::Runtime,
+            &mut cleared,
+        );
+    }
+    if !target.is_field_locked(&Locked::ProductionLocations) {
+        clear(
+            &mut target.country,
+            &source.country,
+            F::Country,
+            &mut cleared,
+        );
+    }
+    clear(
+        &mut target.released_at,
+        &source.released_at,
+        F::ReleasedAt,
+        &mut cleared,
+    );
+    clear(
+        &mut target.digital_released_at,
+        &source.digital_released_at,
+        F::DigitalReleasedAt,
+        &mut cleared,
+    );
+    clear(
+        &mut target.original_language,
+        &source.original_language,
+        F::OriginalLanguage,
+        &mut cleared,
+    );
+    clear(&mut target.status, &source.status, F::Status, &mut cleared);
+    clear(
+        &mut target.end_date,
+        &source.end_date,
+        F::EndDate,
+        &mut cleared,
+    );
+    target
+        .cleared
+        .extend(cleared);
+
+    if source
+        .trailers
+        .is_none()
+    {
+        target.trailers = Some(Vec::new());
+    }
+}
+
+/// An addon not asked because a rate limit outlasts the fetch timeout.
+#[derive(Debug, thiserror::Error)]
+#[error("shared rate limit cooldown ({0:?}) exceeds the fetch timeout")]
+struct CooldownSkipped(Duration);
+
 /// Default display title for a season: Jellyfin calls season 0 "Specials"
 /// (a per-library-configurable name there; a fixed default here).
 pub(crate) fn season_title(idx: i64) -> String {
@@ -2071,12 +2156,7 @@ impl AddonService {
                             .rate_limit_cooldown()
                             .await;
                         if cooldown >= addon_fetch_timeout {
-                            debug!(
-                                addon = %addon,
-                                cooldown = ?cooldown,
-                                "skipping addon fetch: shared rate limit cooldown exceeds timeout"
-                            );
-                            return Ok(None);
+                            return Err(anyhow::Error::new(CooldownSkipped(cooldown)));
                         }
                         fetch_meta_with_retry(
                             meta_addon.as_ref(),
@@ -2102,6 +2182,8 @@ impl AddonService {
         // untouched until the combined result is applied once at the end,
         // where `force_refresh` controls whether existing values are replaced.
         let mut combined: Option<db::Media> = None;
+        // Every addon answered, even if only to say it doesn't know the item.
+        let mut all_answered = true;
         for (r, result) in applicable
             .iter()
             .zip(results)
@@ -2117,12 +2199,23 @@ impl AddonService {
                 Err(e) if is_not_found(&e) => {
                     debug!(addon = %r.row.name, error = %e, "meta addon has no entry")
                 }
+                Err(e) if e.is::<CooldownSkipped>() => {
+                    all_answered = false;
+                    debug!(addon = %r.row.name, error = %e, "meta addon skipped")
+                }
                 Err(e) => {
-                    error!(addon = %r.row.name, error = %e, "meta addon error")
+                    all_answered = false;
+                    warn!(addon = %r.row.name, error = %e, "meta addon error")
                 }
             }
         }
         if let Some(combined) = combined {
+            // A forced refresh replaces everything, so what no addon returns
+            // any more goes too. Only when every addon answered: one that
+            // failed would otherwise lose its fields until the next refresh.
+            if force_refresh && all_answered {
+                clear_missing(media, &combined);
+            }
             apply_meta(media, combined, force_refresh);
         }
 
@@ -4271,6 +4364,46 @@ mod tests {
                 .backdrop[0]
                 .path,
             "https://low.example/backdrop.jpg"
+        );
+    }
+
+    /// What the addons no longer return is cleared, unless locked; what they
+    /// return is left to the merge. Trailers become an empty list.
+    #[test]
+    fn clear_missing_clears_what_no_addon_returns() {
+        let mut media = db::Media {
+            description: db::NonEmptyString::try_new("Old.").ok(),
+            runtime: Some(5400),
+            country: Some("US".into()),
+            original_language: Some("en".into()),
+            trailers: Some(vec![db::Trailer {
+                source: db::TrailerSource::Url(
+                    "https://trailerio.example/a.mp4".into(),
+                ),
+                name: None,
+            }]),
+            locked_fields: vec![db::MetadataField::Runtime],
+            ..Default::default()
+        };
+        let returned = db::Media {
+            original_language: Some("fr".into()),
+            ..Default::default()
+        };
+        clear_missing(&mut media, &returned);
+
+        assert_eq!(media.description, None);
+        assert_eq!(media.country, None);
+        assert_eq!(media.runtime, Some(5400));
+        assert_eq!(
+            media
+                .original_language
+                .as_deref(),
+            Some("en")
+        );
+        assert_eq!(media.trailers, Some(vec![]));
+        assert_eq!(
+            media.cleared,
+            [db::ClearedField::Description, db::ClearedField::Country]
         );
     }
 
