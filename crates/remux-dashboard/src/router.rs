@@ -21,6 +21,8 @@ pub enum Route {
     StreamingGeneralRoute,
     #[route("/streaming/groups")]
     StreamingGroupsRoute,
+    #[route("/streaming/previews")]
+    StreamingPreviewsRoute,
     #[route("/settings/general")]
     SettingsGeneralRoute,
     #[route("/settings/playback")]
@@ -88,6 +90,12 @@ pub(crate) fn StreamingGeneralRoute() -> Element {
 pub(crate) fn StreamingGroupsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { StreamGroupsCard { app_state } }
+}
+
+#[component]
+pub(crate) fn StreamingPreviewsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { SeekPreviewSettingsPage { app_state } }
 }
 
 #[component]

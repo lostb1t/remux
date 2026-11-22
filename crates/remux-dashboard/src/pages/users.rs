@@ -791,7 +791,14 @@ pub fn UserForm(
                                                 .cloned();
                                             let name = addon_info.as_ref().map(|a| a.name.clone()).unwrap_or_default();
                                             let kind = addon_info.as_ref().map(|a| a.kind.clone()).unwrap_or_default();
-                                            let resources = addon_info.as_ref().map(|a| a.supported_resources_user.clone()).unwrap_or_default();
+                                            // "seek previews" is a permission, not something the addon gives.
+                                            let resources: Vec<remux_sdks::stremio::ResourceType> = addon_info
+                                                .as_ref()
+                                                .map(|a| a.supported_resources_user.clone())
+                                                .unwrap_or_default()
+                                                .into_iter()
+                                                .filter(|r| *r != remux_sdks::stremio::ResourceType::SeekPreviews)
+                                                .collect();
                                             let display_types = addon_info.as_ref().map(|a| a.supported_types_user.clone()).unwrap_or_default();
                                             rsx! {
                                                 div {

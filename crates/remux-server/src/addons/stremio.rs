@@ -41,6 +41,7 @@ impl AddonPreset for StremioPreset {
                 AddonMetadata::simple_resource(ResourceType::Search),
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
                 AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::SeekPreviews),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -52,6 +53,7 @@ impl AddonPreset for StremioPreset {
                 ResourceType::Search,
                 ResourceType::Subtitles,
                 ResourceType::Stream,
+                ResourceType::SeekPreviews,
             ],
             supported_types_user: vec![
                 MediaKind::Movie,
@@ -126,7 +128,14 @@ pub(super) fn parse_manifest_info(
         .cloned()
     {
         let name = res.resource_type();
-        if seen_names.contains(&name) {
+        // Not something an addon gives: Remux offers it below. Its stored
+        // name, read as an unknown resource here, would be read back as it.
+        let claims_previews = match &name {
+            ResourceType::SeekPreviews => true,
+            ResourceType::Other(other) => other.eq_ignore_ascii_case("seekPreviews"),
+            _ => false,
+        };
+        if seen_names.contains(&name) || claims_previews {
             continue;
         }
         seen_names.push(name.clone());
@@ -159,6 +168,16 @@ pub(super) fn parse_manifest_info(
     {
         resources.push(remux_sdks::stremio::ResourceRef {
             name: ResourceType::Search,
+            types: vec![],
+            id_prefixes: None,
+        });
+    }
+
+    // Streams an addon gives may be read for seek previews: offered, off
+    // until an admin turns it on.
+    if seen_names.contains(&ResourceType::Stream) {
+        resources.push(remux_sdks::stremio::ResourceRef {
+            name: ResourceType::SeekPreviews,
             types: vec![],
             id_prefixes: None,
         });
@@ -2146,6 +2165,38 @@ mod tests {
             .find(|r| r.name == ResourceType::Stream)
             .unwrap();
         assert_eq!(stream.id_prefixes, None);
+    }
+
+    /// Seek previews are offered for an addon that gives streams, and only
+    /// for one: a manifest cannot claim them for itself.
+    #[test]
+    fn seek_previews_are_offered_with_streams_only() {
+        let parse = |resources: serde_json::Value| {
+            let manifest: sdks::stremio::Manifest =
+                serde_json::from_value(serde_json::json!({
+                    "id": "test", "name": "Test", "version": "1.0.0",
+                    "resources": resources,
+                    "types": ["movie"]
+                }))
+                .unwrap();
+            parse_manifest_info(&manifest)
+                .0
+                .into_iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parse(serde_json::json!(["meta", "stream"])),
+            vec![
+                ResourceType::Meta,
+                ResourceType::Stream,
+                ResourceType::SeekPreviews
+            ]
+        );
+        assert_eq!(
+            parse(serde_json::json!(["meta", "seek previews", "seekPreviews"])),
+            vec![ResourceType::Meta]
+        );
     }
 
     #[test]

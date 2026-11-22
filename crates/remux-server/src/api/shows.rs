@@ -135,10 +135,22 @@ pub async fn shows_episodes(
             }
         }
     }
+    let trickplay = crate::trickplay::wanted_in_list(
+        &state.ctx,
+        q.fields
+            .as_deref(),
+    )
+    .await;
+    let trickplay_passes = state
+        .ctx
+        .sessions
+        .trickplay
+        .clone();
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
         .with_permissions()
         .with_client_patches()
+        .with_trickplay(trickplay, &trickplay_passes)
         .build();
 
     Ok(Json(serde_json::json!({

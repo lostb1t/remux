@@ -1452,7 +1452,8 @@ pub(crate) async fn probe_stream(
         // completed probe (see `is_reusable_probe_cache` above).
         if apply_filename_guess(&mut info, stream) {
             let persisted = crate::conversions::filename_guess_persist_payload(&info);
-            if let Err(e) = db::Media::save_probe_data(db, &stream.id, &persisted).await
+            if let Err(e) =
+                crate::conversions::save_filename_guess(db, &stream.id, persisted).await
             {
                 warn!(id = %stream.id, error = %e, "failed to persist filename-guessed probe data");
             }

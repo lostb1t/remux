@@ -1532,6 +1532,15 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
         {
             return false;
         }
+        self.stream_pick(media)
+            .await
+    }
+}
+
+impl AddonRuntime {
+    /// Whether this addon's stream capability serves `media`, by its id
+    /// prefixes or its own test, whatever its switches.
+    async fn stream_pick(&self, media: &db::Media) -> bool {
         let Ok(prefixes) = self
             .live_id_prefixes(&ResourceType::Stream)
             .await
@@ -3474,7 +3483,7 @@ impl AddonService {
         Ok(all)
     }
 
-    fn stream_dedup_key(s: &db::Media) -> Option<String> {
+    pub(crate) fn stream_dedup_key(s: &db::Media) -> Option<String> {
         let si = s
             .stream_info
             .as_ref()?;
@@ -3561,6 +3570,261 @@ impl AddonService {
                 None => true,
             })
             .collect()
+    }
+}
+
+/// How one ask of an addon kept for seek previews only ended (see
+/// [`AddonService::preview_streams`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewAsked {
+    /// It answered; this many of its streams were kept.
+    Answered { kept: usize },
+    /// It failed. Asked again after [`crate::trickplay::PREVIEW_RETRY_WAIT`].
+    Failed,
+    /// It took longer than its time limit and was dropped; nothing of it is
+    /// stored. Asked again after [`crate::trickplay::PREVIEW_RETRY_WAIT`].
+    TimedOut,
+}
+
+impl AddonService {
+    /// The loaded addons kept for seek previews only (see
+    /// [`crate::trickplay::previews_only`]) that `media` would be asked of for
+    /// `user_id`, by the kind, user and id tests of a viewer's stream lookup:
+    /// a user limited to some addons never causes another to be asked. An
+    /// addon whose id test takes longer than `limit` (its manifest fetched
+    /// again) is left out.
+    async fn preview_addons(
+        &self,
+        media: &db::Media,
+        db: &SqlitePool,
+        user_id: Option<Uuid>,
+        limit: Duration,
+    ) -> Vec<AddonRuntime> {
+        let override_ids = match user_id {
+            Some(uid) => match addon::user_addon_override(db, uid).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to load user addon override");
+                    return Vec::new();
+                }
+            },
+            None => None,
+        };
+        let candidates: Vec<AddonRuntime> = self
+            .inner
+            .load()
+            .iter()
+            .filter(|r| crate::trickplay::AddonRule::new(&r.row).preview_only)
+            .filter(|r| r.supports_type(&media.kind))
+            .filter(|r| user_scoped(r, override_ids.as_deref()))
+            .cloned()
+            .collect();
+        let picks = futures::future::join_all(
+            candidates
+                .iter()
+                .map(|r| async move {
+                    tokio::time::timeout(limit, r.stream_pick(media))
+                        .await
+                        .unwrap_or(false)
+                }),
+        )
+        .await;
+        let mut out: Vec<AddonRuntime> = candidates
+            .into_iter()
+            .zip(picks)
+            .filter_map(|(r, picked)| picked.then_some(r))
+            .collect();
+        if let Some(ids) = &override_ids {
+            out.sort_by_key(|r| {
+                ids.iter()
+                    .position(|id| {
+                        *id == r
+                            .row
+                            .id
+                    })
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        out
+    }
+
+    /// Asks the addons kept for seek previews only for `media`'s streams, in
+    /// the background of a play, and stores what is worth keeping of each
+    /// answer (see [`crate::trickplay::kept_preview_streams`] and
+    /// [`db::PreviewSource`]). An addon is skipped when it was asked for the
+    /// title lately, or when its answer from the last day is stored. One ask
+    /// per title runs at a time, and each is dropped after
+    /// [`crate::trickplay::PREVIEW_ASK_WAIT`], so a parked or slow addon
+    /// holds nothing. The stream lookup that viewers wait for
+    /// ([`Self::get_streams`]) never asks these addons.
+    pub async fn preview_streams(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+    ) -> Vec<(Uuid, PreviewAsked)> {
+        self.preview_streams_within(
+            media,
+            ctx,
+            user_id,
+            crate::trickplay::PREVIEW_ASK_WAIT,
+        )
+        .await
+    }
+
+    /// [`Self::preview_streams`] with each ask dropped after `limit`.
+    pub(crate) async fn preview_streams_within(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+        user_id: Option<Uuid>,
+        limit: Duration,
+    ) -> Vec<(Uuid, PreviewAsked)> {
+        // Not `STREAM_LOCKS`: a background ask must never hold up a viewer's
+        // lookup of the same title.
+        static PREVIEW_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+        let _guard = PREVIEW_LOCKS
+            .lock(media.id)
+            .await;
+        let candidates = self
+            .preview_addons(media, &ctx.db, user_id, limit)
+            .await;
+        if candidates.is_empty() {
+            debug!(media_id = %media.id, "trick play: no preview source in scope");
+            return Vec::new();
+        }
+        let passes = &ctx
+            .sessions
+            .trickplay;
+        let now = chrono::Utc::now().naive_utc();
+        let mut to_ask = Vec::new();
+        for r in candidates {
+            let addon_id = r
+                .row
+                .id;
+            if passes.asked_recently(media.id, addon_id) {
+                debug!(addon = %r.row.name, "trick play: preview source asked already");
+                continue;
+            }
+            match db::PreviewSource::has_fresh(&ctx.db, media.id, addon_id, now).await {
+                Ok(false) => to_ask.push(r),
+                Ok(true) => {
+                    debug!(addon = %r.row.name, "trick play: preview source asked already");
+                }
+                Err(e) => {
+                    warn!(addon = %r.row.name, error = %e, "trick play: could not read the preview sources");
+                }
+            }
+        }
+        let asks = to_ask
+            .into_iter()
+            .map(|r| async move {
+                let addon_id = r
+                    .row
+                    .id;
+                let name = &r
+                    .row
+                    .name;
+                let started = std::time::Instant::now();
+                let asked = tokio::time::timeout(limit, Self::ask_preview_source(&r, media, ctx))
+                    .await;
+                let outcome = match asked {
+                    Ok(Ok(answer)) => {
+                        let returned = answer.len();
+                        let kept = crate::trickplay::kept_preview_streams(media, answer);
+                        let measured = kept
+                            .iter()
+                            .filter(|s| {
+                                s.probe_data
+                                    .as_ref()
+                                    .and_then(|p| p.run_time_ticks)
+                                    .is_some_and(|t| t > 0)
+                            })
+                            .count();
+                        match db::PreviewSource::store(
+                            &ctx.db,
+                            media.id,
+                            addon_id,
+                            &kept,
+                            chrono::Utc::now().naive_utc(),
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                info!(
+                                    addon = %name,
+                                    returned,
+                                    kept = kept.len(),
+                                    measured,
+                                    elapsed = ?started.elapsed(),
+                                    "trick play: preview source asked"
+                                );
+                                PreviewAsked::Answered { kept: kept.len() }
+                            }
+                            Err(e) => {
+                                warn!(addon = %name, error = %e, "trick play: could not store a preview source's answer");
+                                PreviewAsked::Failed
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            addon = %name,
+                            error = %crate::playback::probe::redact_urls_in(&e.to_string()),
+                            elapsed = ?started.elapsed(),
+                            "trick play: preview source failed"
+                        );
+                        PreviewAsked::Failed
+                    }
+                    Err(_) => {
+                        warn!(
+                            addon = %name,
+                            elapsed = ?started.elapsed(),
+                            "trick play: preview source took too long; dropped"
+                        );
+                        PreviewAsked::TimedOut
+                    }
+                };
+                let kept = match outcome {
+                    PreviewAsked::Answered { kept } => Some(kept),
+                    PreviewAsked::Failed | PreviewAsked::TimedOut => None,
+                };
+                passes.mark_asked(media.id, addon_id, kept);
+                (addon_id, outcome)
+            });
+        futures::future::join_all(asks).await
+    }
+
+    /// One addon's streams for `media`, through its own stream capability,
+    /// each stamped with the addon as a viewer's lookup stamps it.
+    async fn ask_preview_source(
+        r: &AddonRuntime,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
+        let id_prefixes = r
+            .live_id_prefixes(&ResourceType::Stream)
+            .await?
+            .map(|p| p.into_owned());
+        let cap = r
+            .stream
+            .as_ref()
+            .ok_or_else(|| anyhow!("addon has no streams"))?;
+        let mut streams = cap
+            .get_streams(media, ctx, id_prefixes.as_deref())
+            .await?;
+        for s in &mut streams {
+            s.source = Some(
+                r.row
+                    .name
+                    .clone(),
+            );
+            s.addon_id = Some(
+                r.row
+                    .id,
+            );
+        }
+        Ok(streams)
     }
 }
 
@@ -6458,5 +6722,350 @@ mod tests {
         )
         .await;
         assert_eq!(titles, ["Inception (TMDB)"]);
+    }
+
+    /// A stream addon whose answer is scripted: `answer`, or an error, after
+    /// `delay`. Counts its calls.
+    struct ScriptedStreams {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer: Option<Vec<crate::stream::StreamInfo>>,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl StreamAddon for ScriptedStreams {
+        fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn get_streams(
+            &self,
+            _media: &db::Media,
+            _ctx: &AppContext,
+            _id_prefixes: Option<&[String]>,
+        ) -> Result<Vec<crate::stream::StreamInfo>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.answer
+                .clone()
+                .ok_or_else(|| anyhow!("the addon is down"))
+        }
+    }
+
+    /// A loaded addon with `resources` whose streams are `answer` (an error
+    /// for `None`), and its call count.
+    fn scripted_streams(
+        resources: Vec<ResourceType>,
+        is_default: bool,
+        answer: Option<Vec<crate::stream::StreamInfo>>,
+        delay: Duration,
+    ) -> (AddonRuntime, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "Invented Streams".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources,
+                types: None,
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                stream: Some(Arc::new(ScriptedStreams {
+                    calls: calls.clone(),
+                    answer,
+                    delay,
+                })),
+                ..Default::default()
+            },
+        };
+        (runtime, calls)
+    }
+
+    /// Cached files at a named service, listed with their size.
+    fn cached_files(names: &[&str]) -> Vec<crate::stream::StreamInfo> {
+        names
+            .iter()
+            .map(|name| crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(format!(
+                    "http://example.invalid/{name}.mkv"
+                )),
+                filename: Some(format!("{name}.mkv")),
+                service_id: Some("svc-cached".to_string()),
+                service_cached: Some(true),
+                size: Some(2_000_000_000),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    async fn saved_film(ctx: &AppContext) -> db::Media {
+        let mut film = db::Media {
+            title: "Invented Film".into(),
+            kind: db::MediaKind::Movie,
+            runtime: Some(7_200),
+            external_ids: db::ExternalIds {
+                tmdb: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        film.save(&ctx.db)
+            .await
+            .unwrap();
+        film
+    }
+
+    fn calls(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Only an addon with "seek previews" on and "stream" off, in the
+    /// user's scope, is asked, and only once while its answer is kept.
+    #[tokio::test]
+    async fn preview_streams_asks_only_dedicated_addons_in_scope_and_once_a_day() {
+        let none = Duration::ZERO;
+        let (dedicated, dedicated_calls) = scripted_streams(
+            vec![ResourceType::SeekPreviews],
+            true,
+            Some(cached_files(&["small", "torrent-free"])),
+            none,
+        );
+        let (viewers, viewers_calls) = scripted_streams(
+            vec![ResourceType::Stream, ResourceType::SeekPreviews],
+            true,
+            Some(cached_files(&["big"])),
+            none,
+        );
+        let (not_default, not_default_calls) = scripted_streams(
+            vec![ResourceType::SeekPreviews],
+            false,
+            Some(cached_files(&["other"])),
+            none,
+        );
+        let (off, off_calls) = scripted_streams(
+            vec![ResourceType::Stream],
+            true,
+            Some(cached_files(&["other"])),
+            none,
+        );
+        let dedicated_id = dedicated
+            .row
+            .id;
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![
+                viewers,
+                dedicated,
+                not_default,
+                off,
+            ])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        let film = saved_film(&ctx).await;
+
+        let asked = service
+            .preview_streams(&film, &ctx, None)
+            .await;
+        assert_eq!(
+            asked,
+            vec![(dedicated_id, PreviewAsked::Answered { kept: 2 })]
+        );
+        assert_eq!(calls(&dedicated_calls), 1);
+        assert_eq!(
+            calls(&viewers_calls),
+            0,
+            "its streams come from a viewer's lookup"
+        );
+        assert_eq!(calls(&not_default_calls), 0, "not in the user's scope");
+        assert_eq!(calls(&off_calls), 0);
+        let stored = db::PreviewSource::list_fresh(
+            &ctx.db,
+            film.id,
+            chrono::Utc::now().naive_utc(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(
+            stored
+                .iter()
+                .all(|row| row.addon_id == dedicated_id)
+        );
+        // Nothing reaches the title's versions.
+        let mut title = db::Media::get_by_id(&ctx.db, &film.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            title
+                .streams(&ctx.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Asked again inside the day: nothing is asked.
+        assert!(
+            service
+                .preview_streams(&film, &ctx, None)
+                .await
+                .is_empty()
+        );
+        assert_eq!(calls(&dedicated_calls), 1);
+
+        // After a restart, which forgets the asks, the stored answer still
+        // holds it back.
+        let mut restarted = ctx.clone();
+        restarted
+            .sessions
+            .trickplay = crate::trickplay::TrickplayPasses::new();
+        assert!(
+            service
+                .preview_streams(&film, &restarted, None)
+                .await
+                .is_empty()
+        );
+        assert_eq!(calls(&dedicated_calls), 1);
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_is_not_asked_again_and_a_failure_is_after_the_short_wait()
+    {
+        let none = Duration::ZERO;
+        let (empty, empty_calls) = scripted_streams(
+            vec![ResourceType::SeekPreviews],
+            true,
+            Some(vec![]),
+            none,
+        );
+        let (down, down_calls) =
+            scripted_streams(vec![ResourceType::SeekPreviews], true, None, none);
+        let (empty_id, down_id) = (
+            empty
+                .row
+                .id,
+            down.row
+                .id,
+        );
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![empty, down])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        let film = saved_film(&ctx).await;
+        let before = Instant::now();
+        let mut asked = service
+            .preview_streams(&film, &ctx, None)
+            .await;
+        asked.sort_by_key(|(id, _)| *id == down_id);
+        assert_eq!(
+            asked,
+            vec![
+                (empty_id, PreviewAsked::Answered { kept: 0 }),
+                (down_id, PreviewAsked::Failed),
+            ]
+        );
+        let passes = &ctx
+            .sessions
+            .trickplay;
+        let after = Instant::now();
+        let empty_until = passes
+            .asked_until(film.id, empty_id)
+            .unwrap();
+        let down_until = passes
+            .asked_until(film.id, down_id)
+            .unwrap();
+        assert!(empty_until >= before + crate::trickplay::PREVIEW_ASKED_WAIT);
+        assert!(down_until >= before + crate::trickplay::PREVIEW_RETRY_WAIT);
+        assert!(
+            down_until <= after + crate::trickplay::PREVIEW_RETRY_WAIT,
+            "a failure waits the short time only"
+        );
+        assert!(passes.kept_nothing(film.id));
+
+        assert!(
+            service
+                .preview_streams(&film, &ctx, None)
+                .await
+                .is_empty()
+        );
+        assert_eq!(calls(&empty_calls), 1);
+        assert_eq!(calls(&down_calls), 1);
+    }
+
+    #[tokio::test]
+    async fn an_ask_past_its_time_limit_is_dropped_and_nothing_of_it_is_stored() {
+        let (slow, slow_calls) = scripted_streams(
+            vec![ResourceType::SeekPreviews],
+            true,
+            Some(cached_files(&["late"])),
+            Duration::from_secs(5),
+        );
+        let slow_id = slow
+            .row
+            .id;
+        let service = AddonService {
+            inner: Arc::new(ArcSwap::from_pointee(vec![slow])),
+        };
+        let (_, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        let film = saved_film(&ctx).await;
+        let started = Instant::now();
+        let asked = service
+            .preview_streams_within(&film, &ctx, None, Duration::from_millis(100))
+            .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "dropped at its limit"
+        );
+        assert_eq!(asked, vec![(slow_id, PreviewAsked::TimedOut)]);
+        assert_eq!(calls(&slow_calls), 1);
+        assert!(
+            db::PreviewSource::list_fresh(
+                &ctx.db,
+                film.id,
+                chrono::Utc::now().naive_utc()
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        let passes = &ctx
+            .sessions
+            .trickplay;
+        assert!(passes.asked_recently(film.id, slow_id));
+        assert!(
+            passes
+                .asked_until(film.id, slow_id)
+                .unwrap()
+                <= Instant::now() + crate::trickplay::PREVIEW_RETRY_WAIT
+        );
     }
 }

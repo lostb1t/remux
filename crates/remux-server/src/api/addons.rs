@@ -5,7 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use chrono::Utc;
-use tracing::warn;
+use tracing::{info, warn};
 
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
@@ -24,6 +24,13 @@ use axum_anyhow::ApiResult as Result;
 
 type CapabilitySnapshot = (Vec<remux_sdks::stremio::ResourceType>, Vec<DbMediaKind>);
 
+/// Whether a resource is switched on when an addon's resources are derived
+/// from what it offers. Seek previews are not: they cost a second read of a
+/// source, so they stay off until an admin turns them on.
+fn on_by_default(resource: &remux_sdks::stremio::ResourceType) -> bool {
+    *resource != remux_sdks::stremio::ResourceType::SeekPreviews
+}
+
 fn preset_capability_snapshot(preset: &dyn AddonPreset) -> CapabilitySnapshot {
     let metadata = preset.metadata();
     (
@@ -31,6 +38,7 @@ fn preset_capability_snapshot(preset: &dyn AddonPreset) -> CapabilitySnapshot {
             .supported_resources
             .into_iter()
             .map(|resource| resource.name)
+            .filter(on_by_default)
             .collect(),
         metadata
             .supported_types
@@ -59,6 +67,7 @@ async fn capability_snapshot(
     let resources = resources
         .into_iter()
         .map(|resource| resource.name)
+        .filter(on_by_default)
         .collect();
     let types: Vec<_> = types
         .into_iter()
@@ -361,6 +370,12 @@ pub async fn create_addon(
                 .db,
         )
         .await?;
+    // Before the reload, so a reload that fails leaves no stale rule.
+    state
+        .ctx
+        .sessions
+        .trickplay
+        .set_addon_rule(&addon);
     state
         .ctx
         .addons
@@ -373,6 +388,7 @@ pub async fn create_addon(
                 .config,
         )
         .await?;
+    crate::trickplay::refresh_addon_rules(&state.ctx).await;
     Ok((
         StatusCode::CREATED,
         Json(addon_to_dto(
@@ -413,6 +429,7 @@ pub async fn update_addon(
     )
     .await?
     .context_not_found("Addon not found")?;
+    let was_previews_only = crate::trickplay::previews_only(&addon.resources);
 
     // Keep these Options available below: explicit fields take precedence over
     // capability values derived when the config changes.
@@ -526,7 +543,22 @@ pub async fn update_addon(
                 }
             };
         if resources.is_none() {
+            // Derived resources leave seek previews off; a reset keeps them
+            // as they were.
+            let previews = remux_sdks::stremio::ResourceType::SeekPreviews;
+            let had_previews = addon
+                .resources
+                .contains(&previews);
             addon.resources = derived_resources;
+            if had_previews
+                && !addon
+                    .resources
+                    .contains(&previews)
+            {
+                addon
+                    .resources
+                    .push(previews);
+            }
         }
         if types.is_none() {
             addon.types = (!derived_types.is_empty()).then_some(derived_types);
@@ -540,6 +572,12 @@ pub async fn update_addon(
                 .db,
         )
         .await?;
+    // Before the reload, so a reload that fails leaves no stale rule.
+    state
+        .ctx
+        .sessions
+        .trickplay
+        .set_addon_rule(&addon);
     state
         .ctx
         .addons
@@ -552,12 +590,87 @@ pub async fn update_addon(
                 .config,
         )
         .await?;
+    crate::trickplay::refresh_addon_rules(&state.ctx).await;
+    // After the reload, so no lookup asks the addon for streams once they are
+    // deleted. On every save that leaves it so, so a failed delete is done by
+    // the next save.
+    if crate::trickplay::previews_only(&addon.resources) {
+        let db = state
+            .ctx
+            .db
+            .clone();
+        let removed = delete_streams_of(&db, addon.id).await?;
+        if removed > 0 || !was_previews_only {
+            info!(
+                addon = %addon.name,
+                removed,
+                "addon gives seek previews only now: removed the streams it gave"
+            );
+        }
+        sweep_streams_later(db, addon.id);
+    }
     Ok(Json(addon_to_dto(
         addon,
         &state
             .ctx
             .addons,
     )))
+}
+
+/// Deletes the stream rows an addon gave, once it gives seek previews only:
+/// no viewer may be offered its streams from then on, and a play in progress
+/// from one of them ends. A version it shared with an addon of higher
+/// priority carries that addon's id and stays. The addon's file index is not
+/// touched.
+async fn delete_streams_of(
+    db: &sqlx::SqlitePool,
+    addon_id: Uuid,
+) -> anyhow::Result<u64> {
+    let done = sqlx::query(
+        "DELETE FROM media \
+         WHERE kind = 'stream' AND json_extract(stream_info, '$.addon_id') = ?1",
+    )
+    .bind(addon_id.to_string())
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// How long after an addon turned previews-only its streams are deleted
+/// once more: a lookup that asked it before the save may write them after.
+const STREAM_SWEEP_DELAY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Deletes an addon's stream rows again after [`STREAM_SWEEP_DELAY`], if it
+/// still gives seek previews only then.
+fn sweep_streams_later(db: sqlx::SqlitePool, addon_id: Uuid) {
+    tokio::spawn(async move {
+        tokio::time::sleep(STREAM_SWEEP_DELAY).await;
+        let still = Addon::get(&db, addon_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|addon| crate::trickplay::previews_only(&addon.resources));
+        if !still {
+            return;
+        }
+        match delete_streams_of(&db, addon_id).await {
+            Ok(0) => {}
+            Ok(removed) => {
+                info!(
+                    %addon_id,
+                    removed,
+                    "removed streams a previews-only addon gave late"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    %addon_id,
+                    %error,
+                    "could not remove a previews-only addon's streams"
+                );
+            }
+        }
+    });
 }
 
 /// Delete an addon instance.
@@ -604,6 +717,12 @@ pub async fn delete_addon(
         id,
     )
     .await?;
+    // Before the reload, so a reload that fails leaves no stale rule.
+    state
+        .ctx
+        .sessions
+        .trickplay
+        .drop_addon_rule(id);
     state
         .ctx
         .addons
@@ -616,6 +735,7 @@ pub async fn delete_addon(
                 .config,
         )
         .await?;
+    crate::trickplay::refresh_addon_rules(&state.ctx).await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -974,6 +1094,231 @@ mod test {
                 .get(created.id)
                 .is_none(),
             "registry should have dropped the deleted addon"
+        );
+    }
+
+    /// A local addon in the temp directory, created with its resources
+    /// derived from what it offers.
+    async fn local_addon(server: &axum_test::TestServer, token: &str) -> AddonDto {
+        let (h, v) = auth(token);
+        let dir = std::env::temp_dir()
+            .to_string_lossy()
+            .to_string();
+        server
+            .post("/addons")
+            .add_header(h, v)
+            .json(&json!({
+                "preset": {
+                    "kind": "opendal-local",
+                    "config": { "paths": [dir], "media_kind": "movie" }
+                },
+                "name": "Local files"
+            }))
+            .await
+            .json()
+    }
+
+    #[tokio::test]
+    async fn seek_previews_are_offered_off_and_a_reset_keeps_them_as_they_were() {
+        use remux_sdks::stremio::ResourceType;
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let created = local_addon(&server, &token).await;
+        assert!(
+            created
+                .supported_resources
+                .contains(&ResourceType::SeekPreviews),
+            "offered"
+        );
+        assert!(
+            created
+                .resources
+                .contains(&ResourceType::Stream)
+        );
+        assert!(
+            !created
+                .resources
+                .contains(&ResourceType::SeekPreviews),
+            "off until turned on"
+        );
+        let rule = |ctx: &crate::integration_test::TestGuard| {
+            ctx.0
+                .sessions
+                .trickplay
+                .addon_rules()
+                .get(&created.id)
+                .cloned()
+                .expect("the snapshot has the addon")
+        };
+        assert!(!rule(&ctx).reads);
+
+        let on: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "resources": ["stream", "seekPreviews"] }))
+            .await
+            .json();
+        assert_eq!(
+            on.resources,
+            vec![ResourceType::Stream, ResourceType::SeekPreviews]
+        );
+        assert!(rule(&ctx).reads);
+        assert!(!rule(&ctx).preview_only);
+
+        // A config change sent without resources resets them to what the
+        // addon offers: seek previews stay as they were.
+        let config = created
+            .config
+            .clone();
+        let reset: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "config": config }))
+            .await
+            .json();
+        assert!(
+            reset
+                .resources
+                .contains(&ResourceType::SeekPreviews)
+        );
+        assert!(
+            reset
+                .resources
+                .contains(&ResourceType::Stream)
+        );
+
+        let off: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "resources": ["stream"] }))
+            .await
+            .json();
+        assert!(
+            !off.resources
+                .contains(&ResourceType::SeekPreviews)
+        );
+        let reset: AddonDto = server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "config": config }))
+            .await
+            .json();
+        assert!(
+            !reset
+                .resources
+                .contains(&ResourceType::SeekPreviews)
+        );
+        assert!(!rule(&ctx).reads);
+
+        let del_resp = server
+            .delete(&format!("/addons/{}", created.id))
+            .add_header(h, v)
+            .await;
+        del_resp.assert_status(http::StatusCode::NO_CONTENT);
+        assert!(
+            ctx.0
+                .sessions
+                .trickplay
+                .addon_rules()
+                .get(&created.id)
+                .is_none(),
+            "the snapshot dropped the deleted addon"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_addon_turned_previews_only_loses_the_streams_it_gave() {
+        let (server, ctx, token) = authenticated_server().await;
+        let (h, v) = auth(&token);
+        let created = local_addon(&server, &token).await;
+        let db = &ctx
+            .0
+            .db;
+        let mut film = crate::db::Media {
+            title: "Invented Film".to_string(),
+            kind: DbMediaKind::Movie,
+            external_ids: crate::db::ExternalIds {
+                tmdb: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        film.save(db)
+            .await
+            .unwrap();
+        let stream = |addon_id: Uuid, name: &str| crate::db::Media {
+            title: name.to_string(),
+            kind: DbMediaKind::Stream,
+            parent_id: Some(film.id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::Local(
+                    format!("/media/{name}.mkv").into(),
+                ),
+                addon_id: Some(addon_id),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut own_a = stream(created.id, "own-a");
+        let mut own_b = stream(created.id, "own-b");
+        let mut shared = stream(Uuid::new_v4(), "other-addon");
+        for row in [&mut own_a, &mut own_b, &mut shared] {
+            row.save(db)
+                .await
+                .unwrap();
+        }
+        let exists = |id: Uuid| async move {
+            crate::db::Media::get_by_id(db, &id)
+                .await
+                .unwrap()
+                .is_some()
+        };
+
+        // A reorder, or seek previews turned on beside streams, removes
+        // nothing.
+        server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "priority": 5 }))
+            .await
+            .assert_status_ok();
+        server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "resources": ["stream", "seekPreviews"] }))
+            .await
+            .assert_status_ok();
+        assert!(exists(own_a.id).await);
+        assert!(exists(own_b.id).await);
+
+        server
+            .post(&format!("/addons/{}", created.id))
+            .add_header(h.clone(), v.clone())
+            .json(&json!({ "resources": ["seekPreviews"] }))
+            .await
+            .assert_status_ok();
+        assert!(!exists(own_a.id).await, "not playable by its id");
+        assert!(!exists(own_b.id).await);
+        assert!(exists(shared.id).await, "another addon's version stays");
+        let mut title = crate::db::Media::get_by_id(db, &film.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let listed: Vec<Uuid> = title
+            .streams(db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(listed, vec![shared.id]);
+        assert!(
+            ctx.0
+                .sessions
+                .trickplay
+                .addon_rules()
+                .get(&created.id)
+                .is_some_and(|rule| rule.preview_only)
         );
     }
 

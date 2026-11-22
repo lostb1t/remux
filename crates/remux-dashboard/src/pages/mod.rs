@@ -6,6 +6,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod iptv;
 pub mod logs;
+pub mod previews;
 pub mod settings;
 pub mod streaming;
 pub mod streams;
@@ -41,6 +42,7 @@ pub use dashboard::DashboardPage;
 pub use devices::DevicesPage;
 pub use iptv::IptvPage;
 pub use logs::LogsPage;
+pub use previews::SeekPreviewSettingsPage;
 pub use settings::{
     IntroSettingsCard, JellyfinImportCard, PlaybackSettingsCard, RemuxdbSettingsCard,
     SearchSettingsCard, ServerSettingsCard,

@@ -276,9 +276,13 @@ pub(crate) fn apply_filename_guess(
     }
 
     if estimated {
-        info.remux
-            .get_or_insert_with(Default::default)
-            .source = Some(api::ProbeOrigin::FilenameGuess);
+        let remux = info
+            .remux
+            .get_or_insert_with(Default::default);
+        // A length read from the file's header stays measured.
+        if remux.source != Some(api::ProbeOrigin::Container) {
+            remux.source = Some(api::ProbeOrigin::FilenameGuess);
+        }
     }
     estimated
 }
@@ -300,11 +304,45 @@ pub(crate) fn filename_guess_persist_payload(
         size: info.size,
         run_time_ticks: info.run_time_ticks,
         remux: Some(api::MediaSourceRemuxInfo {
-            source: Some(api::ProbeOrigin::FilenameGuess),
+            source: Some(
+                info.remux
+                    .as_ref()
+                    .and_then(|r| r.source)
+                    .filter(|s| *s == api::ProbeOrigin::Container)
+                    .unwrap_or(api::ProbeOrigin::FilenameGuess),
+            ),
             ..Default::default()
         }),
         ..Default::default()
     }
+}
+
+/// Saves `persisted`, a filename guess made from a row read earlier, unless
+/// the row's probe data changed since it is read here, or holds a length
+/// read from the file's header that `persisted` does not keep, so a length
+/// stored in between (see [`crate::trickplay::store_length`]) is never
+/// written over.
+pub(crate) async fn save_filename_guess(
+    db: &sqlx::SqlitePool,
+    id: &uuid::Uuid,
+    persisted: api::MediaSourceInfo,
+) -> Result<()> {
+    let origin = |probe: &api::MediaSourceInfo| {
+        probe
+            .remux
+            .as_ref()
+            .and_then(|r| r.source)
+    };
+    db::Media::change_probe_data(db, id, |stored| {
+        let header_length = stored
+            .as_ref()
+            .and_then(origin)
+            == Some(api::ProbeOrigin::Container);
+        let kept = origin(&persisted) == Some(api::ProbeOrigin::Container);
+        (!header_length || kept).then_some(persisted)
+    })
+    .await
+    .map(|_| ())
 }
 
 /// Fills in item-details MediaSources whose `media_streams` came back empty
@@ -337,7 +375,7 @@ pub(crate) async fn apply_filename_probe_fallback(
             continue;
         }
         let persisted = filename_guess_persist_payload(info);
-        if let Err(e) = db::Media::save_probe_data(db, &source.id, &persisted).await {
+        if let Err(e) = save_filename_guess(db, &source.id, persisted).await {
             warn!(id = %source.id, error = %e, "failed to persist filename-guessed probe data");
         }
     }

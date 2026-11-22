@@ -1706,6 +1706,7 @@ async fn videos_stream_inner(
                 .serve(&state, &headers)
                 .await?
         };
+        let resp = crate::stream::tap_length(&state.ctx, &media, resp).await;
         return Ok(resp.into_response());
     }
 
@@ -1830,6 +1831,7 @@ async fn videos_stream_inner(
                 .serve(&state, &headers)
                 .await?
         };
+        let resp = crate::stream::tap_length(&state.ctx, &media, resp).await;
         return Ok(resp.into_response());
     }
 

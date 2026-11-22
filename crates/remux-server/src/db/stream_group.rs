@@ -461,32 +461,38 @@ impl StreamGroup {
                 // No probe data → PassThrough: we can't confirm or deny the
                 // language, so the source must not be absorbed by the group
                 // (which shows only one representative) but also must not be
-                // hidden — it stays visible via the ungrouped list.
-                StreamRule::AudioLanguage { op, values } => match probe_data {
-                    None => MatchOutcome::PassThrough,
-                    Some(pd) => {
-                        let wanted: Vec<String> = values
-                            .iter()
-                            .map(|v| normalize_lang_code(v))
-                            .collect();
-                        let hit = pd
-                            .media_streams
-                            .iter()
-                            .any(|s| {
-                                s.type_ == MediaStreamType::Audio
-                                    && s.language
-                                        .as_deref()
-                                        .map_or(false, |l| {
-                                            let l = normalize_lang_code(l);
-                                            !matches!(
-                                                l.as_str(),
-                                                "und" | "mis" | "zxx" | "mul"
-                                            ) && wanted.contains(&l)
-                                        })
-                            });
-                        bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                // hidden — it stays visible via the ungrouped list. Probe
+                // data with no tracks (only a length) knows no more.
+                StreamRule::AudioLanguage { op, values } => {
+                    match probe_data.filter(|pd| {
+                        !pd.media_streams
+                            .is_empty()
+                    }) {
+                        None => MatchOutcome::PassThrough,
+                        Some(pd) => {
+                            let wanted: Vec<String> = values
+                                .iter()
+                                .map(|v| normalize_lang_code(v))
+                                .collect();
+                            let hit = pd
+                                .media_streams
+                                .iter()
+                                .any(|s| {
+                                    s.type_ == MediaStreamType::Audio
+                                        && s.language
+                                            .as_deref()
+                                            .map_or(false, |l| {
+                                                let l = normalize_lang_code(l);
+                                                !matches!(
+                                                    l.as_str(),
+                                                    "und" | "mis" | "zxx" | "mul"
+                                                ) && wanted.contains(&l)
+                                            })
+                                });
+                            bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
+                        }
                     }
-                },
+                }
                 // Unknown size (None) passes through, consistent with Size's
                 // original semantics and the AudioLanguage behavior above.
                 StreamRule::Size { op, value } => match info.size {
@@ -539,7 +545,11 @@ impl StreamGroup {
                                 .is_some_and(&is_wanted)
                         });
                     let hit = embedded_hit || advertised_hit;
-                    if !hit && probe_data.is_none() {
+                    let tracks_known = probe_data.is_some_and(|pd| {
+                        !pd.media_streams
+                            .is_empty()
+                    });
+                    if !hit && !tracks_known {
                         MatchOutcome::PassThrough
                     } else {
                         bool_to_outcome(matches!(op, SetOp::In | SetOp::Is) == hit)
@@ -1234,6 +1244,33 @@ mod tests {
             group.match_outcome(&info("a.mkv"), None),
             MatchOutcome::PassThrough
         );
+    }
+
+    // Probe data holding only a length (read from the file's header) knows
+    // no tracks either, so the language rules pass it through too.
+    #[test]
+    fn language_rules_pass_through_probe_data_with_no_tracks() {
+        let length_only = crate::api::MediaSourceInfo {
+            run_time_ticks: Some(7200 * 10_000_000),
+            remux: Some(crate::api::MediaSourceRemuxInfo {
+                provider_info: None,
+                source: Some(crate::api::ProbeOrigin::Container),
+            }),
+            ..Default::default()
+        };
+        for group in [
+            group_audio_lang(SetOp::Is, &["rus"]),
+            group_audio_lang(SetOp::NotIn, &["rus"]),
+            group_with(
+                vec![subtitle_rule(SetOp::In, &["por"])],
+                FilterMatchMode::All,
+            ),
+        ] {
+            assert_eq!(
+                group.match_outcome(&info("a.mkv"), Some(&length_only)),
+                MatchOutcome::PassThrough
+            );
+        }
     }
 
     #[test]

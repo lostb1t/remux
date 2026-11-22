@@ -737,7 +737,7 @@ fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
     )
 }
 
-fn is_hls_input_url(input_url: &str) -> bool {
+pub(crate) fn is_hls_input_url(input_url: &str) -> bool {
     let Ok(url) = url::Url::parse(input_url) else {
         return false;
     };

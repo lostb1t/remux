@@ -66,6 +66,12 @@ pub enum ResourceType {
     Segment,
     Metrics,
     Tracking,
+    /// Not something an addon gives: Remux may read this addon's streams to
+    /// make seek previews. With `Stream` off, the addon is asked for streams
+    /// in the background, for seek previews only, and its streams are never
+    /// offered to viewers. Off until an admin turns it on.
+    #[strum(to_string = "seek previews")]
+    SeekPreviews,
 
     #[strum(to_string = "{0}")]
     #[serde(untagged)]
@@ -1642,5 +1648,25 @@ mod resource_tests {
                 ResourceType::Other("something_new".into()),
             ]
         );
+    }
+
+    /// The dashboard shows a resource by its label and parses the label back
+    /// when it saves; the stored list holds the serde name. An older server
+    /// reads the stored name as `Other` and ignores it.
+    #[test]
+    fn seek_previews_round_trips_by_label_and_by_stored_name() {
+        assert_eq!(ResourceType::SeekPreviews.to_string(), "seek previews");
+        assert_eq!(
+            "seek previews".parse::<ResourceType>(),
+            Ok(ResourceType::SeekPreviews)
+        );
+        let stored = serde_json::to_value(vec![
+            ResourceType::Stream,
+            ResourceType::SeekPreviews,
+        ])
+        .unwrap();
+        assert_eq!(stored, serde_json::json!(["stream", "seekPreviews"]));
+        let read: Vec<ResourceType> = serde_json::from_value(stored).unwrap();
+        assert_eq!(read, vec![ResourceType::Stream, ResourceType::SeekPreviews]);
     }
 }

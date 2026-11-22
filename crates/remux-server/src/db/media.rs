@@ -2984,6 +2984,50 @@ impl Media {
         Ok(())
     }
 
+    /// Saves what `change` makes of a row's probe data, unless it makes
+    /// nothing or the stored value changed since it was read, so a write in
+    /// between is never lost. True when saved. A stored value that cannot be
+    /// read is left as it is.
+    pub async fn change_probe_data(
+        db: &sqlx::SqlitePool,
+        id: &Uuid,
+        change: impl FnOnce(
+            Option<crate::api::MediaSourceInfo>,
+        ) -> Option<crate::api::MediaSourceInfo>,
+    ) -> Result<bool> {
+        let Some(stored) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT probe_data FROM media WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        else {
+            return Ok(false);
+        };
+        let current = match stored.as_deref() {
+            Some(text) => {
+                match serde_json::from_str::<crate::api::MediaSourceInfo>(text) {
+                    Ok(probe) => Some(probe),
+                    Err(_) => return Ok(false),
+                }
+            }
+            None => None,
+        };
+        let Some(changed) = change(current) else {
+            return Ok(false);
+        };
+        let saved = sqlx::query(
+            "UPDATE media SET probe_data = ?1 WHERE id = ?2 AND probe_data IS ?3",
+        )
+        .bind(sqlx::types::Json(&changed))
+        .bind(id)
+        .bind(stored.as_deref())
+        .execute(db)
+        .await?
+        .rows_affected();
+        Ok(saved == 1)
+    }
+
     pub async fn insert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
         if items.is_empty() {
             return Ok(());

@@ -9,7 +9,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
-use crate::AppState;
+use crate::{
+    AppState,
+    container_length::{BodyStart, Container, ContainerLength},
+};
 
 /// A BitTorrent tracker announce URL with a supported scheme and host. UDP
 /// trackers may omit a path, while HTTP trackers must name an announce path.
@@ -276,12 +279,7 @@ impl StreamDescriptor {
             Self::Local(path) => path
                 .to_string_lossy()
                 .into_owned(),
-            Self::Torrent { .. } | Self::Opendal { .. } => format!(
-                "http://127.0.0.1:{}/stream/{}?token={}",
-                port,
-                media_id,
-                stream_link_token(media_id)
-            ),
+            Self::Torrent { .. } | Self::Opendal { .. } => proxy_input(media_id, port),
         }
     }
 
@@ -595,6 +593,15 @@ fn stream_link_mac(media_id: Uuid) -> hmac::Hmac<sha2::Sha256> {
         .expect("HMAC takes a key of any length");
     mac.update(media_id.as_bytes());
     mac
+}
+
+/// This server's own stream proxy address for `media_id`, with its link
+/// token, for ffmpeg and ffprobe to read through.
+pub(crate) fn proxy_input(media_id: Uuid, port: u16) -> String {
+    format!(
+        "http://127.0.0.1:{port}/stream/{media_id}?token={}",
+        stream_link_token(media_id)
+    )
 }
 
 /// The token a `/stream/{id}` link carries. The route is unauthenticated (ffmpeg
@@ -1141,6 +1148,128 @@ pub fn range_not_satisfiable(total: u64) -> Response {
         .unwrap()
 }
 
+/// Where a relayed response's body starts in its file, for one whose bytes
+/// are the file's: the whole file, or a range of it.
+fn body_start(response: &Response) -> Option<BodyStart> {
+    match response.status() {
+        http::StatusCode::OK => Some(BodyStart::File),
+        http::StatusCode::PARTIAL_CONTENT => {
+            let from_zero = response
+                .headers()
+                .get(http::header::CONTENT_RANGE)
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
+                .and_then(|v| v.strip_prefix("bytes "))
+                .and_then(|v| v.split_once('-'))
+                .is_some_and(|(start, _)| start.trim() == "0");
+            Some(if from_zero {
+                BodyStart::File
+            } else {
+                BodyStart::Range
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Where the body of `response`, which relays `stream`'s bytes, starts in
+/// its file, when it is to be read for the length the file states: the
+/// stream has no measured length (see [`crate::trickplay::wants_length`]),
+/// and the body is the file from byte 0, or a range of a file not known to
+/// be in another container than MP4.
+fn length_tap(stream: &crate::db::Media, response: &Response) -> Option<BodyStart> {
+    if !crate::trickplay::wants_length(stream) {
+        return None;
+    }
+    let start = body_start(response)?;
+    // A range from elsewhere is read only because it may be an MP4 index,
+    // so not for a file known to be in another container.
+    let other_container = stream
+        .probe_data
+        .as_ref()
+        .and_then(|p| {
+            p.container
+                .as_ref()
+        })
+        .is_some_and(|c| {
+            !matches!(
+                c,
+                crate::api::VideoContainer::Mp4
+                    | crate::api::VideoContainer::M4v
+                    | crate::api::VideoContainer::Mov
+            )
+        });
+    (start == BodyStart::File || !other_container).then_some(start)
+}
+
+/// `response`, which relays `stream`'s bytes, with its first bytes read on
+/// the way for the length the file states, when seek previews are on and
+/// `length_tap` gives where its body starts. Every byte passes as it
+/// comes, unchanged; copying stops once the reader is finished, and a length
+/// found is stored in the background. Otherwise `response` is returned as
+/// it is.
+pub async fn tap_length(
+    ctx: &crate::AppContext,
+    stream: &crate::db::Media,
+    response: Response,
+) -> Response {
+    let Some(start) = length_tap(stream, &response) else {
+        return response;
+    };
+    // No query while no addon may be read for previews, as on any server
+    // that never turned them on.
+    let readable = ctx
+        .sessions
+        .trickplay
+        .addon_rules()
+        .values()
+        .any(|rule| rule.reads);
+    if !readable {
+        return response;
+    }
+    let cfg = crate::db::Settings::get_config_or_default(&ctx.db).await;
+    if !crate::trickplay::enabled(&cfg) {
+        return response;
+    }
+    let ctx = ctx.clone();
+    let stream_id = stream.id;
+    let title = stream
+        .title
+        .clone();
+    let (parts, body) = response.into_parts();
+    let relayed = async_stream::stream! {
+        let mut reader = Some(ContainerLength::new(start));
+        let mut body = body.into_data_stream();
+        while let Some(chunk) = body.next().await {
+            let finished = match (reader.as_mut(), &chunk) {
+                (Some(reader), Ok(bytes)) => {
+                    if let Some(ticks) = reader.feed(bytes) {
+                        let container = reader
+                            .container()
+                            .map_or("", Container::name);
+                        tokio::spawn(crate::trickplay::store_length(
+                            ctx.clone(),
+                            stream_id,
+                            title.clone(),
+                            ticks,
+                            container,
+                        ));
+                    }
+                    reader.is_finished()
+                }
+                _ => false,
+            };
+            if finished {
+                reader = None;
+            }
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(relayed))
+}
+
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
     let ext = path
         .extension()
@@ -1166,6 +1295,73 @@ mod tests {
     };
     use axum::response::Response;
     use std::path::Path;
+
+    /// Which relays are read for the length their file states: only those
+    /// of a stream with no measured length, from byte 0, or a range that may
+    /// be an MP4 index.
+    #[test]
+    fn only_an_unmeasured_stream_from_its_start_or_a_possible_index_is_read() {
+        use super::{BodyStart, length_tap};
+        use crate::api::{ProbeOrigin, VideoContainer};
+        let response = |status: u16, range: Option<&str>| {
+            let mut builder = Response::builder().status(status);
+            if let Some(range) = range {
+                builder = builder.header(http::header::CONTENT_RANGE, range);
+            }
+            builder
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let row =
+            |origin: ProbeOrigin, container: Option<VideoContainer>| crate::db::Media {
+                kind: crate::db::MediaKind::Stream,
+                parent_id: Some(uuid::Uuid::new_v4()),
+                probe_data: Some(crate::api::MediaSourceInfo {
+                    run_time_ticks: Some(6_180 * 10_000_000),
+                    container,
+                    remux: Some(crate::api::MediaSourceRemuxInfo {
+                        provider_info: None,
+                        source: Some(origin),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        let whole = response(200, None);
+        let from_zero = response(206, Some("bytes 0-99/1000"));
+        let from_100 = response(206, Some("bytes 100-999/1000"));
+
+        let unknown = row(ProbeOrigin::FilenameGuess, None);
+        assert_eq!(length_tap(&unknown, &whole), Some(BodyStart::File));
+        assert_eq!(length_tap(&unknown, &from_zero), Some(BodyStart::File));
+        assert_eq!(length_tap(&unknown, &from_100), Some(BodyStart::Range));
+        assert_eq!(length_tap(&unknown, &response(404, None)), None);
+        assert_eq!(
+            length_tap(&unknown, &response(206, None)),
+            Some(BodyStart::Range)
+        );
+
+        let matroska = row(ProbeOrigin::FilenameGuess, Some(VideoContainer::Mkv));
+        assert_eq!(length_tap(&matroska, &whole), Some(BodyStart::File));
+        assert_eq!(length_tap(&matroska, &from_100), None);
+        let mp4 = row(ProbeOrigin::FilenameGuess, Some(VideoContainer::Mp4));
+        assert_eq!(length_tap(&mp4, &from_100), Some(BodyStart::Range));
+
+        for origin in [
+            ProbeOrigin::Ffprobe,
+            ProbeOrigin::RemuxDb,
+            ProbeOrigin::Container,
+        ] {
+            let measured = row(origin, None);
+            assert_eq!(length_tap(&measured, &whole), None, "{origin:?}");
+            assert_eq!(length_tap(&measured, &from_zero), None, "{origin:?}");
+        }
+        let loose = crate::db::Media {
+            parent_id: None,
+            ..row(ProbeOrigin::FilenameGuess, None)
+        };
+        assert_eq!(length_tap(&loose, &whole), None);
+    }
 
     #[test]
     fn only_a_reachable_hls_playlist_without_headers_is_passed_through() {
