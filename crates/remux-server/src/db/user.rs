@@ -566,6 +566,34 @@ impl UserMediaState {
         Ok(row)
     }
 
+    /// Moves every user's state of `old_id` to the episode `new` it was
+    /// renumbered to, under `new`'s identity: keeping the old one would let
+    /// `remap_orphaned_for` hand it to whatever episode takes the old number.
+    pub async fn move_rows(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new: &super::Media,
+        series_ext: &super::ExternalIds,
+    ) -> Result<()> {
+        let media_raw = new
+            .identity_raw(Some(series_ext))
+            .identity_key();
+        let rows: Vec<Self> =
+            sqlx::query_as("SELECT * FROM user_media_state WHERE media_id = ?")
+                .bind(old_id)
+                .fetch_all(db)
+                .await?;
+        for row in rows {
+            let user_id = row.user_id;
+            let row = Self {
+                media_raw: media_raw.clone(),
+                ..row
+            };
+            Self::merge_rows(db, user_id, row, new.id).await?;
+        }
+        Ok(())
+    }
+
     /// Moves `old_row` (currently sitting under some other `media_id`) onto
     /// `new_media_id` for `user_id`. A row can already exist there too — the
     /// user interacted with the reimported item before this row got

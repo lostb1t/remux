@@ -1195,6 +1195,76 @@ pub struct ExternalIds {
     pub artist_name: Option<String>,
 }
 
+/// The stored episodes a refresh renumbered, each with the written episode it
+/// became (see `Media::remove_renumbered_episodes`). Matched by TMDB, TVDB or
+/// IMDb id; an id that two written episodes share, or a stored episode that
+/// matches more than one written episode, is ambiguous and left alone.
+fn renumbered_episodes<'a>(
+    stored: &[(Uuid, ExternalIds)],
+    written: &'a [Media],
+) -> Vec<(Uuid, &'a Media)> {
+    #[derive(PartialEq, Eq, Hash)]
+    enum Key<'k> {
+        Tmdb(i64),
+        Tvdb(i64),
+        Imdb(&'k str),
+    }
+    fn keys(ext: &ExternalIds) -> impl Iterator<Item = Key<'_>> {
+        [
+            ext.tmdb
+                .map(Key::Tmdb),
+            ext.tvdb
+                .map(Key::Tvdb),
+            ext.imdb
+                .as_deref()
+                .map(|imdb| Key::Imdb(imdb)),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    let mut by_key: HashMap<Key, Option<&Media>> = HashMap::new();
+    for episode in written {
+        for key in keys(&episode.external_ids) {
+            by_key
+                .entry(key)
+                .and_modify(|e| *e = None)
+                .or_insert(Some(episode));
+        }
+    }
+    let written_ids: HashSet<Uuid> = written
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    stored
+        .iter()
+        .filter(|(id, _)| !written_ids.contains(id))
+        .filter_map(|(id, ext)| {
+            let mut matches = keys(ext)
+                .filter_map(|key| {
+                    by_key
+                        .get(&key)
+                        .copied()
+                        .flatten()
+                })
+                .map(|e| e.id)
+                .collect::<HashSet<_>>()
+                .into_iter();
+            let new_id = matches.next()?;
+            if matches
+                .next()
+                .is_some()
+            {
+                return None;
+            }
+            written
+                .iter()
+                .find(|e| e.id == new_id)
+                .map(|e| (*id, e))
+        })
+        .collect()
+}
+
 impl ExternalIds {
     /// Parse an AIO `meta.id` string into external provider IDs using the
     /// standard Stremio/Jellyfin prefix conventions.
@@ -3742,6 +3812,60 @@ impl Media {
         tx.commit()
             .await?;
         Ok(())
+    }
+
+    /// Removes the episodes of `series_id` that a refresh renumbered, as
+    /// Jellyfin's `RemoveObsoleteEpisodes` does: a stored episode the refresh
+    /// didn't write, whose TMDB, TVDB or IMDb id the refresh wrote under
+    /// another number (TMDB moved S1E13 to S2E1). Its watch state and
+    /// playlist/collection entries move to the episode it became. An episode
+    /// that is merely missing from this refresh stays, so nothing disappears
+    /// because a source left it out. `written` are the episodes the refresh
+    /// wrote; returns how many were removed.
+    pub async fn remove_renumbered_episodes(
+        db: &SqlitePool,
+        series_id: Uuid,
+        series_ext: &ExternalIds,
+        written: &[Media],
+    ) -> Result<usize> {
+        let stored: Vec<(Uuid, ExternalIds)> = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, external_ids FROM media WHERE grandparent_id = ? AND kind = 'episode'",
+        )
+        .bind(series_id)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .filter_map(|(id, ext)| Some((id, serde_json::from_str(&ext).ok()?)))
+        .collect();
+        let moves = renumbered_episodes(&stored, written);
+        for &(old_id, new) in &moves {
+            super::UserMediaState::move_rows(db, old_id, new, series_ext).await?;
+            let _permit = DB_WRITE_SEMAPHORE
+                .acquire()
+                .await
+                .unwrap();
+            let mut tx = db
+                .begin()
+                .await?;
+            sqlx::query(
+                "UPDATE OR IGNORE media_relations SET right_media_id = ? WHERE right_media_id = ?",
+            )
+            .bind(new.id)
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM media_relations WHERE left_media_id = ?")
+                .bind(old_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM media WHERE id = ?")
+                .bind(old_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit()
+                .await?;
+        }
+        Ok(moves.len())
     }
 
     /// Return items of the same kind that share genres with `source_id`, scored by
@@ -10067,6 +10191,249 @@ pub(crate) fn build_genre_relations_from_names(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn renumbered_episodes_are_matched_by_an_unambiguous_external_id() {
+        use super::{ExternalIds, Media, renumbered_episodes};
+        use uuid::Uuid;
+        let ext = |tmdb: Option<i64>, tvdb: Option<i64>| ExternalIds {
+            tmdb,
+            tvdb,
+            ..Default::default()
+        };
+        let written = |id: u128, ext: ExternalIds| Media {
+            id: Uuid::from_u128(id),
+            external_ids: ext,
+            ..Default::default()
+        };
+        let written = vec![
+            // S2E1, TMDB's former S1E13.
+            written(1, ext(Some(13), Some(113))),
+            // Rewritten in place.
+            written(2, ext(Some(2), None)),
+            // Two episodes sharing a TVDB id.
+            written(3, ext(Some(30), Some(300))),
+            written(4, ext(Some(40), Some(300))),
+            written(5, ext(Some(50), None)),
+            written(
+                6,
+                ExternalIds {
+                    imdb: super::NonEmptyString::try_new("tt600".to_string()).ok(),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let stored = vec![
+            (Uuid::from_u128(10), ext(Some(13), Some(113))),
+            (Uuid::from_u128(2), ext(Some(2), None)),
+            // Missing from this refresh, but nowhere else either.
+            (Uuid::from_u128(11), ext(Some(99), None)),
+            // Only by the shared TVDB id.
+            (Uuid::from_u128(12), ext(None, Some(300))),
+            // Its ids point at two different episodes.
+            (Uuid::from_u128(13), ext(Some(30), Some(113))),
+            (Uuid::from_u128(14), ext(Some(50), None)),
+            // Only by IMDb id.
+            (
+                Uuid::from_u128(15),
+                ExternalIds {
+                    imdb: super::NonEmptyString::try_new("tt600".to_string()).ok(),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let moves: Vec<(u128, u128)> = renumbered_episodes(&stored, &written)
+            .into_iter()
+            .map(|(old, new)| {
+                (
+                    old.as_u128(),
+                    new.id
+                        .as_u128(),
+                )
+            })
+            .collect();
+        assert_eq!(moves, [(10, 1), (14, 5), (15, 6)]);
+    }
+
+    #[tokio::test]
+    async fn a_renumbered_episode_is_removed_and_its_watch_state_moves_along() {
+        use super::{ExternalIds, Media, MediaKind};
+        use uuid::Uuid;
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let series_ext = ExternalIds {
+            tmdb: Some(1),
+            ..Default::default()
+        };
+        let series = Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Series,
+            title: "Series".into(),
+            external_ids: series_ext.clone(),
+            ..Default::default()
+        };
+        let season = |idx| Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Season,
+            title: format!("Season {idx}"),
+            idx: Some(idx),
+            parent_id: Some(series.id),
+            grandparent_id: Some(series.id),
+            ..Default::default()
+        };
+        let (season1, season2) = (season(1), season(2));
+        let episode = |season: &Media, idx, tmdb| Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Episode,
+            title: format!("Episode {idx}"),
+            idx: Some(idx),
+            parent_idx: season.idx,
+            parent_id: Some(season.id),
+            grandparent_id: Some(series.id),
+            external_ids: ExternalIds {
+                tmdb: Some(tmdb),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // TMDB moved S1E13 to S2E1; S1E12 is simply missing this time.
+        let old = episode(&season1, 13, 113);
+        let missing = episode(&season1, 12, 112);
+        let new = episode(&season2, 1, 113);
+        for mut media in [
+            series.clone(),
+            season1.clone(),
+            season2.clone(),
+            old.clone(),
+            missing.clone(),
+            new.clone(),
+        ] {
+            media
+                .save(db)
+                .await
+                .unwrap();
+        }
+        let user = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, play_count) VALUES (?, ?, 1)",
+        )
+        .bind(user)
+        .bind(old.id)
+        .execute(db)
+        .await
+        .unwrap();
+        // Another user already has state on both: merged, not lost.
+        let both = Uuid::new_v4();
+        for (media_id, play_count, favorite) in [(old.id, 3, true), (new.id, 1, false)]
+        {
+            sqlx::query(
+                "INSERT INTO user_media_state (user_id, media_id, play_count, favorite) VALUES (?, ?, ?, ?)",
+            )
+            .bind(both)
+            .bind(media_id)
+            .bind(play_count)
+            .bind(favorite)
+            .execute(db)
+            .await
+            .unwrap();
+        }
+        // A person of the old episode.
+        let person = Media {
+            id: Uuid::new_v4(),
+            kind: MediaKind::Person,
+            title: "Person".into(),
+            ..Default::default()
+        };
+        person
+            .clone()
+            .save(db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO media_relations (relation_id, left_media_id, right_media_id) VALUES (?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(old.id)
+        .bind(person.id)
+        .execute(db)
+        .await
+        .unwrap();
+        let playlist = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO media_relations (relation_id, left_media_id, right_media_id) VALUES (?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(playlist)
+        .bind(old.id)
+        .execute(db)
+        .await
+        .unwrap();
+
+        let removed = Media::remove_renumbered_episodes(
+            db,
+            series.id,
+            &series_ext,
+            &[new.clone()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(
+            Media::get_by_id(db, &old.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Media::get_by_id(db, &missing.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let (media_id, play_count, media_raw): (Uuid, i64, Option<String>) =
+            sqlx::query_as(
+                "SELECT media_id, play_count, media_raw FROM user_media_state WHERE user_id = ?",
+            )
+            .bind(user)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        assert_eq!((media_id, play_count), (new.id, 1));
+        assert_eq!(
+            media_raw,
+            new.identity_raw(Some(&series_ext))
+                .identity_key()
+        );
+        let entry: Uuid = sqlx::query_scalar(
+            "SELECT right_media_id FROM media_relations WHERE left_media_id = ?",
+        )
+        .bind(playlist)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(entry, new.id);
+        let merged: Vec<(Uuid, i64, bool)> = sqlx::query_as(
+            "SELECT media_id, play_count, favorite FROM user_media_state WHERE user_id = ?",
+        )
+        .bind(both)
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(merged, [(new.id, 3, true)]);
+        let old_links: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM media_relations WHERE left_media_id = ?",
+        )
+        .bind(old.id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(old_links, 0);
+    }
+
     #[test]
     fn episode_counts_played_percentage_matches_jellyfin_folders() {
         let pct = |total, unplayed| {
