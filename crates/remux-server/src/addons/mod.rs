@@ -3134,7 +3134,8 @@ impl AddonService {
         // with the same id even when they carry different external ids.
         db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
         // Dedupe before truncating, so duplicates don't eat into the limit.
-        let mut merged = db::Media::dedupe_by_identity(results);
+        let mut merged =
+            db::Media::dedupe_by_title_year(db::Media::dedupe_by_identity(results));
         merged.truncate(limit);
         for m in &merged {
             ctx.store
