@@ -333,8 +333,7 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found")?;
     // The source that will play must be allowed, and so must the title in the
-    // URL when a MediaSourceId names something else (another title or one of
-    // its streams).
+    // URL when a MediaSourceId names something else (one of its streams).
     let title = match media_source_id {
         Some(source_id) if source_id != id => {
             MediaResolveService::resolve_item(id, &state.ctx).await?
@@ -6453,18 +6452,31 @@ mod tests {
             .await
             .unwrap();
         let stream_path = format!("/videos/{}/stream.mkv", hidden_stream.id);
-        let playback_info = |source: uuid::Uuid| {
+        let playback_info = |item: uuid::Uuid| {
             server
-                .post(&format!("/items/{}/playbackinfo", allowed.id))
+                .post(&format!("/items/{item}/playbackinfo"))
                 .add_header(http::header::AUTHORIZATION, auth.clone())
-                .json(&json!({ "MediaSourceId": source }))
+                .json(&json!({ "MediaSourceId": hidden_stream.id }))
         };
 
         set_age_limit(0).await;
-        playback_info(hidden_stream.id)
+        playback_info(hidden.id)
             .expect_failure()
             .await
             .assert_status(StatusCode::NOT_FOUND);
+        let body: serde_json::Value = playback_info(allowed.id)
+            .await
+            .json();
+        assert_eq!(
+            body["MediaSources"][0]["Id"],
+            json!(
+                allowed
+                    .id
+                    .simple()
+                    .to_string()
+            ),
+            "{body}"
+        );
         server
             .get(&stream_path)
             .add_header(http::header::AUTHORIZATION, auth.clone())
@@ -6474,7 +6486,7 @@ mod tests {
 
         // Once the limit allows the title, the same requests succeed.
         set_age_limit(16).await;
-        playback_info(hidden_stream.id)
+        playback_info(hidden.id)
             .await
             .assert_status_ok();
         server
