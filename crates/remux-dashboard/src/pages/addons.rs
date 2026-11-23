@@ -192,12 +192,12 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     };
 
                                     rsx! {
-                                        div { class: "addon-card", key: "{id_string}",
+                                        div {
+                                            class: "addon-card",
+                                            key: "{id_string}",
+                                            "data-muted": "{!addon.enabled}",
                                             div { class: "addon-card-header",
                                                 span { class: "addon-card-name", "{addon.name}" }
-                                                if !addon.enabled {
-                                                    span { class: "addon-card-disabled", "Disabled" }
-                                                }
                                                 span { class: "addon-card-kind", "{addon.kind}" }
                                             }
                                             if let Some(desc) = addon.description.as_deref().filter(|d| !d.is_empty()) {
@@ -555,7 +555,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                 div { class: "form-group",
                                     ToggleRow {
                                         label: "Enabled",
-                                        description: "A disabled addon is kept with its settings, but provides nothing until it is enabled again.",
                                         checked: *edit_enabled.read(),
                                         on_change: move |v| edit_enabled.set(v),
                                     }
