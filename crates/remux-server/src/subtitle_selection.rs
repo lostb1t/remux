@@ -36,6 +36,44 @@ fn filename_stem(name: &str) -> &str {
         .map_or(basename, |(stem, _)| stem)
 }
 
+fn release_name_tokens(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for token in filename_stem(name).split(|c: char| !c.is_alphanumeric()) {
+        if token.is_empty() {
+            continue;
+        }
+        match token
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "webdl" => tokens.extend(["web".to_string(), "dl".to_string()]),
+            "bluray" => tokens.extend(["blu".to_string(), "ray".to_string()]),
+            token => tokens.push(token.to_string()),
+        }
+    }
+    tokens
+}
+
+fn normalized_release_tokens(name: &str, lang: Option<&str>) -> Vec<String> {
+    let mut tokens = release_name_tokens(name);
+    loop {
+        let Some(suffix) = tokens.last() else {
+            break;
+        };
+        let is_accessibility_flag = matches!(suffix.as_str(), "forced" | "sdh" | "cc")
+            || (suffix == "hi" && normalized_language(lang) != "hi");
+        let is_language_suffix = lang.is_some_and(|lang| {
+            normalized_language(Some(suffix)) == normalized_language(Some(lang))
+        });
+        if is_accessibility_flag || is_language_suffix {
+            tokens.pop();
+        } else {
+            break;
+        }
+    }
+    tokens
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumString,
 )]
@@ -101,8 +139,7 @@ fn language(sub: &SubtitleInfo) -> String {
     )
 }
 
-/// Only an actual subtitle filename matching the selected video filename
-/// counts. Do not infer a release match from title words or a similar name.
+/// Only a complete normalized release name match counts; title similarity is not evidence.
 pub(crate) fn is_release_match(
     sub: &SubtitleInfo,
     source_filename: Option<&str>,
@@ -111,8 +148,12 @@ pub(crate) fn is_release_match(
         .as_deref()
         .zip(source_filename)
         .is_some_and(|(subtitle, video)| {
-            let subtitle = filename_stem(subtitle);
-            !subtitle.is_empty() && subtitle.eq_ignore_ascii_case(filename_stem(video))
+            let subtitle = normalized_release_tokens(
+                subtitle,
+                sub.lang
+                    .as_deref(),
+            );
+            !subtitle.is_empty() && subtitle == release_name_tokens(video)
         })
 }
 
@@ -474,10 +515,66 @@ mod tests {
         let subtitle = sub("title", "movie.2026.SRT", "eng");
         assert!(is_release_match(&subtitle, Some("Movie.2026.mkv")));
         let punctuation = sub("punctuation", "Movie.2026.WEBDL.srt", "eng");
-        assert!(!is_release_match(
+        assert!(is_release_match(
             &punctuation,
             Some("Movie.2026.WEB-DL.mkv")
         ));
+    }
+
+    #[test]
+    fn subtitle_language_and_accessibility_suffixes_do_not_change_release_match() {
+        for subtitle_name in [
+            "Movie.2026.1080p.WEB-DL.tr.srt",
+            "Movie.2026.1080p.WEB-DL.tur.sdh.srt",
+            "Movie.2026.1080p.WEB-DL.forced.tr.srt",
+        ] {
+            let subtitle = sub("turkish", subtitle_name, "tur");
+            assert!(
+                is_release_match(&subtitle, Some("Movie.2026.1080p.WEB-DL.mkv")),
+                "{subtitle_name} should match its release"
+            );
+        }
+    }
+
+    #[test]
+    fn punctuation_variants_match_without_collapsing_release_tokens() {
+        let subtitle = sub(
+            "punctuation",
+            "The_End-of.Oak.Street.2026.1080p.WEBDL.AV1-POOTLED.tr.srt",
+            "tur",
+        );
+        assert!(is_release_match(
+            &subtitle,
+            Some("The End of Oak Street 2026 1080P WEB-DL AV1 POOTLED.mp4")
+        ));
+    }
+
+    #[test]
+    fn release_matching_preserves_source_edition_episode_and_group_differences() {
+        let source = "Show.S01E04.2160p.WEB-DL.IMAX.AV1-POOTLED.mkv";
+        for subtitle_name in [
+            "Show.S01E04.2160p.WEBRip.IMAX.AV1-POOTLED.srt",
+            "Show.S01E04.2160p.WEB-DL.AV1-POOTLED.srt",
+            "Show.S01E05.2160p.WEB-DL.IMAX.AV1-POOTLED.srt",
+            "Show.S01E04.2160p.WEB-DL.IMAX.AV1-YTS.srt",
+        ] {
+            assert!(
+                !is_release_match(
+                    &sub("other-release", subtitle_name, "tur"),
+                    Some(source)
+                ),
+                "{subtitle_name} must not match {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_release_filename_is_not_a_match() {
+        assert!(!is_release_match(
+            &sub("unknown", "", "tur"),
+            Some("Movie.mkv")
+        ));
+        assert!(!is_release_match(&sub("unknown", "Movie.srt", "tur"), None));
     }
 
     #[test]
@@ -558,9 +655,9 @@ mod tests {
     }
 
     #[test]
-    fn language_suffix_is_not_an_exact_filename_match() {
+    fn language_suffix_preserves_release_match() {
         let subtitle = sub("turkish", "Movie.2026.1080p.WEB-DL.tr.srt", "tur");
-        assert!(!is_release_match(
+        assert!(is_release_match(
             &subtitle,
             Some("Movie.2026.1080p.WEB-DL.mkv")
         ));
