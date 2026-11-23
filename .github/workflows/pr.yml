@@ -13,7 +13,7 @@ jobs:
   bench:
     if: false
     name: Bench
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
