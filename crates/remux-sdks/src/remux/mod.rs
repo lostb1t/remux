@@ -3342,6 +3342,10 @@ pub enum ProbeOrigin {
     /// tracks. Temporary, until ffmpeg reads these playlists again
     /// (https://github.com/FFmpeg/FFmpeg/commit/8191fa0b8c).
     Passthrough,
+    /// An origin this build doesn't know, from a newer server or one that
+    /// dropped it, so the source still deserializes.
+    #[serde(other)]
+    Other,
 }
 
 #[dto]
@@ -8589,6 +8593,16 @@ impl Endpoint for RegenerateCollectionImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_probe_origin_is_other() {
+        let origin: ProbeOrigin =
+            serde_json::from_value(serde_json::json!("ffprobe")).unwrap();
+        assert_eq!(origin, ProbeOrigin::Ffprobe);
+        let origin: ProbeOrigin =
+            serde_json::from_value(serde_json::json!("something_new")).unwrap();
+        assert_eq!(origin, ProbeOrigin::Other);
+    }
 
     fn query_pairs(query: &GetItemsQuery) -> Vec<(String, String)> {
         let encoded = serde_urlencoded::to_string(query).unwrap();
