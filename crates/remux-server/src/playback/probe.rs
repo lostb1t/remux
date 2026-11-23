@@ -1521,6 +1521,31 @@ fn select_candidates(
         .collect()
 }
 
+/// Whether ffprobe refused the stream because it is an HLS master playlist
+/// with `#EXT-X-START` before its variants. RFC 8216 allows that tag in both
+/// playlist types, but ffmpeg 8.1 and 9.0 count it as a media playlist tag
+/// and then reject the variants as "Master Playlist tag found in a Media
+/// Playlist". Players open such playlists fine, so a live stream like this is
+/// handed to the client (`ProbeOrigin::Passthrough`).
+///
+/// Fixed upstream in ffmpeg 9.1:
+/// https://github.com/FFmpeg/FFmpeg/commit/8191fa0b8c
+/// Remove this, and the passthrough it enables, once the bundled
+/// jellyfin-ffmpeg includes that commit.
+pub(crate) fn is_rejected_master_playlist(error: &axum_anyhow::ApiError) -> bool {
+    error
+        .error()
+        .is_some_and(|error| {
+            error
+                .chain()
+                .any(|cause| {
+                    cause
+                        .to_string()
+                        .contains("Master Playlist tag found in a Media Playlist")
+                })
+        })
+}
+
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
 /// Returns a 500 error if all candidates fail to probe.
@@ -1563,6 +1588,9 @@ where
         .collect();
     let total_available = probe_pool.len();
     let mut attempts = 0usize;
+    // Why the requested stream itself failed, kept as the cause of the
+    // final error (see `is_rejected_master_playlist`).
+    let mut primary_error: Option<anyhow::Error> = None;
 
     for (stream, url_opt) in all_to_try {
         let is_retry = stream.id != primary.id;
@@ -1660,6 +1688,9 @@ where
             }
             Ok(Ok(Err(e))) => {
                 warn!(url = %redact_url(&url), error = %e, "probe failed");
+                if !is_retry {
+                    primary_error = Some(e);
+                }
             }
             Ok(Err(e)) => {
                 warn!(url = %redact_url(&url), error = %e, "probe task panicked");
@@ -1670,16 +1701,39 @@ where
         }
     }
 
-    Err(anyhow!(
+    let failed = format!(
         "all probe attempts failed for '{}' (tried {attempts} of {total_available} streams)",
         primary.full_title()
-    ))
+    );
+    Err(match primary_error {
+        Some(error) => error.context(failed),
+        None => anyhow!(failed),
+    })
     .context_internal("stream probe failed — no usable streams found")
 }
 
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[test]
+    fn only_ffmpegs_master_playlist_rejection_counts() {
+        let api_error = |error: anyhow::Error| -> axum_anyhow::ApiError {
+            Err::<(), _>(error)
+                .context_internal("stream probe failed — no usable streams found")
+                .unwrap_err()
+        };
+        let rejected = anyhow!(
+            "ffprobe failed for https://content.uplynk.com/…: [hls @ 0x1] Master Playlist tag found in a Media Playlist"
+        )
+        .context("all probe attempts failed for 'ABC' (tried 1 of 1 streams)");
+        assert!(is_rejected_master_playlist(&api_error(rejected)));
+        let unreachable = anyhow!(
+            "ffprobe failed for https://live.example/…: Failed to resolve hostname live.example"
+        )
+        .context("all probe attempts failed for 'ABC' (tried 1 of 1 streams)");
+        assert!(!is_rejected_master_playlist(&api_error(unreachable)));
+    }
 
     #[test]
     fn media_stream_always_reports_its_required_fields() {

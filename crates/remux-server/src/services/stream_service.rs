@@ -5,7 +5,9 @@ use crate::{
     db::PreProbeQualityExt,
     device_profile::SourceRankingContext,
     ids::{ItemId, StreamGroupId, UserId},
-    playback::probe::{ProbeOutcome, probe_stream, resolve_stream_root},
+    playback::probe::{
+        ProbeOutcome, is_rejected_master_playlist, probe_stream, resolve_stream_root,
+    },
 };
 use remux_sdks::{remux::StreamFilter, remuxdb};
 use tracing::{debug, warn};
@@ -24,6 +26,19 @@ pub(crate) struct ProbeResult {
     /// Addon subtitles fetched for `effective_stream`'s release, alongside its
     /// probe. Empty for candidates that were not probed.
     pub external_subtitles: Vec<crate::addons::SubtitleInfo>,
+}
+
+/// The source for a live HLS stream the client plays itself (see
+/// `ProbeOrigin::Passthrough`): what the stream row knows, as an `m3u8`, the
+/// container Jellyfin Web opens with its HLS player.
+fn hls_passthrough_source(stream: &db::Media) -> api::MediaSourceInfo {
+    let mut source = api::MediaSourceInfo::from(stream.clone());
+    source.container = Some(api::VideoContainer::Other("m3u8".to_string()));
+    source.remux = Some(api::MediaSourceRemuxInfo {
+        provider_info: None,
+        source: Some(remux_sdks::remux::ProbeOrigin::Passthrough),
+    });
+    source
 }
 
 /// What a subtitle addon needs to match subtitles to this exact release.
@@ -988,8 +1003,38 @@ impl StreamService {
                     .unwrap_or_default(),
                 None => Vec::new(),
             };
-            let (mut source, effective_stream, outcome) =
-                probed.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let (mut source, effective_stream, outcome) = match probed {
+                Ok(probed) => probed,
+                // A live master playlist ffmpeg refuses by mistake: the client
+                // plays it itself. Goes with `is_rejected_master_playlist`,
+                // to be removed once ffmpeg reads these playlists again.
+                Err(error)
+                    if is_rejected_master_playlist(&error)
+                        && item
+                            .as_ref()
+                            .is_some_and(|it| it.is_live())
+                        && stream
+                            .stream_info
+                            .as_ref()
+                            .and_then(|si| {
+                                si.descriptor
+                                    .passthrough_hls_url()
+                            })
+                            .is_some() =>
+                {
+                    warn!(
+                        id = %stream.id,
+                        error = ?error,
+                        "probe failed, passing the live HLS playlist through to the client"
+                    );
+                    (
+                        hls_passthrough_source(&stream),
+                        stream.clone(),
+                        ProbeOutcome::Cached,
+                    )
+                }
+                Err(error) => return Err(anyhow::anyhow!("{error:?}")),
+            };
             // The probe failed over to another release, whose subtitles are
             // for a different file than the ones just fetched.
             if effective_stream.id != stream.id

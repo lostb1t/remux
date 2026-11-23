@@ -743,15 +743,23 @@ async fn items_playbackinfo_inner(
             "playback decision"
         );
 
-        match build_transcode_decision(
-            &source,
-            &transcode_reasons,
-            effective_sub_idx,
-            &q,
-            &session,
-            &cfg,
-            allow_subtitle_extraction,
-        ) {
+        // A playlist the client plays itself has nothing to transcode from:
+        // ffmpeg can't read it either.
+        let decision = if source.is_passthrough() {
+            transcode_reasons = Default::default();
+            TranscodeDecision::DirectPlay
+        } else {
+            build_transcode_decision(
+                &source,
+                &transcode_reasons,
+                effective_sub_idx,
+                &q,
+                &session,
+                &cfg,
+                allow_subtitle_extraction,
+            )
+        };
+        match decision {
             TranscodeDecision::DirectPlay => {
                 // These are server capabilities, not the mode selected for this
                 // request. Keep permitted processing available so the client can
@@ -765,6 +773,9 @@ async fn items_playbackinfo_inner(
                 source.supports_direct_stream = true;
                 source.transcoding_url = None;
                 source.transcoding_container = None;
+                if source.is_passthrough() {
+                    source.supports_transcoding = false;
+                }
             }
             TranscodeDecision::Transcode(outcome) => outcome.apply_to(&mut source),
         }
@@ -1599,6 +1610,21 @@ async fn videos_stream_inner(
         || resolved_codecs.direct_play_only
     {
         record_served(ServedPlayback::Direct);
+        // A live HLS playlist is only played statically when the client plays
+        // it itself (`ProbeOrigin::Passthrough`). Proxied, its relative
+        // variant and segment URLs would resolve against our own URL.
+        if let Some(url) = descriptor.passthrough_hls_url()
+            && db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await?
+            .is_some_and(|item| item.is_live())
+        {
+            return Ok(axum::response::Redirect::temporary(url).into_response());
+        }
         // If the producing addon has http_redirect_stream enabled, issue a 302
         // directly to the stream URL instead of proxying bytes through remux —
         // unless the URL's host is only reachable from remux's own network, in
@@ -4485,6 +4511,66 @@ mod tests {
         let body = playback_info(&server, &token, media.id, profile).await;
         let source = &body["MediaSources"][0];
         assert_eq!(source["SupportsDirectPlay"], true, "{source}");
+    }
+
+    /// The passthrough is only for the playlists ffmpeg refuses by mistake
+    /// (`is_rejected_master_playlist`): a live playlist that is simply
+    /// unreachable still fails, here rather than later in the player.
+    #[tokio::test]
+    async fn a_live_hls_playlist_that_cannot_be_reached_still_fails() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        // `.example` never resolves.
+        let playlist = "https://live.example/channel/master.m3u8";
+        let mut channel = crate::db::Media {
+            title: "Unreachable Channel".to_string(),
+            kind: crate::db::MediaKind::TvChannel,
+            ..Default::default()
+        };
+        channel
+            .save(db)
+            .await
+            .unwrap();
+        let mut stream = crate::db::Media {
+            title: "720p".to_string(),
+            kind: crate::db::MediaKind::Stream,
+            parent_id: Some(channel.id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(playlist),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        stream
+            .save(db)
+            .await
+            .unwrap();
+
+        server
+            .post(&format!("/items/{}/playbackinfo", channel.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth_header_with_token(&token)).unwrap(),
+            )
+            .json(&json!({ "DeviceProfile": web_client_profile() }))
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Played statically, which only a passthrough source is, a live HLS
+        // playlist is a redirect: proxied, its relative variant and segment
+        // URLs would resolve against our own URL.
+        let resp = server
+            .get(&format!(
+                "/videos/{}/stream?Static=true&ApiKey={token}",
+                channel.id
+            ))
+            .expect_failure()
+            .await;
+        resp.assert_status(StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(resp.header("location"), playlist);
     }
 
     /// `enable_direct_play: false` must force transcoding even with a matching

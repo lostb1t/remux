@@ -230,6 +230,33 @@ impl StreamDescriptor {
         Self::Rtsp { url: url.into() }
     }
 
+    /// The URL of an HLS playlist a client can open itself: an `.m3u8` on a
+    /// host it can reach, needing no request headers only we would send. A
+    /// live master playlist ffmpeg refuses by mistake is handed to the client
+    /// this way (see `is_rejected_master_playlist`).
+    pub fn passthrough_hls_url(&self) -> Option<&str> {
+        let Self::Http {
+            url,
+            request_headers,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if !request_headers.is_empty() {
+            return None;
+        }
+        let parsed = url::Url::parse(url).ok()?;
+        let reachable = parsed
+            .host_str()
+            .is_some_and(|host| !is_internal_host(host));
+        let hls = parsed
+            .path()
+            .to_ascii_lowercase()
+            .ends_with(".m3u8");
+        (reachable && hls).then_some(url.as_str())
+    }
+
     /// Input URL/path for ffprobe and ffmpeg (server-side tools).
     /// `Local` → raw filesystem path. `Http` → URL as-is.
     /// `Torrent`/`Opendal` → our stream proxy, which resolves them on demand.
@@ -1129,6 +1156,34 @@ mod tests {
     };
     use axum::response::Response;
     use std::path::Path;
+
+    #[test]
+    fn only_a_reachable_hls_playlist_without_headers_is_passed_through() {
+        let url = "https://content.uplynk.com/channel/abc.M3U8?pbs=1";
+        assert_eq!(StreamDescriptor::http(url).passthrough_hls_url(), Some(url));
+        for not in [
+            "https://example.com/movie.mp4",
+            "https://example.com/live.ts?f=.m3u8",
+            "http://192.168.1.10/live.m3u8",
+            "http://tvheadend:9981/live.m3u8",
+        ] {
+            assert_eq!(
+                StreamDescriptor::http(not).passthrough_hls_url(),
+                None,
+                "{not}"
+            );
+        }
+        let with_headers = StreamDescriptor::Http {
+            url: url.into(),
+            request_headers: [("Referer".to_string(), "https://x".to_string())].into(),
+            response_headers: Default::default(),
+        };
+        assert_eq!(with_headers.passthrough_hls_url(), None);
+        assert_eq!(
+            StreamDescriptor::rtsp("rtsp://cam/live.m3u8").passthrough_hls_url(),
+            None
+        );
+    }
 
     #[test]
     fn mime_from_path_video() {

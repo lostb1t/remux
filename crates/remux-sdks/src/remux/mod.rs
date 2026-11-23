@@ -3337,6 +3337,11 @@ pub enum ProbeOrigin {
     Ffprobe,
     RemuxDb,
     FilenameGuess,
+    /// A live HLS master playlist ffmpeg refuses by mistake, so the client
+    /// plays the provider's playlist itself: nothing is known about its
+    /// tracks. Temporary, until ffmpeg reads these playlists again
+    /// (https://github.com/FFmpeg/FFmpeg/commit/8191fa0b8c).
+    Passthrough,
 }
 
 #[dto]
@@ -3355,6 +3360,17 @@ impl MediaSourceInfo {
                 .as_ref()
                 .and_then(|r| r.source),
             Some(ProbeOrigin::FilenameGuess)
+        )
+    }
+
+    /// True when the client plays this source's playlist itself, unprobed
+    /// (see [`ProbeOrigin::Passthrough`]).
+    pub fn is_passthrough(&self) -> bool {
+        matches!(
+            self.remux
+                .as_ref()
+                .and_then(|r| r.source),
+            Some(ProbeOrigin::Passthrough)
         )
     }
 
