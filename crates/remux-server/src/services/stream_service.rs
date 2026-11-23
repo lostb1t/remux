@@ -29,11 +29,12 @@ pub(crate) struct ProbeResult {
 }
 
 /// The source for a live HLS stream the client plays itself (see
-/// `ProbeOrigin::Passthrough`): what the stream row knows, as an `m3u8`, the
-/// container Jellyfin Web opens with its HLS player.
+/// `ProbeOrigin::Passthrough`): what the stream row knows, as an `hls`
+/// container, as Jellyfin labels HLS sources; Jellyfin Web's `isHls` checks it
+/// to play the source with hls.js.
 fn hls_passthrough_source(stream: &db::Media) -> api::MediaSourceInfo {
     let mut source = api::MediaSourceInfo::from(stream.clone());
-    source.container = Some(api::VideoContainer::Other("m3u8".to_string()));
+    source.container = Some(api::VideoContainer::Other("hls".to_string()));
     source.remux = Some(api::MediaSourceRemuxInfo {
         provider_info: None,
         source: Some(remux_sdks::remux::ProbeOrigin::Passthrough),
@@ -1821,6 +1822,29 @@ mod tests {
     use super::*;
     use crate::stream::{StreamDescriptor, StreamInfo};
     use remux_sdks::remux::MediaStreamType;
+
+    #[test]
+    fn a_passthrough_source_is_an_hls_container() {
+        let stream = db::Media {
+            kind: db::MediaKind::Stream,
+            stream_info: Some(StreamInfo {
+                descriptor: StreamDescriptor::http(
+                    "https://cdn.example/live/master.m3u8",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let source = hls_passthrough_source(&stream);
+        assert!(source.is_passthrough());
+        // What Jellyfin Web's `isHls` checks before playing with hls.js.
+        assert!(
+            source
+                .container
+                .as_ref()
+                .is_some_and(|c| c.to_string() == "hls")
+        );
+    }
 
     /// A client holding a picked version as its item id (Android TV, after
     /// `GET /Items/{version}`) must play the owning item with that version as
