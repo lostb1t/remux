@@ -652,14 +652,11 @@ impl SubtitleAddon for StremioAddon {
                     lang: s.lang,
                     is_forced,
                     is_hi,
-                    // Prefer the actual release filename over the addon's
-                    // display title: filename is what release-match logic
-                    // compares against the video's own filename, and a title
-                    // like "English" would otherwise defeat that match.
+                    // Only release metadata is suitable for matching against
+                    // the selected video. Addon titles are display labels.
                     filename: s
                         .subtitle_file_name
-                        .or(s.movie_release_name)
-                        .or(s.title),
+                        .or(s.movie_release_name),
                     from_trusted: s.from_trusted,
                     ai_translated: s.ai_translated,
                 }
@@ -2252,6 +2249,67 @@ mod tests {
                 .unwrap();
         let url = "https://cdn.example.net/stream/foo.mkv";
         assert_eq!(rewrite_aio_url(url, &manifest_url), url);
+    }
+
+    #[tokio::test]
+    async fn subtitle_title_is_not_used_as_release_metadata() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/subtitles/movie/tt0000001.json");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "subtitles": [
+                        {
+                            "id": "title-only",
+                            "url": "https://example.test/title-only.srt",
+                            "lang": "tur",
+                            "title": "Turkish subtitles"
+                        },
+                        {
+                            "id": "release-name",
+                            "url": "https://example.test/release.srt",
+                            "lang": "tur",
+                            "movieReleaseName": "Movie.2026.1080p.WEB-DL.AV1-GROUP"
+                        }
+                    ]
+                }));
+        });
+        let addon = StremioAddon {
+            addon_id: Uuid::new_v4(),
+            manifest_url: StremioManifestUrl::try_new(&format!(
+                "{}/manifest.json",
+                server.base_url()
+            ))
+            .unwrap(),
+            client: crate::addons::make_http_client(),
+            medias_cache: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            failed: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            manifest: Default::default(),
+        };
+        let media = db::Media {
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0000001".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let db = SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+
+        let subtitles = addon
+            .subtitle_fetch(&media, &SubtitleQuery::default(), &db)
+            .await
+            .unwrap();
+
+        assert_eq!(subtitles[0].filename, None);
+        assert_eq!(
+            subtitles[1]
+                .filename
+                .as_deref(),
+            Some("Movie.2026.1080p.WEB-DL.AV1-GROUP")
+        );
     }
 
     fn mock_manifest(server: &httpmock::MockServer) {

@@ -2059,6 +2059,33 @@ pub(crate) fn append_external_subtitles(
             && source
                 .default_subtitle_stream_index
                 .is_none();
+        let source_filename = provider_filename(source);
+        let default_candidate = wants_default
+            .then(|| {
+                scored
+                    .iter()
+                    .position(|sub| {
+                        let in_preferred_language = sub_langs
+                            .iter()
+                            .any(|lang| {
+                                crate::subtitle_selection::normalized_language(Some(
+                                    lang,
+                                )) == crate::subtitle_selection::normalized_language(
+                                    sub.lang
+                                        .as_deref(),
+                                )
+                            });
+                        in_preferred_language
+                            && (crate::subtitle_selection::is_release_match(
+                                sub,
+                                source_filename,
+                            ) || crate::subtitle_selection::is_local_sidecar(
+                                sub,
+                                source_filename,
+                            ))
+                    })
+            })
+            .flatten();
         for (i, sub) in scored
             .into_iter()
             .enumerate()
@@ -2072,18 +2099,9 @@ pub(crate) fn append_external_subtitles(
             ));
             // Local sidecars outside the preferred languages stay listed but
             // are never promoted to the default.
-            let in_preferred_language = sub_langs
-                .iter()
-                .any(|lang| {
-                    crate::subtitle_selection::normalized_language(Some(lang))
-                        == crate::subtitle_selection::normalized_language(
-                            sub.lang
-                                .as_deref(),
-                        )
-                });
-            if wants_default && i == 0 && in_preferred_language {
+            if default_candidate == Some(i) {
                 stream.is_default = true;
-                source.default_subtitle_stream_index = Some(next_idx);
+                source.default_subtitle_stream_index = Some(idx);
             }
             source
                 .media_streams
@@ -2546,6 +2564,120 @@ mod tests {
             DEDUP_ON,
         );
         assert_eq!(sources[0].default_subtitle_stream_index, Some(1));
+    }
+
+    #[test]
+    fn unmatched_external_subtitle_stays_available_without_becoming_default() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 0,
+                type_: api::MediaStreamType::Video,
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                provider_info: Some(serde_json::json!({
+                    "filename": "Movie.2026.1080p.WEB-DL.AV1.mkv"
+                })),
+            }),
+            ..Default::default()
+        };
+        let subtitle = crate::addons::SubtitleInfo {
+            id: "title-only".into(),
+            url: Some(crate::stream::StreamDescriptor::http(
+                "https://example.com/subtitle.vtt",
+            )),
+            lang: Some("tur".into()),
+            is_forced: false,
+            is_hi: false,
+            filename: Some("Turkish subtitles".into()),
+            from_trusted: None,
+            ai_translated: None,
+        };
+        let mut sources = vec![source];
+
+        append_external_subtitles(
+            &mut sources,
+            &[subtitle],
+            &["tur".into()],
+            None,
+            Uuid::new_v4(),
+            "test-key",
+            DEDUP_ON,
+        );
+
+        assert_eq!(
+            sources[0]
+                .media_streams
+                .len(),
+            2,
+            "manual choice remains listed"
+        );
+        assert_eq!(sources[0].default_subtitle_stream_index, None);
+        assert!(!sources[0].media_streams[1].is_default);
+    }
+
+    #[test]
+    fn reliable_fallback_candidate_sets_its_own_stream_index() {
+        let source = api::MediaSourceInfo {
+            id: Uuid::new_v4(),
+            media_streams: vec![api::MediaStream {
+                index: 0,
+                type_: api::MediaStreamType::Video,
+                ..Default::default()
+            }],
+            remux: Some(api::MediaSourceRemuxInfo {
+                source: Some(api::ProbeOrigin::Ffprobe),
+                provider_info: Some(serde_json::json!({
+                    "filename": "Movie.2026.1080p.WEB-DL.AV1.mkv"
+                })),
+            }),
+            ..Default::default()
+        };
+        let subtitles = [
+            crate::addons::SubtitleInfo {
+                id: "unmatched-turkish".into(),
+                url: Some(crate::stream::StreamDescriptor::http(
+                    "https://example.com/turkish.vtt",
+                )),
+                lang: Some("tur".into()),
+                is_forced: false,
+                is_hi: false,
+                filename: Some("Turkish subtitles".into()),
+                from_trusted: None,
+                ai_translated: None,
+            },
+            crate::addons::SubtitleInfo {
+                id: "matching-english".into(),
+                url: Some(crate::stream::StreamDescriptor::http(
+                    "https://example.com/english.vtt",
+                )),
+                lang: Some("eng".into()),
+                is_forced: false,
+                is_hi: false,
+                filename: Some("Movie.2026.1080p.WEB-DL.AV1.en.srt".into()),
+                from_trusted: None,
+                ai_translated: None,
+            },
+        ];
+        let mut sources = vec![source];
+
+        append_external_subtitles(
+            &mut sources,
+            &subtitles,
+            &["tur".into(), "eng".into()],
+            None,
+            Uuid::new_v4(),
+            "test-key",
+            DEDUP_ON,
+        );
+
+        assert_eq!(sources[0].media_streams[1].index, 1);
+        assert_eq!(sources[0].media_streams[2].index, 2);
+        assert_eq!(sources[0].default_subtitle_stream_index, Some(2));
+        assert!(!sources[0].media_streams[1].is_default);
+        assert!(sources[0].media_streams[2].is_default);
     }
 
     #[test]
