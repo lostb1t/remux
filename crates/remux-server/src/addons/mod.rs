@@ -1236,13 +1236,8 @@ impl AddonRuntime {
         }
         self.row
             .types
-            .is_empty()
-            || kind_in_type_list(
-                kind,
-                &self
-                    .row
-                    .types,
-            )
+            .as_deref()
+            .is_none_or(|types| kind_in_type_list(kind, types))
     }
 
     /// Returns the `idPrefixes` declared for a resource in the live manifest metadata,
@@ -1852,6 +1847,7 @@ impl AddonService {
             .cloned()
     }
 
+    /// The addons with catalogs that have Catalog ticked.
     pub fn catalog_addons(&self) -> Vec<AddonRuntime> {
         self.inner
             .load()
@@ -1859,6 +1855,9 @@ impl AddonService {
             .filter(|r| {
                 r.catalog
                     .is_some()
+                    && r.row
+                        .resources
+                        .contains(&ResourceType::Catalog)
             })
             .cloned()
             .collect()
@@ -5007,6 +5006,94 @@ mod tests {
         }
     }
 
+    struct NoCatalogs;
+
+    #[async_trait]
+    impl CatalogAddon for NoCatalogs {
+        async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+            Ok(vec![])
+        }
+
+        async fn catalog_stream(
+            &self,
+            _ctx: &AppContext,
+            _local_id: &str,
+        ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
+            Ok(None)
+        }
+    }
+
+    fn catalog_runtime(
+        resources: Vec<ResourceType>,
+        types: Option<Vec<db::MediaKind>>,
+    ) -> AddonRuntime {
+        let now = chrono::Utc::now().naive_utc();
+        AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "catalogs".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources,
+                types,
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: true,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                catalog: Some(std::sync::Arc::new(NoCatalogs)),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn no_types_means_all_and_an_empty_list_means_none() {
+        let tv = db::MediaKind::TvChannel;
+        assert!(catalog_runtime(vec![], None).supports_type(&tv));
+        assert!(!catalog_runtime(vec![], Some(vec![])).supports_type(&tv));
+        assert!(catalog_runtime(vec![], Some(vec![tv.clone()])).supports_type(&tv));
+        assert!(
+            !catalog_runtime(vec![], Some(vec![db::MediaKind::Movie]))
+                .supports_type(&tv)
+        );
+    }
+
+    #[test]
+    fn only_addons_with_catalog_ticked_import_catalogs() {
+        let ticked = catalog_runtime(vec![ResourceType::Catalog], None);
+        let unticked = catalog_runtime(vec![ResourceType::Stream], None);
+        let service = AddonService {
+            inner: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![
+                ticked.clone(),
+                unticked,
+            ])),
+        };
+        let ids: Vec<_> = service
+            .catalog_addons()
+            .into_iter()
+            .map(|r| {
+                r.row
+                    .id
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [ticked
+                .row
+                .id]
+        );
+    }
+
     /// Lists a series as two seasons; once `renumbered`, its S1E13 is S2E1.
     struct RenumberingTree {
         renumbered: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -5103,7 +5190,7 @@ mod tests {
                     config: serde_json::Value::Null.into(),
                 },
                 resources: vec![ResourceType::Meta],
-                types: vec![],
+                types: None,
                 enabled: true,
                 priority: 0,
                 created_at: now,
@@ -5237,7 +5324,7 @@ mod tests {
                     config: serde_json::Value::Null.into(),
                 },
                 resources: vec![ResourceType::Stream], // no Meta
-                types: vec![],
+                types: None,
                 enabled: true,
                 priority: 0,
                 created_at: now,
@@ -5366,7 +5453,7 @@ mod tests {
                     config: serde_json::Value::Null.into(),
                 },
                 resources: vec![ResourceType::Subtitles],
-                types: vec![],
+                types: None,
                 enabled: true,
                 priority: 0,
                 created_at: now,
@@ -5435,7 +5522,7 @@ mod tests {
                     config: serde_json::Value::Null.into(),
                 },
                 resources,
-                types: vec![],
+                types: None,
                 enabled: true,
                 priority: 0,
                 created_at: now,

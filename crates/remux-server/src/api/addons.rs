@@ -135,6 +135,7 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
             for t in addon
                 .types
                 .iter()
+                .flatten()
                 .cloned()
                 .map(Into::into)
             {
@@ -161,10 +162,12 @@ fn addon_to_dto(addon: Addon, addons: &AddonService) -> AddonDto {
         resources: addon.resources,
         types: addon
             .types
-            .iter()
-            .cloned()
-            .map(Into::into)
-            .collect(),
+            .map(|types| {
+                types
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            }),
         enabled: addon.enabled,
         supported_resources,
         supported_types,
@@ -316,17 +319,20 @@ pub async fn create_addon(
     } else {
         payload.resources
     };
-    let types: Vec<DbMediaKind> = if payload
+    let types = if payload
         .types
         .is_empty()
     {
-        derived_types
+        // Every type the addon supports; an empty list would mean none.
+        (!derived_types.is_empty()).then_some(derived_types)
     } else {
-        payload
-            .types
-            .into_iter()
-            .map(DbMediaKind::from)
-            .collect()
+        Some(
+            payload
+                .types
+                .into_iter()
+                .map(DbMediaKind::from)
+                .collect(),
+        )
     };
 
     let now = Utc::now().naive_utc();
@@ -420,11 +426,13 @@ pub async fn update_addon(
         }
     }
     if let Some(types) = &types {
-        let types: Vec<_> = types
-            .iter()
-            .cloned()
-            .map(DbMediaKind::from)
-            .collect();
+        let types = Some(
+            types
+                .iter()
+                .cloned()
+                .map(DbMediaKind::from)
+                .collect(),
+        );
         if addon.system {
             if types != addon.types {
                 warn!("ignoring types change on system addon {}", addon.id);
@@ -521,7 +529,7 @@ pub async fn update_addon(
             addon.resources = derived_resources;
         }
         if types.is_none() {
-            addon.types = derived_types;
+            addon.types = (!derived_types.is_empty()).then_some(derived_types);
         }
     }
 
@@ -1028,6 +1036,8 @@ mod test {
         assert!(
             created
                 .types
+                .as_deref()
+                .unwrap_or_default()
                 .contains(&MediaKind::Movie)
         );
 
@@ -1043,11 +1053,15 @@ mod test {
         assert!(
             updated
                 .types
+                .as_deref()
+                .unwrap_or_default()
                 .contains(&MediaKind::Series)
         );
         assert!(
             !updated
                 .types
+                .as_deref()
+                .unwrap_or_default()
                 .contains(&MediaKind::Movie)
         );
 
@@ -1066,7 +1080,7 @@ mod test {
             explicit.resources,
             vec![remux_sdks::stremio::ResourceType::Stream]
         );
-        assert_eq!(explicit.types, vec![MediaKind::Series]);
+        assert_eq!(explicit.types, Some(vec![MediaKind::Series]));
 
         let (h, v) = auth(&token);
         let explicit_empty: AddonDto = server
@@ -1084,11 +1098,8 @@ mod test {
                 .resources
                 .is_empty()
         );
-        assert!(
-            explicit_empty
-                .types
-                .is_empty()
-        );
+        // Unticking every type is kept: none, not all.
+        assert_eq!(explicit_empty.types, Some(vec![]));
     }
 
     #[tokio::test]
@@ -1105,7 +1116,7 @@ mod test {
                     .into(),
             },
             resources: vec![],
-            types: vec![],
+            types: None,
             enabled: false,
             priority: 0,
             created_at: now,
@@ -1150,9 +1161,9 @@ mod test {
                 .is_empty()
         );
         assert!(
-            !addon
+            addon
                 .types
-                .is_empty()
+                .is_some_and(|types| !types.is_empty())
         );
     }
 
@@ -1178,7 +1189,7 @@ mod test {
                     .into(),
             },
             resources: vec![],
-            types: vec![],
+            types: None,
             enabled: true,
             priority: 0,
             created_at: now,

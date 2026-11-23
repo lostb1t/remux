@@ -25,9 +25,9 @@ pub struct Addon {
     #[sqlx(json)]
     pub resources: Vec<remux_sdks::stremio::ResourceType>,
     /// Content types the user has enabled for this addon (e.g. `"movie"`, `"series"`).
-    /// Empty means all types are enabled.
+    /// `None` means every type the addon supports, empty means none.
     #[sqlx(json)]
-    pub types: Vec<MediaKind>,
+    pub types: Option<Vec<MediaKind>>,
     pub enabled: bool,
     pub priority: i64,
     pub created_at: NaiveDateTime,

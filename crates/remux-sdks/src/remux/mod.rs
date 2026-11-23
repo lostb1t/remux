@@ -380,9 +380,10 @@ pub struct AddonDto {
     pub config: serde_json::Value,
     /// User-enabled resources (subset of `supported_resources`).
     pub resources: Vec<ResourceType>,
-    /// User-enabled content types (subset of `supported_types`). Empty = all types enabled.
+    /// User-enabled content types (subset of `supported_types`). Absent = all
+    /// supported types, empty = none.
     #[serde(default)]
-    pub types: Vec<MediaKind>,
+    pub types: Option<Vec<MediaKind>>,
     pub enabled: bool,
     /// All resources the addon actually provides. For Stremio addons this is
     /// populated from the manifest; for other kinds it mirrors the static kind

@@ -1623,6 +1623,18 @@ html, body {
   flex-shrink: 0;
 }
 
+.addon-card-disabled {
+  font-size: .6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
 .addon-card-actions {
   display: flex;
   gap: 6px;
