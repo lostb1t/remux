@@ -9670,13 +9670,14 @@ fn upcoming_is_episode_level(
 }
 
 /// SQL for "this episode is the first not-yet-aired one of a series `user_id`
-/// has started". Once an episode has aired it leaves the list (it is next up). Without a user nothing has been started, so it matches
-/// nothing.
+/// follows": one they have started, or put on their watchlist or favourites.
+/// Once an episode has aired it leaves the list (it is next up). Without a
+/// user nothing is followed, so it matches nothing.
 fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
     let Some(id) = user_id else {
         return "0".to_string();
     };
-    // Start from the series the user has started (a few hundred at most) rather
+    // Start from the series the user follows (a few hundred at most) rather
     // than from every future episode in the library: on a 3.5M-episode database
     // that took the check from ~300 ms to under 10 ms. CROSS JOIN pins the
     // user's state rows as the outer loop, whatever the planner statistics say.
@@ -9688,7 +9689,10 @@ fn upcoming_episode_sql(user_id: Option<&Uuid>) -> String {
             CROSS JOIN media seen ON seen.id = ums.media_id \
             WHERE ums.user_id = X'{0}' \
               AND (ums.play_count > 0 OR ums.playback_position > 0) \
-              AND seen.kind = 'episode') \
+              AND seen.kind = 'episode' \
+            UNION SELECT ums.media_id FROM user_media_state ums \
+            WHERE ums.user_id = X'{0}' \
+              AND (ums.watchlist = 1 OR ums.favorite = 1)) \
           AND NOT EXISTS (SELECT 1 FROM media earlier \
             WHERE earlier.kind = 'episode' \
               AND earlier.grandparent_id = media.grandparent_id \
@@ -14031,6 +14035,86 @@ mod tests {
         .map(|m| m.title)
         .collect();
         assert_eq!(titles, vec!["Started E3"]);
+    }
+
+    /// A series on the user's watchlist or favourites is followed like one
+    /// they have started, so its next unaired episode is upcoming too.
+    #[tokio::test]
+    async fn upcoming_filter_follows_watchlisted_and_favourite_series() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let uid = uuid::Uuid::new_v4();
+
+        let mut series_ids = Vec::new();
+        for (series_imdb, name) in [
+            ("tt9992101", "Watchlisted"),
+            ("tt9992102", "Favourite"),
+            ("tt9992103", "Not followed"),
+        ] {
+            let mut series = media_row(MediaKind::Series, name, series_imdb);
+            series
+                .save(db)
+                .await
+                .unwrap();
+            for (n, offset) in [(1, -7), (2, 5), (3, 12)] {
+                let ext = ExternalIds {
+                    imdb: Some(
+                        NonEmptyString::try_new(format!("{series_imdb}{n}")).unwrap(),
+                    ),
+                    ..Default::default()
+                };
+                let mut ep = Media {
+                    id: uuid::Uuid::from(&MediaIdRaw {
+                        kind: MediaKind::Episode,
+                        external_ids: ext.clone(),
+                        season: Some(1),
+                        episode: Some(n),
+                    }),
+                    title: format!("{name} E{n}"),
+                    kind: MediaKind::Episode,
+                    external_ids: ext,
+                    grandparent_id: Some(series.id),
+                    parent_idx: Some(1),
+                    idx: Some(n),
+                    released_at: Some(days_from_now(offset)),
+                    ..Default::default()
+                };
+                ep.save(db)
+                    .await
+                    .unwrap();
+            }
+            series_ids.push(series.id);
+        }
+        // Nothing watched: the series is only on the watchlist or favourites.
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, watchlist) VALUES (?1, ?2, 1)",
+        )
+        .bind(uid)
+        .bind(series_ids[0])
+        .execute(db)
+        .await
+        .unwrap();
+        insert_user_state(db, uid, series_ids[1], 0, true).await;
+
+        assert_eq!(
+            upcoming_titles(db, vec![MediaKind::Episode], Some(uid), true).await,
+            vec!["Favourite E2", "Watchlisted E2"],
+        );
+        // The marks are this user's own.
+        assert!(
+            upcoming_titles(
+                db,
+                vec![MediaKind::Episode],
+                Some(uuid::Uuid::new_v4()),
+                true
+            )
+            .await
+            .is_empty()
+        );
     }
 
     /// For a Series collection `Upcoming` is about the series, so its
