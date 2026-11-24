@@ -346,6 +346,21 @@ pub static JS: &str = r#"
         return h.indexOf(capturedId) !== -1 || h.indexOf(capturedIdNoDash) !== -1;
       }
 
+      // True once the visible details page shows this item's loaded sources.
+      function pageShowsItem() {
+        var page = getDetailsPage();
+        var form = page && page.querySelector('.trackSelections');
+        return !!form && form._remuxItemId === capturedIdNoDash;
+      }
+
+      // Only the fetch that opens the page takes the fast path. A later getItem
+      // for the item already on screen (Media info dialog, refresh after marking
+      // played) gets the item as Jellyfin returns it: the stub would leave the
+      // dialog without container, size or streams.
+      if (isCurrentPage() && pageShowsItem()) {
+        return self.getJSON(baseUrl);
+      }
+
       return self.getJSON(fastUrl).then(function (item) {
         var type = item && item.Type;
         var isMovieOrEpisode = (type === 'Movie' || type === 'Episode');
@@ -410,7 +425,10 @@ pub static JS: &str = r#"
                 attachSourceChangeHandler(page);
                 attachTrackSelectionsGuard(page);
                 var f = page.querySelector('.trackSelections');
-                if (f) f._remuxNavCount = capturedNav;
+                if (f) {
+                  f._remuxNavCount = capturedNav;
+                  f._remuxItemId = capturedIdNoDash;
+                }
               } else {
                 showNoStreams(page);
               }
@@ -683,6 +701,13 @@ mod tests {
     fn generic_item_transports_are_not_rewritten_to_source_stubs() {
         assert!(!JS.contains("proto.fetch = function"));
         assert!(!JS.contains("XMLHttpRequest.prototype.open = function"));
+    }
+
+    #[test]
+    fn item_already_on_the_page_is_fetched_with_its_sources() {
+        assert!(JS.contains("f._remuxItemId = capturedIdNoDash;"));
+        assert!(JS.contains("if (isCurrentPage() && pageShowsItem()) {"));
+        assert!(JS.contains("return self.getJSON(baseUrl);"));
     }
 
     #[test]
