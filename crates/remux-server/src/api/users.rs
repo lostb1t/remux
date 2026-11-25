@@ -2637,6 +2637,73 @@ mod e2e_tests {
     }
 
     #[tokio::test]
+    async fn display_preferences_are_kept_per_user() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let admin = auth_header_with_token(&token);
+
+        server
+            .post("/users/new")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&admin).unwrap(),
+            )
+            .json(&json!({ "Name": "other", "Password": "pw" }))
+            .await;
+        let login = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "other", "Pw": "pw" }))
+            .await;
+        let other = auth_header_with_token(
+            login.json::<serde_json::Value>()["AccessToken"]
+                .as_str()
+                .unwrap(),
+        );
+
+        // Both save the same id; the second save must not take the first one's row.
+        for (auth, first) in [(&admin, "resume"), (&other, "smalllibrarytiles")] {
+            server
+                .post("/displaypreferences/usersettings")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(auth).unwrap(),
+                )
+                .add_query_params(&[("client", "emby")])
+                .json(&json!({
+                    "Id": "usersettings",
+                    "RememberIndexing": false,
+                    "PrimaryImageHeight": 250,
+                    "PrimaryImageWidth": 250,
+                    "ScrollDirection": "Horizontal",
+                    "ShowBackdrop": true,
+                    "RememberSorting": false,
+                    "SortOrder": "Ascending",
+                    "ShowSidebar": false,
+                    "Client": "emby",
+                    "CustomPrefs": { "homesection0": first }
+                }))
+                .await
+                .assert_status(StatusCode::NO_CONTENT);
+        }
+
+        for (auth, first) in [(&admin, "resume"), (&other, "smalllibrarytiles")] {
+            let body: serde_json::Value = server
+                .get("/displaypreferences/usersettings")
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(auth).unwrap(),
+                )
+                .add_query_params(&[("client", "emby")])
+                .await
+                .json();
+            assert_eq!(body["CustomPrefs"]["homesection0"], first);
+        }
+    }
+
+    #[tokio::test]
     async fn test_update_user_configuration() {
         let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
