@@ -2009,7 +2009,15 @@ async fn fetch_tmdb_season_meta(
     let Some(season) = season_data else {
         return Ok(None);
     };
-    let mut patch = db::Media::default();
+    // Same date and overview the series tree gives the season (see
+    // `From<&Season>`): a full refresh clears whatever this answer leaves out.
+    let from_list = db::Media::from(season);
+    let mut patch = db::Media {
+        description: from_list.description,
+        released_at: from_list.released_at,
+        digital_released_at: from_list.digital_released_at,
+        ..Default::default()
+    };
     if let Some(url) = tmdb_image(
         season
             .poster_path
@@ -3135,5 +3143,72 @@ mod tests {
             "Episode 1"
         );
         default.assert_hits(1);
+    }
+
+    /// A replace-all refresh clears what no addon returns, so the season
+    /// answer has to carry the date and overview the series tree gave the
+    /// season. Without them every season lost its date and `/Shows/{id}/Seasons`
+    /// came back empty.
+    #[tokio::test]
+    async fn full_refresh_keeps_the_season_date_from_the_series_list() {
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/tv/900401");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": 900401,
+                    "name": "Show",
+                    "seasons": [{
+                        "id": 9004011,
+                        "name": "Season 1",
+                        "season_number": 1,
+                        "air_date": "2005-03-24",
+                        "overview": "The first season."
+                    }]
+                }));
+        });
+        let guard = ctx_with_tmdb(&tmdb).await;
+        let series = db::Media {
+            kind: db::MediaKind::Series,
+            title: "Show".to_string(),
+            external_ids: db::ExternalIds {
+                tmdb: Some(900401),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let aired = chrono::NaiveDate::from_ymd_opt(2005, 3, 24)
+            .unwrap()
+            .and_hms_opt(0, 0, 0);
+        // The season as the series tree builds it before its own refresh.
+        let mut season = db::Media {
+            kind: db::MediaKind::Season,
+            title: "Season 1".to_string(),
+            idx: Some(1),
+            parent_id: Some(series.id),
+            grandparent: Some(std::sync::Arc::new(series)),
+            description: db::NonEmptyString::try_new("The first season").ok(),
+            released_at: aired,
+            digital_released_at: aired,
+            ..Default::default()
+        };
+
+        let patch = TmdbAddon
+            .meta_fetch(&season, &guard.0, &Default::default())
+            .await
+            .unwrap()
+            .expect("season patch");
+        crate::addons::clear_missing(&mut season, &patch);
+        crate::addons::apply_meta(&mut season, patch, true);
+
+        assert_eq!(season.released_at, aired);
+        assert_eq!(season.digital_released_at, aired);
+        assert_eq!(
+            season
+                .description
+                .as_deref()
+                .map(String::as_str),
+            Some("The first season.")
+        );
     }
 }
