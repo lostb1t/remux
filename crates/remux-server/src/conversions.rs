@@ -48,10 +48,6 @@ pub(crate) struct FilenameProbeGuess {
     pub media_streams: Vec<api::MediaStream>,
 }
 
-fn map_hunch_video_codec(s: &str) -> Option<String> {
-    remux_sdks::remux::VideoCodec::parse_known(s).map(|c| c.to_string())
-}
-
 fn map_hunch_audio_codec(s: &str) -> Option<String> {
     remux_sdks::remux::AudioCodec::parse_known(s).map(|c| c.to_string())
 }
@@ -108,9 +104,12 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
     let parsed = hunch::hunch(filename);
     let mut media_streams = Vec::new();
 
-    let video_codec = parsed
+    let codec = parsed
         .video_codec()
-        .and_then(map_hunch_video_codec);
+        .and_then(remux_sdks::remux::VideoCodec::parse_known);
+    let video_codec = codec
+        .as_ref()
+        .map(ToString::to_string);
     let (width, height) = crate::db::normalized_screen_size(&parsed, filename)
         .as_deref()
         .and_then(screen_size_to_dimensions)
@@ -124,6 +123,15 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
                 .parse::<i64>()
                 .ok()
         });
+    // 10-bit HEVC and H.264 are coded in their 10-bit profiles, which device
+    // profiles check by name (named here as ffprobe names them). Without one,
+    // a guessed 10-bit stream passes on a client that lists only the 8-bit
+    // profile and can outrank a version that plays directly.
+    let profile = match (&codec, bit_depth) {
+        (Some(remux_sdks::remux::VideoCodec::Hevc), Some(10)) => Some("Main 10"),
+        (Some(remux_sdks::remux::VideoCodec::H264), Some(10)) => Some("High 10"),
+        _ => None,
+    };
 
     if video_codec.is_some()
         || width.is_some()
@@ -147,6 +155,7 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
             video_range,
             video_range_type,
             bit_depth,
+            profile: profile.map(str::to_string),
             display_title,
             // Never flag a filename guess as the container's default stream —
             // resolve_default_streams() falls back to the first is_default
@@ -924,6 +933,77 @@ mod tests {
                 .display_title
                 .as_deref(),
             Some("DTS - 7.1")
+        );
+    }
+
+    /// Jellyfin Web lists HEVC with `VideoProfile` "main" only when the browser
+    /// can't decode Main 10. Ranked on filename guesses, the 10-bit x265
+    /// version must not outrank the x264 one that plays directly.
+    #[test]
+    fn a_guessed_10_bit_version_ranks_below_one_the_browser_plays() {
+        use crate::device_profile::SourceRankingContext;
+        use remux_sdks::remux::{
+            CodecProfile, CodecProfileType, DeviceProfile, DirectPlayProfile,
+            DlnaProfileType, EmbeddedSubtitleHandling, ProfileCondition,
+            ProfileConditionProperty, ProfileConditionType, SortMediaSourcesMode,
+            VideoCodec, VideoContainer,
+        };
+        let profile = DeviceProfile {
+            direct_play_profiles: vec![DirectPlayProfile {
+                container: Some(vec![VideoContainer::Mkv]),
+                video_codec: Some(vec![VideoCodec::H264, VideoCodec::Hevc]),
+                type_: Some(DlnaProfileType::Video),
+                ..Default::default()
+            }],
+            codec_profiles: vec![CodecProfile {
+                type_: Some(CodecProfileType::Video),
+                codec: Some(vec!["hevc".to_string()]),
+                conditions: vec![ProfileCondition {
+                    condition: Some(ProfileConditionType::EqualsAny),
+                    property: Some(ProfileConditionProperty::VideoProfile),
+                    value: Some("main".to_string()),
+                    is_required: Some(false),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ranking = SourceRankingContext {
+            mode: SortMediaSourcesMode::Best,
+            device_profile: Some(&profile),
+            is_4k_capable: false,
+            subtitle_mode: EmbeddedSubtitleHandling::Burn,
+            explicit_subtitle_index: None,
+            max_bitrate: None,
+        };
+        let guessed = |filename: &str| {
+            let guess = guess_media_source_from_filename(filename);
+            api::MediaSourceInfo {
+                container: Some(VideoContainer::Mkv),
+                media_streams: guess.media_streams,
+                ..Default::default()
+            }
+        };
+        let x265 =
+            guessed("Your.Name.2016.GERMAN.ML.1080p.BD.Opus.5.1.10bit.x265-PHTM.mkv");
+        let x264 = guessed("Your.Name.German.DL.1080p.BluRay.x264-EmpireHD.mkv");
+
+        assert_eq!(
+            x265.media_streams[0]
+                .profile
+                .as_deref(),
+            Some("Main 10")
+        );
+        assert!(ranking.sort_key(&x264, false) > ranking.sort_key(&x265, false));
+        assert_eq!(
+            guessed("Show.S01E01.1080p.BluRay.10bit.x264-GRP.mkv").media_streams[0]
+                .profile
+                .as_deref(),
+            Some("High 10")
+        );
+        assert_eq!(
+            x264.media_streams[0].profile, None,
+            "an 8-bit or unknown depth says nothing about the profile"
         );
     }
 
