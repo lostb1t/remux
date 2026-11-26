@@ -15,8 +15,8 @@ pub enum Route {
     AddonsRoute,
     #[route("/content/library")]
     LibraryRoute,
-    #[route("/content/iptv")]
-    IptvRoute,
+    #[route("/content/iptv?:..query")]
+    IptvRoute { query: String },
     #[route("/streaming/general")]
     StreamingGeneralRoute,
     #[route("/streaming/groups")]
@@ -73,9 +73,9 @@ pub(crate) fn LibraryRoute() -> Element {
 }
 
 #[component]
-pub(crate) fn IptvRoute() -> Element {
+pub(crate) fn IptvRoute(query: String) -> Element {
     let app_state = use_context::<AppState>();
-    rsx! { IptvPage { app_state } }
+    rsx! { IptvPage { app_state, query } }
 }
 
 #[component]
@@ -178,4 +178,23 @@ pub(crate) fn LogsRoute() -> Element {
 pub(crate) fn NotFound(segments: Vec<String>) -> Element {
     navigator().replace(Route::DashboardRoute);
     rsx! {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Route;
+
+    #[test]
+    fn iptv_route_keeps_query_parameters() {
+        let route = "/content/iptv?page=465&other=x"
+            .parse::<Route>()
+            .unwrap();
+        assert_eq!(
+            route,
+            Route::IptvRoute {
+                query: "page=465&other=x".to_owned()
+            }
+        );
+        assert_eq!(route.to_string(), "/content/iptv?page=465&other=x");
+    }
 }
