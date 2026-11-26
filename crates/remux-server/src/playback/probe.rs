@@ -1107,14 +1107,24 @@ pub fn probe_media_with(
                     .disposition
                     .default
                     != 0;
+                // The title itself stays unread (see above); it only adds the
+                // forced and hearing-impaired flags a release names there but
+                // left unset.
+                let title = s
+                    .tags
+                    .get("title")
+                    .map(String::as_str);
                 let is_forced = s
                     .disposition
                     .forced
-                    != 0;
+                    != 0
+                    || title.is_some_and(api::MediaStream::title_marks_forced);
                 let is_hearing_impaired = s
                     .disposition
                     .hearing_impaired
-                    != 0;
+                    != 0
+                    || title
+                        .is_some_and(api::MediaStream::title_marks_hearing_impaired);
 
                 let meta = StreamMeta {
                     language,
@@ -1893,6 +1903,95 @@ mod probe_tests {
             info.media_streams
                 .iter()
                 .all(|s| s.index != 1)
+        );
+    }
+
+    #[test]
+    fn a_subtitle_titled_forced_or_sdh_gets_that_flag_without_it_set() {
+        // Needs ffmpeg/ffprobe on PATH; skip where they aren't.
+        let ffmpeg = crate::tools::ffmpeg();
+        if std::process::Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let srt = dir
+            .path()
+            .join("sub.srt");
+        std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:01,000\nHi\n").unwrap();
+        let mkv = dir
+            .path()
+            .join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc", "-i"])
+            .arg(&srt)
+            .arg("-i")
+            .arg(&srt)
+            .arg("-i")
+            .arg(&srt)
+            .args([
+                "-map",
+                "0:a",
+                "-map",
+                "1:s",
+                "-map",
+                "2:s",
+                "-map",
+                "3:s",
+                "-t",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                "-c:s",
+                "srt",
+                "-metadata:s:s:0",
+                "title=[SRT] ENG Forced",
+                "-metadata:s:s:0",
+                "language=eng",
+                "-metadata:s:s:1",
+                "title=[SRT] ENG",
+                "-metadata:s:s:1",
+                "language=eng",
+                "-metadata:s:s:2",
+                "title=[SRT] ENG SDH",
+                "-metadata:s:s:2",
+                "language=eng",
+            ])
+            .arg(&mkv)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let (info, _) = probe_media(
+            mkv.to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let subtitles: Vec<_> = info
+            .media_streams
+            .iter()
+            .filter(|s| s.type_ == api::MediaStreamType::Subtitle)
+            .map(|s| {
+                (
+                    s.is_forced,
+                    s.is_hearing_impaired,
+                    s.display_title
+                        .as_deref(),
+                    s.title
+                        .as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            subtitles,
+            [
+                (true, false, Some("English - Forced - SRT"), None),
+                (false, false, Some("English - SRT"), None),
+                (false, true, Some("English - Hearing Impaired - SRT"), None),
+            ]
         );
     }
 
