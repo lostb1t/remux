@@ -1310,14 +1310,14 @@ pub fn compute_transcode_reasons(
     reasons
 }
 
-/// Jellyfin's own three-way playback decision, derived from the same cost
-/// tiering used for ranking: tier 4 (no reasons) is Direct Play, tier 3
-/// (remux only — video and audio both copied) is Direct Stream, anything
-/// below that (an actual audio or video re-encode) is Transcode.
+/// The three-way playback decision as Jellyfin names it, derived from the
+/// same cost tiering used for ranking: tier 4 (no reasons) is Direct Play,
+/// tiers 3 and 2 (the video is copied, with only the container or the audio
+/// changed) are Direct Stream, and only a video re-encode is Transcode.
 pub fn playback_decision_label(reasons: &TranscodeReasons) -> &'static str {
     match transcode_cost_tier(reasons) {
         4 => "Direct Play",
-        3 => "Direct Stream",
+        2 | 3 => "Direct Stream",
         _ => "Transcode",
     }
 }
@@ -2930,6 +2930,40 @@ mod tests {
         );
         assert!(
             transcode_cost_tier(&audio_reencode) > transcode_cost_tier(&video_reencode)
+        );
+    }
+
+    #[test]
+    fn only_a_video_reencode_is_labelled_transcode() {
+        let label = |reason: Option<TranscodeReason>| {
+            let mut reasons = TranscodeReasons::default();
+            if let Some(reason) = reason {
+                reasons.insert(reason);
+            }
+            super::playback_decision_label(&reasons)
+        };
+        assert_eq!(label(None), "Direct Play");
+        assert_eq!(
+            label(Some(TranscodeReason::ContainerNotSupported(
+                "test".to_string()
+            ))),
+            "Direct Stream"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::AudioCodecNotSupported(
+                "test".to_string()
+            ))),
+            "Direct Stream"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::VideoCodecNotSupported(
+                "test".to_string()
+            ))),
+            "Transcode"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::ContainerBitrateExceedsLimit)),
+            "Transcode"
         );
     }
 
