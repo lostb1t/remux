@@ -2956,15 +2956,16 @@ impl MediaSourceInfo {
                     .as_deref()
                     == Some(target)
         };
+        // Full subtitles before a forced-only track, text before image, then
+        // the file's own order.
         self.media_streams
             .iter()
             .filter(matches_lang)
-            .find(|s| s.is_text_subtitle_stream())
-            .or_else(|| {
-                self.media_streams
-                    .iter()
-                    .find(matches_lang)
+            .enumerate()
+            .min_by_key(|(position, s)| {
+                (s.is_forced, !s.is_text_subtitle_stream(), *position)
             })
+            .map(|(_, s)| s)
     }
 
     /// Resolve `default_audio_stream_index` and `default_subtitle_stream_index`
@@ -3990,6 +3991,36 @@ impl MediaStream {
             .map(|c| c.is_text())
             .unwrap_or(true)
     }
+
+    /// Whether an embedded track title such as "[SRT] ENG Forced" names the
+    /// track forced. Some releases say so only in the title and leave the
+    /// container's forced flag unset.
+    pub fn title_marks_forced(title: &str) -> bool {
+        title_words(title).any(|word| word.eq_ignore_ascii_case("forced"))
+    }
+
+    /// Whether an embedded track title such as "[SRT] ENG SDH" names the
+    /// track for the hearing impaired, for releases that leave the
+    /// container's hearing-impaired flag unset.
+    pub fn title_marks_hearing_impaired(title: &str) -> bool {
+        let words: Vec<&str> = title_words(title).collect();
+        words
+            .iter()
+            .any(|word| word.eq_ignore_ascii_case("sdh"))
+            || words
+                .windows(2)
+                .any(|pair| {
+                    pair[0].eq_ignore_ascii_case("hearing")
+                        && pair[1].eq_ignore_ascii_case("impaired")
+                })
+    }
+}
+
+/// The words of a track title: "[SRT] ENG Forced" → "SRT", "ENG", "Forced".
+fn title_words(title: &str) -> impl Iterator<Item = &str> {
+    title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
 }
 
 #[dto]
@@ -8595,6 +8626,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_word_forced_in_a_title_marks_it_forced() {
+        assert!(MediaStream::title_marks_forced("[SRT] ENG Forced"));
+        assert!(MediaStream::title_marks_forced("FORCED"));
+        assert!(MediaStream::title_marks_forced("English (forced)"));
+        assert!(!MediaStream::title_marks_forced("[SRT] ENG SDH"));
+        assert!(!MediaStream::title_marks_forced("Unforced"));
+    }
+
+    #[test]
+    fn sdh_or_hearing_impaired_in_a_title_marks_it_hearing_impaired() {
+        assert!(MediaStream::title_marks_hearing_impaired("[SRT] ENG SDH"));
+        assert!(MediaStream::title_marks_hearing_impaired(
+            "English (Hearing Impaired)"
+        ));
+        assert!(!MediaStream::title_marks_hearing_impaired(
+            "[SRT] ENG Forced"
+        ));
+        assert!(!MediaStream::title_marks_hearing_impaired("Hearing"));
+    }
+
+    #[test]
     fn an_unknown_probe_origin_is_other() {
         let origin: ProbeOrigin =
             serde_json::from_value(serde_json::json!("ffprobe")).unwrap();
@@ -9592,6 +9644,40 @@ mod tests {
         cfg2.subtitle_mode = SubtitleMode::OnlyForced;
         src2.resolve_default_streams(&cfg2, None, None, None, None, None, None);
         assert_eq!(src2.default_subtitle_stream_index, None);
+    }
+
+    /// A subtitle language preference picks the full track, not a forced-only
+    /// one listed before it.
+    #[test]
+    fn a_preferred_language_skips_its_forced_only_tracks() {
+        let subtitle = |index, codec: &str, is_forced| MediaStream {
+            type_: MediaStreamType::Subtitle,
+            index,
+            language: Some("eng".to_string()),
+            codec: Some(codec.to_string()),
+            is_forced,
+            ..Default::default()
+        };
+        let source = || MediaSourceInfo {
+            media_streams: vec![
+                subtitle(3, "pgssub", true),
+                subtitle(4, "subrip", true),
+                subtitle(5, "pgssub", false),
+                subtitle(6, "subrip", false),
+            ],
+            ..Default::default()
+        };
+        let mut cfg = user_cfg();
+        cfg.subtitle_language_preference = Some("eng".to_string());
+
+        let mut src = source();
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(src.default_subtitle_stream_index, Some(6));
+
+        cfg.subtitle_mode = SubtitleMode::OnlyForced;
+        let mut src = source();
+        src.resolve_default_streams(&cfg, None, None, None, None, None, None);
+        assert_eq!(src.default_subtitle_stream_index, Some(3));
     }
 
     /// Resolving must never rewrite per-stream is_default flags.

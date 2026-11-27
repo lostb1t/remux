@@ -1465,17 +1465,52 @@ async fn scan_addon(
         IncrementalIndex::load(ctx, addon.id).await?
     };
 
+    // Stored-path prefixes of the configured paths that could not be listed in
+    // full. Their rows are kept instead of pruned: a failed listing says nothing
+    // about which files are gone.
+    let mut failed_roots: Vec<String> = Vec::new();
+
     for (operator, list_from, path_prefix) in scan_roots {
-        let (mut single, mut lister) = open_scan_source(
+        let root = if is_local {
+            path_prefix
+                .trim_end_matches('/')
+                .to_string()
+        } else {
+            list_from
+                .trim_matches('/')
+                .to_string()
+        };
+        let (mut single, mut lister) = match open_scan_source(
             &operator,
             &list_from,
             is_local,
             incremental.as_ref(),
             &mut seen_ids,
         )
-        .await?;
+        .await
+        {
+            Ok(source) => source,
+            Err(e) => {
+                warn!(addon = %addon.name, path = %list_from, error = %e, "opendal: listing failed, skipping path");
+                failed_roots.push(root);
+                continue;
+            }
+        };
 
-        while let Some(entry) = next_scan_entry(&mut single, &mut lister).await? {
+        loop {
+            // A lister ends after its first error, so after one this either moves
+            // on to the next folder of an incremental walk or ends this path.
+            let entry = match next_scan_entry(&mut single, &mut lister).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(e) => {
+                    warn!(addon = %addon.name, path = %list_from, error = %e, "opendal: listing failed, keeping this path's rows");
+                    if !failed_roots.contains(&root) {
+                        failed_roots.push(root.clone());
+                    }
+                    continue;
+                }
+            };
             // The lister classifies entries from a raw readdir() call, which does not
             // follow symlinks and reports them as EntryMode::Unknown. Resolve those
             // via stat() (which does follow symlinks) so symlinked media files staged
@@ -2121,6 +2156,9 @@ async fn scan_addon(
         upserted += 1;
     }
 
+    if !failed_roots.is_empty() {
+        seen_ids.extend(rows_under(ctx, addon.id, &failed_roots).await?);
+    }
     let deleted = prune_stale_paths(ctx, addon.id, &seen_ids).await?;
     run_probe_jobs(ctx, addon, probe_jobs).await;
 
@@ -2669,6 +2707,32 @@ async fn fetch_existing_imdb(
     .fetch_optional(&ctx.db)
     .await?
     .flatten())
+}
+
+/// Ids of the addon's rows stored below any of `roots` (an empty root is the whole
+/// share). Rows of `.strm` files store their target URL, so they cannot be placed
+/// under a folder and are always included.
+async fn rows_under(
+    ctx: &AppContext,
+    addon_id: Uuid,
+    roots: &[String],
+) -> Result<Vec<Uuid>> {
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, path FROM opendal_files WHERE addon_id = ?")
+            .bind(addon_id)
+            .fetch_all(&ctx.db)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, path)| {
+            path.starts_with("http://")
+                || path.starts_with("https://")
+                || roots
+                    .iter()
+                    .any(|root| path.starts_with(root.as_str()))
+        })
+        .map(|(id, _)| id)
+        .collect())
 }
 
 async fn prune_stale_paths(
@@ -6379,6 +6443,79 @@ mod tests {
         assert_eq!(
             indexed_paths(&guard.0, &addon).await,
             vec!["A/[imdbid-tt0133093] The Matrix (1999).mkv".to_string()]
+        );
+    }
+
+    /// What a TorBox WebDAV share answers for a folder that no longer exists:
+    /// a 207 whose only response has a status but no propstat.
+    const NO_PROPSTAT: &str = r#"<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>/</D:href><D:status>HTTP/1.1 200 OK</D:status></D:response></D:multistatus>"#;
+
+    #[tokio::test]
+    async fn webdav_scan_survives_a_folder_that_fails_to_list() {
+        let (guard, addon, routes, _hits) = scanned_share().await;
+        // A changed and is walked again, but its listing can't be read; C is new.
+        let a = set_dav_dir(&routes, "A", FUTURE, &[MOVIE]);
+        let b = set_dav_dir(&routes, "B", OLD, &[MOVIE2]);
+        let c = set_dav_dir(&routes, "C", OLD, &[MOVIE]);
+        routes
+            .lock()
+            .unwrap()
+            .insert("/A/".to_string(), NO_PROPSTAT.to_string());
+        set_dav_root(&routes, &[a, b, c]);
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexed_paths(&guard.0, &addon).await,
+            vec![
+                "A/[imdbid-tt0133093] The Matrix (1999).mkv".to_string(),
+                "B/[imdbid-tt0106977] Heat (1995).mkv".to_string(),
+                "C/[imdbid-tt0133093] The Matrix (1999).mkv".to_string(),
+            ],
+            "the folders after the failing one are indexed, and the failing one keeps its rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn webdav_scan_survives_a_configured_path_that_fails_to_list() {
+        let (base, routes, _hits) = mutable_webdav().await;
+        set_dav_dir(&routes, "A", OLD, &[MOVIE]);
+        set_dav_dir(&routes, "B", OLD, &[MOVIE2]);
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let mut addon = make_webdav_addon(&guard.0, &base).await;
+        addon
+            .preset
+            .config = serde_json::json!({
+            "media_kind": "movie",
+            "endpoint": base,
+            "paths": ["/A/", "/B/"],
+        })
+        .into();
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexed_paths(&guard.0, &addon)
+                .await
+                .len(),
+            2
+        );
+
+        // A is gone and answers without a propstat; B lost its file.
+        routes
+            .lock()
+            .unwrap()
+            .insert("/A/".to_string(), NO_PROPSTAT.to_string());
+        set_dav_dir(&routes, "B", OLD, &[]);
+        scan_addon(&guard.0, &None, &addon)
+            .await
+            .unwrap();
+        assert_eq!(
+            indexed_paths(&guard.0, &addon).await,
+            vec!["A/[imdbid-tt0133093] The Matrix (1999).mkv".to_string()],
+            "B is still pruned, A keeps its row until it lists again"
         );
     }
 
