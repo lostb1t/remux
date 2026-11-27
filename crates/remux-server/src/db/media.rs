@@ -3574,6 +3574,58 @@ impl Media {
             .collect()
     }
 
+    /// Drops a movie or series that repeats an earlier one's title and year
+    /// with ids that can't tell them apart: TMDB's search lists no IMDb id
+    /// and a Stremio addon's no TMDB id, so `dedupe_by_identity` sees two
+    /// titles where there is one. Two with different ids for the same
+    /// provider stay apart (two 2010 films called Frozen), as do any without
+    /// a year. The first, from the higher-priority addon, is kept as it is.
+    pub fn dedupe_by_title_year(items: Vec<Media>) -> Vec<Media> {
+        type Key = (std::mem::Discriminant<MediaKind>, String, i32);
+        let key = |m: &Media| -> Option<Key> {
+            if !matches!(m.kind, MediaKind::Movie | MediaKind::Series) {
+                return None;
+            }
+            let year = m
+                .released_at?
+                .year();
+            Some((
+                std::mem::discriminant(&m.kind),
+                m.title
+                    .trim()
+                    .to_lowercase(),
+                year,
+            ))
+        };
+        // Per kept item: its ids, and those of every item folded into it.
+        let mut kept: Vec<(Media, Vec<(&'static str, IdValue)>)> = Vec::new();
+        for item in items {
+            let ids = Self::external_id_fields(&item.kind, &item.external_ids);
+            let duplicate_of = key(&item).and_then(|k| {
+                kept.iter()
+                    .position(|(other, other_ids)| {
+                        key(other).as_ref() == Some(&k)
+                            && !ids
+                                .iter()
+                                .any(|(path, value)| {
+                                    other_ids
+                                        .iter()
+                                        .any(|(p, v)| p == path && v != value)
+                                })
+                    })
+            });
+            match duplicate_of {
+                Some(i) => kept[i]
+                    .1
+                    .extend(ids),
+                None => kept.push((item, ids)),
+            }
+        }
+        kept.into_iter()
+            .map(|(m, _)| m)
+            .collect()
+    }
+
     pub async fn find_by_external_ids(
         db: &SqlitePool,
         kind: &MediaKind,
@@ -14643,6 +14695,58 @@ mod relation_delete_tests {
 mod dedup_tests {
     use super::*;
     use crate::{db::MediaIdRaw, integration_test::new_test_server};
+
+    /// A search for "frozen", as AIO and TMDB answer it.
+    #[test]
+    fn search_results_with_the_same_title_and_year_and_no_conflicting_ids_are_one() {
+        let movie =
+            |title: &str, year: i32, imdb: Option<&str>, tmdb: Option<i64>| Media {
+                id: Uuid::new_v4(),
+                kind: MediaKind::Movie,
+                title: title.to_string(),
+                released_at: chrono::NaiveDate::from_ymd_opt(year, 6, 1)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                external_ids: ExternalIds {
+                    imdb: imdb
+                        .and_then(|id| NonEmptyString::try_new(id.to_string()).ok()),
+                    tmdb,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+        let results = vec![
+            // In the library, with both ids.
+            movie("Frozen", 2010, Some("tt1323045"), Some(44363)),
+            // AIO, IMDb only: another film, its IMDb id differs.
+            movie("Frozen", 2010, Some("tt1611845"), None),
+            movie("Frozen Land", 2005, Some("tt0388318"), None),
+            // TMDB, TMDB only. 95174 differs from the stored film's TMDB id,
+            // so it goes with AIO's.
+            movie("Frozen", 2010, None, Some(95174)),
+            movie("frozen land ", 2005, None, Some(18279)),
+            // Same title, another year.
+            movie("Frozen", 2005, None, Some(26041)),
+            // No year: nothing to compare.
+            Media {
+                released_at: None,
+                ..movie("Frozen Land", 2005, None, Some(1))
+            },
+        ];
+        let kept: Vec<_> = Media::dedupe_by_title_year(results.clone())
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                results[0].id,
+                results[1].id,
+                results[2].id,
+                results[5].id,
+                results[6].id
+            ]
+        );
+    }
 
     /// Phase 2: a stored row richer than the incoming item must still be
     /// found. Stored has `{imdb, kitsu}`, keyed under its kitsu-derived id;

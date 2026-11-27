@@ -398,7 +398,7 @@ pub async fn register_media_tracker(
             config: serde_json::Value::Null.into(),
         },
         resources: vec![],
-        types: vec![],
+        types: None,
         enabled: true,
         priority: 0,
         created_at: now,

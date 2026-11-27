@@ -850,7 +850,7 @@ mod tests {
                 .into(),
             },
             resources: vec![crate::addons::ResourceType::Catalog],
-            types: vec![],
+            types: None,
             enabled: true,
             priority: 0,
             system: false,

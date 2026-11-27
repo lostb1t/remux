@@ -1567,10 +1567,8 @@ impl JellyfinDisplayPrefs {
             r#"
             INSERT INTO jellyfin_display_prefs (id, user_id, client, data)
             VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(id) DO UPDATE SET
-                user_id = excluded.user_id,
-                client  = excluded.client,
-                data    = excluded.data
+            ON CONFLICT(id, user_id, client) DO UPDATE SET
+                data = excluded.data
             "#,
         )
         .bind(&self.id)

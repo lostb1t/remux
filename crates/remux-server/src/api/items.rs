@@ -7153,7 +7153,7 @@ mod tests {
                 remux_sdks::stremio::ResourceType::Stream,
                 remux_sdks::stremio::ResourceType::Subtitles,
             ],
-            types: vec![],
+            types: None,
             enabled: true,
             priority: 0,
             system: false,

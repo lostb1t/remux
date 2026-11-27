@@ -203,3 +203,7 @@
 
   transform-origin: center top;
 }
+
+.dx-dnd-list-item:has([data-muted="true"]) {
+  background-color: var(--bg-secondary);
+}

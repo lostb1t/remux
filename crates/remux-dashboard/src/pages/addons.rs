@@ -55,6 +55,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     let mut id_to_edit: Signal<Option<Uuid>> = use_signal(|| None);
     let mut edit_name_input = use_signal(String::new);
     let mut edit_is_default = use_signal(|| true);
+    let mut edit_enabled = use_signal(|| true);
     let mut create_is_default = use_signal(|| true);
     let mut edit_form_values: Signal<
         std::collections::HashMap<String, serde_json::Value>,
@@ -186,14 +187,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     };
                                     let display_types = if is_user_tab {
                                         addon.supported_types_user.clone()
-                                    } else if addon.types.is_empty() {
-                                        addon.supported_types.clone()
                                     } else {
-                                        addon.types.clone()
+                                        addon.types.clone().unwrap_or_else(|| addon.supported_types.clone())
                                     };
 
                                     rsx! {
-                                        div { class: "addon-card", key: "{id_string}",
+                                        div {
+                                            class: "addon-card",
+                                            key: "{id_string}",
+                                            "data-muted": "{!addon.enabled}",
                                             div { class: "addon-card-header",
                                                 span { class: "addon-card-name", "{addon.name}" }
                                                 span { class: "addon-card-kind", "{addon.kind}" }
@@ -242,13 +244,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                     .map(|r| format!("{r}"))
                                                                     .collect();
                                                                 edit_resources.set(res_set);
-                                                                let type_set: std::collections::HashSet<String> = if a.types.is_empty() {
-                                                                    a.supported_types.iter().map(|t| format!("{t}")).collect()
-                                                                } else {
-                                                                    a.types.iter().map(|t| format!("{t}")).collect()
-                                                                };
+                                                                let type_set: std::collections::HashSet<String> = a.types
+                                                                    .as_ref()
+                                                                    .unwrap_or(&a.supported_types)
+                                                                    .iter()
+                                                                    .map(|t| format!("{t}"))
+                                                                    .collect();
                                                                 edit_types.set(type_set);
                                                                 edit_is_default.set(a.is_default);
+                                                                edit_enabled.set(a.enabled);
                                                                 edit_http_redirect_stream.set(a.http_redirect_stream);
                                                                 edit_subtitle_extraction.set(a.subtitle_extraction);
                                                                 edit_probe_on_scan.set(a.probe_on_scan);
@@ -548,6 +552,13 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         oninput: move |e| edit_name_input.set(e.value()),
                                     }
                                 }
+                                div { class: "form-group",
+                                    ToggleRow {
+                                        label: "Enabled",
+                                        checked: *edit_enabled.read(),
+                                        on_change: move |v| edit_enabled.set(v),
+                                    }
+                                }
                                 if let Some(meta) = &edit_kind_meta {
                                     for opt in meta.options.iter().cloned() {
                                         AddonOptionField {
@@ -806,6 +817,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             editing.set(true);
                                             let c = client.clone();
                                             let is_default = *edit_is_default.peek();
+                                            let enabled = *edit_enabled.peek();
                                             let http_redirect_stream = *edit_http_redirect_stream.peek();
                                             let subtitle_extraction = *edit_subtitle_extraction.peek();
                                             let probe_on_scan = *edit_probe_on_scan.peek();
@@ -821,7 +833,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                     config: Some(config),
                                                     resources: Some(resources),
                                                     types: Some(types),
-                                                    enabled: None,
+                                                    enabled: Some(enabled),
                                                     priority: None,
                                                     is_default: Some(is_default),
                                                     http_redirect_stream: Some(http_redirect_stream),

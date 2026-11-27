@@ -695,6 +695,15 @@ impl From<&TrackDetail> for MediaStream {
             VideoRangeType::Sdr | VideoRangeType::Other => VideoRange::Sdr,
             _ => VideoRange::Hdr,
         };
+        // The title itself is not copied (see below); it only adds the forced
+        // and hearing-impaired flags a release names there but left unset.
+        let subtitle_title = t
+            .title
+            .as_deref()
+            .filter(|_| matches!(type_, MediaStreamType::Subtitle));
+        let title_forced = subtitle_title.is_some_and(MediaStream::title_marks_forced);
+        let title_hearing_impaired =
+            subtitle_title.is_some_and(MediaStream::title_marks_hearing_impaired);
         MediaStream {
             index: t.idx as i64,
             type_,
@@ -720,9 +729,9 @@ impl From<&TrackDetail> for MediaStream {
                 .language
                 .clone(),
             is_default: t.is_default,
-            is_forced: t.is_forced,
+            is_forced: t.is_forced || title_forced,
             is_external: t.is_external,
-            is_hearing_impaired: t.is_hearing_impaired,
+            is_hearing_impaired: t.is_hearing_impaired || title_hearing_impaired,
             width: t
                 .width
                 .map(|v| v as i64),
@@ -933,6 +942,22 @@ mod tests {
         };
         let stream = MediaStream::from(&track);
         assert_eq!(stream.title, None);
+    }
+
+    #[test]
+    fn a_subtitle_track_titled_forced_or_sdh_gets_that_flag() {
+        let subtitle = |title: &str| {
+            MediaStream::from(&TrackDetail {
+                kind: "subtitle".to_string(),
+                title: Some(title.to_string()),
+                ..Default::default()
+            })
+        };
+        assert!(subtitle("[PGS] ENG Forced").is_forced);
+        assert!(!subtitle("[PGS] ENG Forced").is_hearing_impaired);
+        assert!(subtitle("[SRT] ENG SDH").is_hearing_impaired);
+        assert!(!subtitle("[SRT] ENG SDH").is_forced);
+        assert_eq!(subtitle("[PGS] ENG Forced").title, None);
     }
 
     fn versions_endpoint(
