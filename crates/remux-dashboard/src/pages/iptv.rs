@@ -358,14 +358,15 @@ pub(crate) fn IptvChannelsTab(app_state: AppState, query: String) -> Element {
                                                             let v = e.value();
                                                             let custom = if v.is_empty() { None } else { Some(v.clone()) };
                                                             if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
-                                                                c.custom_name = custom.clone();
+                                                                c.custom_name = custom;
                                                             }
                                                             let c = client3.clone();
                                                             let id = id.clone();
                                                             spawn(async move {
                                                                 let _ = c.execute(PatchChannel {
                                                                     id,
-                                                                    patch: PatchChannelRequest { custom_name: custom, ..Default::default() },
+                                                                    // An empty name clears it; None would leave it as it is.
+                                                                    patch: PatchChannelRequest { custom_name: Some(v), ..Default::default() },
                                                                 }).await;
                                                             });
                                                         }
