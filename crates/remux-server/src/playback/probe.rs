@@ -184,7 +184,7 @@ pub(crate) struct StreamMeta<'a> {
     pub channel_layout: Option<&'a str>,
     pub width: Option<i64>,
     pub height: Option<i64>,
-    pub video_range: Option<&'a api::VideoRange>,
+    pub video_range_type: Option<&'a api::VideoRangeType>,
     pub is_default: bool,
     pub is_forced: bool,
     pub is_external: bool,
@@ -261,6 +261,21 @@ pub(crate) fn display_title_audio(m: &StreamMeta) -> Option<String> {
     }
 }
 
+/// Short dynamic-range label for a video version's title. SDR (and an
+/// unknown range) is left out, so only HDR versions carry a label.
+fn video_range_label(range: &api::VideoRangeType) -> Option<&'static str> {
+    match range {
+        api::VideoRangeType::Dovi
+        | api::VideoRangeType::DoviWithHdr10
+        | api::VideoRangeType::DoviWithHlg
+        | api::VideoRangeType::DoviWithSdr => Some("DV"),
+        api::VideoRangeType::Hdr10 => Some("HDR10"),
+        api::VideoRangeType::Hdr10Plus => Some("HDR10+"),
+        api::VideoRangeType::Hlg => Some("HLG"),
+        api::VideoRangeType::Sdr | api::VideoRangeType::Other => None,
+    }
+}
+
 pub(crate) fn display_title_video(m: &StreamMeta) -> Option<String> {
     let mut attrs: Vec<String> = vec![];
 
@@ -270,10 +285,11 @@ pub(crate) fn display_title_video(m: &StreamMeta) -> Option<String> {
     if let Some(codec) = m.codec {
         attrs.push(codec.to_ascii_uppercase());
     }
-    if let Some(range) = m.video_range {
-        if *range != api::VideoRange::Other {
-            attrs.push(format!("{:?}", range));
-        }
+    if let Some(range) = m
+        .video_range_type
+        .and_then(video_range_label)
+    {
+        attrs.push(range.to_string());
     }
 
     if let Some(title) = m.title {
@@ -907,7 +923,7 @@ pub fn probe_media_with(
                     height: s
                         .height
                         .and_then(nonzero),
-                    video_range: Some(&video_range),
+                    video_range_type: Some(&video_range_type),
                     is_default,
                     is_forced,
                     is_external: false,
@@ -1041,7 +1057,7 @@ pub fn probe_media_with(
                     channel_layout,
                     width: None,
                     height: None,
-                    video_range: None,
+                    video_range_type: None,
                     is_default,
                     is_forced,
                     is_external: false,
@@ -1134,7 +1150,7 @@ pub fn probe_media_with(
                     channel_layout: None,
                     width: None,
                     height: None,
-                    video_range: None,
+                    video_range_type: None,
                     is_default,
                     is_forced,
                     is_external: false,
@@ -1779,6 +1795,40 @@ mod probe_tests {
         assert_eq!(bit_depth_from_pix_fmt("yuv420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt("yuvj420p"), Some(8));
         assert_eq!(bit_depth_from_pix_fmt(""), None);
+    }
+
+    #[test]
+    fn display_title_video_names_the_dynamic_range_after_the_codec() {
+        let title = |range| {
+            display_title_video(&StreamMeta {
+                codec: Some("hevc"),
+                width: Some(3840),
+                height: Some(2160),
+                video_range_type: Some(&range),
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            title(api::VideoRangeType::Dovi).as_deref(),
+            Some("4K HEVC DV")
+        );
+        assert_eq!(
+            title(api::VideoRangeType::DoviWithHdr10).as_deref(),
+            Some("4K HEVC DV")
+        );
+        assert_eq!(
+            title(api::VideoRangeType::Hdr10).as_deref(),
+            Some("4K HEVC HDR10")
+        );
+        assert_eq!(
+            title(api::VideoRangeType::Hdr10Plus).as_deref(),
+            Some("4K HEVC HDR10+")
+        );
+        assert_eq!(
+            title(api::VideoRangeType::Hlg).as_deref(),
+            Some("4K HEVC HLG")
+        );
+        assert_eq!(title(api::VideoRangeType::Sdr).as_deref(), Some("4K HEVC"));
     }
 
     #[test]

@@ -143,7 +143,7 @@ pub(crate) fn guess_media_source_from_filename(filename: &str) -> FilenameProbeG
             codec: video_codec.as_deref(),
             width,
             height,
-            video_range: video_range.as_ref(),
+            video_range_type: video_range_type.as_ref(),
             ..Default::default()
         });
         media_streams.push(api::MediaStream {
@@ -446,10 +446,13 @@ impl From<db::Media> for api::MediaSourceInfo {
         // Derive display_title for any stream that doesn't have one yet.
         // This covers streams loaded from RemuxDB probe data where only raw
         // track facts are stored; FFprobe-sourced streams may already have it.
+        // A video title is always rebuilt, as it comes from the stream's facts
+        // alone and probe data stored earlier carries an older wording.
         for stream in &mut media_streams {
             if stream
                 .display_title
                 .is_some()
+                && stream.type_ != api::MediaStreamType::Video
             {
                 continue;
             }
@@ -469,7 +472,9 @@ impl From<db::Media> for api::MediaSourceInfo {
                     .as_deref(),
                 width: stream.width,
                 height: stream.height,
-                video_range: None,
+                video_range_type: stream
+                    .video_range_type
+                    .as_ref(),
                 is_default: stream.is_default,
                 is_forced: stream.is_forced,
                 is_external: stream.is_external,
@@ -912,7 +917,7 @@ mod tests {
             video
                 .display_title
                 .as_deref(),
-            Some("4K HEVC Hdr")
+            Some("4K HEVC HDR10")
         );
 
         let audio = &guess.media_streams[1];
