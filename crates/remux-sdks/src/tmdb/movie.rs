@@ -133,6 +133,7 @@ pub struct MovieSearchResponse {
 pub struct SearchMovieEndpoint {
     pub query: String,
     pub year: Option<i64>,
+    pub language: Option<String>,
 }
 
 impl Endpoint for SearchMovieEndpoint {
@@ -144,5 +145,37 @@ impl Endpoint for SearchMovieEndpoint {
 
     fn query_params(&self) -> impl serde::Serialize + '_ {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movie_search_sends_its_language_only_when_set() {
+        let ep = SearchMovieEndpoint {
+            query: "amelie".into(),
+            year: Some(2001),
+            language: Some("fr".into()),
+        };
+        assert_eq!(ep.path(), "search/movie");
+        assert_eq!(
+            ep.query(),
+            vec![
+                ("query".to_string(), "amelie".to_string()),
+                ("year".to_string(), "2001".to_string()),
+                ("language".to_string(), "fr".to_string()),
+            ]
+        );
+        let ep = SearchMovieEndpoint {
+            year: None,
+            language: None,
+            ..ep
+        };
+        assert_eq!(
+            ep.query(),
+            vec![("query".to_string(), "amelie".to_string())]
+        );
     }
 }

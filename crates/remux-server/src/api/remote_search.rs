@@ -68,6 +68,7 @@ pub async fn remote_search_movie(
         .execute(sdks::tmdb::SearchMovieEndpoint {
             query: name,
             year: info.year,
+            language: None,
         })
         .await
         .unwrap_or_default();
@@ -130,7 +131,10 @@ pub async fn remote_search_series(
         return Ok(Json(Vec::<api::RemoteSearchResult>::new()).into_response());
     }
     let resp = client
-        .execute(sdks::tmdb::SearchTvEndpoint { query: name })
+        .execute(sdks::tmdb::SearchTvEndpoint {
+            query: name,
+            language: None,
+        })
         .await
         .unwrap_or_default();
     let results: Vec<api::RemoteSearchResult> = resp
