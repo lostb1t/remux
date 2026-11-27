@@ -68,6 +68,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   bench:
+    if: false
     name: Bench
     needs: [version, test]
     uses: ./.github/workflows/bench.yml

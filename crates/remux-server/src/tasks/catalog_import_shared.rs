@@ -536,6 +536,11 @@ pub async fn import_catalog_items(
     Ok((counts, new_counts))
 }
 
+/// Every collection that has catalog members. Served by the partial index
+/// `idx_media_relations_catalog`, so it reads the catalog rows only.
+const CATALOG_COLLECTIONS_SQL: &str =
+    "SELECT DISTINCT left_media_id FROM media_relations WHERE role = 'catalog'";
+
 /// Delete rows from `media_relations` (role='catalog') whose left_media_id is in
 /// `domain_collection_ids` (every catalog — enabled or disabled — belonging to the
 /// addons this caller is responsible for) but not in `valid_collection_ids` (the
@@ -553,11 +558,9 @@ pub async fn remove_stale_catalog_memberships(
     valid_collection_ids: &HashSet<Uuid>,
     domain_collection_ids: &HashSet<Uuid>,
 ) {
-    let existing: Vec<Uuid> = match sqlx::query_scalar(
-        "SELECT DISTINCT left_media_id FROM media_relations WHERE role = 'catalog'",
-    )
-    .fetch_all(db)
-    .await
+    let existing: Vec<Uuid> = match sqlx::query_scalar(CATALOG_COLLECTIONS_SQL)
+        .fetch_all(db)
+        .await
     {
         Ok(v) => v,
         Err(e) => {
@@ -1045,5 +1048,70 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(orphans, 0, "every track must link to a saved album");
+    }
+
+    /// Listing the collections that have catalog members runs on every catalog
+    /// import. Without an index on the role it walked all of uniq_media_relation:
+    /// 11-24 s on a 3.5M-row media_relations to return 56 collection ids.
+    #[tokio::test]
+    async fn catalog_collections_lookup_reads_only_catalog_rows() {
+        use sqlx::Row;
+
+        let db = crate::db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        crate::db::migrate(&db)
+            .await
+            .unwrap();
+        // Check the plan both without statistics and with statistics shaped
+        // like a large library, where catalog rows are a tiny share.
+        for stats in [false, true] {
+            if stats {
+                sqlx::query("ANALYZE")
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                sqlx::query("DELETE FROM sqlite_stat1 WHERE tbl = 'media_relations'")
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                for (idx, stat) in [
+                    ("idx_media_relations_catalog", "23000 411 1"),
+                    ("idx_media_relations_right_left", "3493000 1 1"),
+                    ("uniq_media_relation", "3493000 61281 1 1"),
+                    ("sqlite_autoindex_media_relations_1", "3493000 1"),
+                ] {
+                    sqlx::query(
+                        "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('media_relations', ?, ?)",
+                    )
+                    .bind(idx)
+                    .bind(stat)
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                }
+                sqlx::query("ANALYZE sqlite_schema")
+                    .execute(&db)
+                    .await
+                    .unwrap();
+            }
+            let plan =
+                sqlx::query(&format!("EXPLAIN QUERY PLAN {CATALOG_COLLECTIONS_SQL}"))
+                    .fetch_all(&db)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.get::<String, _>(3))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+            assert!(
+                plan.contains("USING COVERING INDEX idx_media_relations_catalog"),
+                "catalog lookup must read the catalog index (stats: {stats}); plan: {plan}"
+            );
+            assert!(
+                !plan.contains("uniq_media_relation"),
+                "catalog lookup must not walk every relation (stats: {stats}); plan: {plan}"
+            );
+        }
     }
 }
