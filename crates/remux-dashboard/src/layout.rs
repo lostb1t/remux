@@ -95,12 +95,13 @@ pub fn DashboardLayout() -> Element {
 
     let mut sidebar_open = use_signal(|| false);
     let route = use_route::<Route>();
+    let is_iptv = matches!(route, Route::IptvRoute { .. });
 
     let page_title = match route {
         Route::DashboardRoute => "Remux",
         Route::AddonsRoute => "Addons",
         Route::LibraryRoute => "Library",
-        Route::IptvRoute => "IPTV",
+        Route::IptvRoute { .. } => "IPTV",
         Route::StreamingGeneralRoute => "Streaming General",
         Route::StreamingGroupsRoute => "Stream Groups",
         Route::SettingsGeneralRoute => "General",
@@ -162,7 +163,7 @@ pub fn DashboardLayout() -> Element {
 
                     SidebarGroup {
                         label: "Content",
-                        active: matches!(route, Route::LibraryRoute | Route::IptvRoute),
+                        active: matches!(route, Route::LibraryRoute | Route::IptvRoute { .. }),
                         NavSubItem {
                             label: "Library",
                             active: route == Route::LibraryRoute,
@@ -170,8 +171,13 @@ pub fn DashboardLayout() -> Element {
                         }
                         NavSubItem {
                             label: "IPTV",
-                            active: route == Route::IptvRoute,
-                            on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
+                            active: is_iptv,
+                            on_click: move |_| {
+                                if !is_iptv {
+                                    navigator().push(Route::IptvRoute { query: String::new() });
+                                }
+                                sidebar_open.set(false);
+                            },
                         }
                     }
 

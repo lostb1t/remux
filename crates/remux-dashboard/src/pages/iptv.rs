@@ -10,20 +10,79 @@ use remux_sdks::remux::{
 
 pub const PAGE_SIZE: u32 = 50;
 
+fn page_from_query(search: &str) -> i64 {
+    url::form_urlencoded::parse(
+        search
+            .trim_start_matches('?')
+            .as_bytes(),
+    )
+    .find(|(key, _)| key == "page")
+    .and_then(|(_, value)| {
+        value
+            .parse::<i64>()
+            .ok()
+    })
+    .and_then(|page| page.checked_sub(1))
+    .unwrap_or(0)
+    .clamp(0, (u32::MAX / PAGE_SIZE) as i64)
+}
+
+fn set_page_in_location(page: i64) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(href) = window
+        .location()
+        .href()
+    else {
+        return;
+    };
+    let Ok(mut url) = url::Url::parse(&href) else {
+        return;
+    };
+
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "page")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
+    {
+        let mut query = url.query_pairs_mut();
+        for (key, value) in pairs {
+            query.append_pair(&key, &value);
+        }
+        query.append_pair("page", &(page + 1).to_string());
+    }
+
+    let _ = window
+        .history()
+        .ok()
+        .and_then(|history| {
+            history
+                .replace_state_with_url(
+                    &wasm_bindgen::JsValue::NULL,
+                    "",
+                    Some(url.as_str()),
+                )
+                .ok()
+        });
+}
+
 #[component]
-pub fn IptvPage(app_state: AppState) -> Element {
+pub fn IptvPage(app_state: AppState, query: String) -> Element {
     rsx! {
-        IptvChannelsTab { app_state }
+        IptvChannelsTab { app_state, query }
     }
 }
 
 #[component]
-pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
+pub(crate) fn IptvChannelsTab(app_state: AppState, query: String) -> Element {
     let mut channels: Signal<Vec<ChannelEditorItem>> = use_signal(Vec::new);
     let mut total: Signal<usize> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
-    let mut page = use_signal(|| 0_i64);
+    let mut page = use_signal(|| page_from_query(&query));
     // committed search (triggers fetch); typed search (live input)
     let mut search_committed = use_signal(String::new);
     let mut search_input = use_signal(String::new);
@@ -37,6 +96,12 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
     // "order" | "name"
     let mut sort_mode = use_signal(|| "order".to_string());
     let mut show_filter_modal = use_signal(|| false);
+    let mut request_generation = use_signal(|| 0_u64);
+    let mut refresh = use_signal(|| 0_u64);
+
+    use_effect(move || {
+        set_page_in_location(*page.read());
+    });
 
     // Load distinct country codes and groups once on mount
     let app_state_countries = app_state.clone();
@@ -60,6 +125,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
+        let _ = *refresh.read();
         let p = *page.read();
         let s = search_committed
             .read()
@@ -76,6 +142,10 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
         let sm = sort_mode
             .read()
             .clone();
+        let generation = request_generation
+            .peek()
+            .wrapping_add(1);
+        request_generation.set(generation);
         loading.set(true);
         let client = app_state_effect.clone();
         spawn(async move {
@@ -84,7 +154,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                 "false" => Some(false),
                 _ => None,
             };
-            match client
+            let result = client
                 .execute(GetIptvChannels {
                     limit: PAGE_SIZE,
                     offset: (p as u32) * PAGE_SIZE,
@@ -94,11 +164,24 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                     group: gf,
                     sort: sm,
                 })
-                .await
-            {
+                .await;
+            if *request_generation.peek() != generation || *page.peek() != p {
+                return;
+            }
+            match result {
                 Ok(r) => {
-                    total.set(r.total_record_count);
-                    channels.set(r.items);
+                    let loaded_total = r.total_record_count;
+                    let loaded_pages =
+                        (loaded_total as i64 + PAGE_SIZE as i64 - 1) / PAGE_SIZE as i64;
+                    total.set(loaded_total);
+                    if loaded_pages == 0 && p != 0 {
+                        page.set(0);
+                    } else if loaded_pages > 0 && p >= loaded_pages {
+                        page.set(loaded_pages - 1);
+                    } else {
+                        channels.set(r.items);
+                    }
+
                     error.set(None);
                 }
                 Err(e) => error.set(Some(format!("Failed to load channels: {e}"))),
@@ -141,6 +224,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                 if filters_active { "Filters ●" } else { "Filters" }
                             }
                         }
+
                     }
                     // Enable all / Disable all — server-side bulk op
                     button {
@@ -154,28 +238,14 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                 bulk_working.set(true);
                                 let c = client.clone();
                                 spawn(async move {
-                                    let _ = c.execute(BulkChannels {
+                                    let result = c.execute(BulkChannels {
                                         request: BulkChannelRequest { enabled: true, search: if search.is_empty() { None } else { Some(search) } },
                                     }).await;
                                     bulk_working.set(false);
-                                    // re-fetch to reflect new state
-                                    let s = search_committed.peek().clone();
-                                    let p = *page.peek();
-                                    let ef = enabled_filter.peek().clone();
-                                    let cf = country_filter.peek().clone();
-                                    let gf = group_filter.peek().clone();
-                                    let sm = sort_mode.peek().clone();
-                                    let enabled = match ef.as_str() {
-                                        "true" => Some(true),
-                                        "false" => Some(false),
-                                        _ => None,
-                                    };
-                                    loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
-                                        total.set(r.total_record_count);
-                                        channels.set(r.items);
+                                    match result {
+                                        Ok(()) => *refresh.write() += 1,
+                                        Err(e) => error.set(Some(format!("Failed to update channels: {e}"))),
                                     }
-                                    loading.set(false);
                                 });
                             }
                         },
@@ -192,27 +262,14 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                                 bulk_working.set(true);
                                 let c = client.clone();
                                 spawn(async move {
-                                    let _ = c.execute(BulkChannels {
+                                    let result = c.execute(BulkChannels {
                                         request: BulkChannelRequest { enabled: false, search: if search.is_empty() { None } else { Some(search) } },
                                     }).await;
                                     bulk_working.set(false);
-                                    let s = search_committed.peek().clone();
-                                    let p = *page.peek();
-                                    let ef = enabled_filter.peek().clone();
-                                    let cf = country_filter.peek().clone();
-                                    let gf = group_filter.peek().clone();
-                                    let sm = sort_mode.peek().clone();
-                                    let enabled = match ef.as_str() {
-                                        "true" => Some(true),
-                                        "false" => Some(false),
-                                        _ => None,
-                                    };
-                                    loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: (p as u32) * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
-                                        total.set(r.total_record_count);
-                                        channels.set(r.items);
+                                    match result {
+                                        Ok(()) => *refresh.write() += 1,
+                                        Err(e) => error.set(Some(format!("Failed to update channels: {e}"))),
                                     }
-                                    loading.set(false);
                                 });
                             }
                         },
@@ -349,7 +406,7 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                         }
                     }
 
-                    PaginationBar { page, total_pages }
+                    PaginationBar { page, total_pages, show_page_input: true }
                 }
             }
         }
@@ -448,5 +505,24 @@ pub(crate) fn IptvChannelsTab(app_state: AppState) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{page_from_query, PAGE_SIZE};
+
+    #[test]
+    fn page_query_is_one_based_and_safe_for_offsets() {
+        assert_eq!(page_from_query(""), 0);
+        assert_eq!(page_from_query("?other=x&page=465"), 464);
+        assert_eq!(page_from_query("?page=0"), 0);
+        assert_eq!(page_from_query("?page=-1"), 0);
+        assert_eq!(page_from_query("?page=invalid"), 0);
+        assert_eq!(
+            page_from_query("?page=9223372036854775807"),
+            (u32::MAX / PAGE_SIZE) as i64
+        );
+        assert_eq!(page_from_query("?page=999999999999999999999"), 0);
     }
 }
