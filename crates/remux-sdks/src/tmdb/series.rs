@@ -441,6 +441,27 @@ mod tests {
     }
 
     #[test]
+    fn tv_search_sends_its_language_only_when_set() {
+        let ep = SearchTvEndpoint {
+            query: "dark".into(),
+            language: Some("de".into()),
+        };
+        assert_eq!(ep.path(), "search/tv");
+        assert_eq!(
+            ep.query(),
+            vec![
+                ("query".to_string(), "dark".to_string()),
+                ("language".to_string(), "de".to_string()),
+            ]
+        );
+        let ep = SearchTvEndpoint {
+            language: None,
+            ..ep
+        };
+        assert_eq!(ep.query(), vec![("query".to_string(), "dark".to_string())]);
+    }
+
+    #[test]
     fn episode_id_batches_keep_only_the_appended_episodes() {
         let endpoint = EpisodeExternalIdsBatchEndpoint {
             series_id: 57532,
