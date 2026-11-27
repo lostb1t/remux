@@ -2009,29 +2009,13 @@ async fn fetch_tmdb_season_meta(
     let Some(season) = season_data else {
         return Ok(None);
     };
-    // Same date and overview the series tree gives the season (see
-    // `From<&Season>`): a full refresh clears whatever this answer leaves out.
-    let from_list = db::Media::from(season);
+    // Everything the series tree gives the season (see `From<&Season>`): a
+    // full refresh clears whatever this answer leaves out. Except the title,
+    // which the tree already set and this answer should not overwrite.
     let mut patch = db::Media {
-        description: from_list.description,
-        released_at: from_list.released_at,
-        digital_released_at: from_list.digital_released_at,
-        ..Default::default()
+        title: String::new(),
+        ..db::Media::from(season)
     };
-    if let Some(url) = tmdb_image(
-        season
-            .poster_path
-            .as_deref(),
-        db::ImageKind::Primary,
-    ) {
-        patch.set_image(db::ImageKind::Primary, url);
-    }
-    patch.external_ids = tmdb_external_ids(
-        season.id,
-        season
-            .external_ids
-            .as_ref(),
-    );
     match client
         .execute(
             sdks::tmdb::SeasonExternalIdsEndpoint {
