@@ -2183,19 +2183,24 @@ impl AddonService {
         let mut combined: Option<db::Media> = None;
         // Every addon answered, even if only to say it doesn't know the item.
         let mut all_answered = true;
+        // At least one addon answered. When none did (every addon errored or
+        // was skipped), the refresh didn't happen and must not count as done.
+        let mut any_answered = false;
         for (r, result) in applicable
             .iter()
             .zip(results)
         {
             match result {
                 Ok(Some(patch)) => {
+                    any_answered = true;
                     let acc = combined.get_or_insert_with(db::Media::default);
                     apply_meta(acc, patch, false);
                 }
-                Ok(None) => {}
+                Ok(None) => any_answered = true,
                 // The addon simply doesn't know this item; not worth an error
                 // per item on every refresh.
                 Err(e) if is_not_found(&e) => {
+                    any_answered = true;
                     debug!(addon = %r.row.name, error = %e, "meta addon has no entry")
                 }
                 Err(e) if e.is::<CooldownSkipped>() => {
@@ -2248,7 +2253,11 @@ impl AddonService {
             }
         }
 
-        media.refreshed_at = Some(chrono::Utc::now().naive_utc());
+        // Left unset when no addon answered, so the item is picked up again on
+        // the next refresh instead of waiting out the backoff window.
+        if any_answered {
+            media.refreshed_at = Some(chrono::Utc::now().naive_utc());
+        }
 
         Ok(())
     }
@@ -5623,6 +5632,94 @@ mod tests {
         assert!(
             !PickCap::<dyn MetaAddon>::pick(&runtime, &media_with_imdb("xx0111161"))
                 .await
+        );
+    }
+
+    /// Fails every request, like an addon whose credentials were revoked.
+    struct FailingMeta;
+
+    #[async_trait]
+    impl MetaAddon for FailingMeta {
+        async fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn meta_fetch(
+            &self,
+            _media: &db::Media,
+            _ctx: &AppContext,
+            _config: &crate::api::ServerConfiguration,
+        ) -> Result<Option<db::Media>> {
+            Err(anyhow::anyhow!("401 Unauthorized"))
+        }
+    }
+
+    fn meta_service(meta: Arc<dyn MetaAddon>) -> AddonService {
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "meta".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Meta],
+                types: None,
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: true,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                meta: Some(meta),
+                ..Default::default()
+            },
+        };
+        AddonService {
+            inner: Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_no_addon_answered_is_not_marked_done() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let episode = db::Media {
+            kind: db::MediaKind::Episode,
+            title: "Pilot".into(),
+            ..Default::default()
+        };
+
+        let mut failed = episode.clone();
+        meta_service(Arc::new(FailingMeta))
+            .refresh_meta(&mut failed, ctx, true, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            failed.refreshed_at, None,
+            "a refresh where every addon failed must be retried"
+        );
+
+        let mut answered = episode;
+        meta_service(Arc::new(AlwaysMeta))
+            .refresh_meta(&mut answered, ctx, true, &config)
+            .await
+            .unwrap();
+        assert!(
+            answered
+                .refreshed_at
+                .is_some(),
+            "an addon that answers, even with nothing, completes the refresh"
         );
     }
 
