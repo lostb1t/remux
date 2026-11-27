@@ -279,7 +279,6 @@ pub(crate) fn IptvChannelsTab(app_state: AppState, query: String) -> Element {
             }
 
             div { class: "card-body tight",
-                PaginationBar { page, total_pages, show_page_input: true }
                 if *loading.read() {
                     LoadingText {}
                 } else if let Some(err) = error.read().as_ref() {
