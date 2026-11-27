@@ -268,7 +268,10 @@ fn video_range_label(range: &api::VideoRangeType) -> Option<&'static str> {
         api::VideoRangeType::Dovi
         | api::VideoRangeType::DoviWithHdr10
         | api::VideoRangeType::DoviWithHlg
-        | api::VideoRangeType::DoviWithSdr => Some("DV"),
+        | api::VideoRangeType::DoviWithSdr
+        | api::VideoRangeType::DoviWithEl
+        | api::VideoRangeType::DoviWithHdr10Plus
+        | api::VideoRangeType::DoviWithElHdr10Plus => Some("DV"),
         api::VideoRangeType::Hdr10 => Some("HDR10"),
         api::VideoRangeType::Hdr10Plus => Some("HDR10+"),
         api::VideoRangeType::Hlg => Some("HLG"),
@@ -389,6 +392,8 @@ struct FfprobeStream {
     avg_frame_rate: Option<String>,
     r_frame_rate: Option<String>,
     color_transfer: Option<String>,
+    color_space: Option<String>,
+    color_primaries: Option<String>,
     channels: Option<i64>,
     channel_layout: Option<String>,
     sample_rate: Option<String>,
@@ -405,10 +410,34 @@ struct FfprobeStream {
 
 #[derive(Deserialize)]
 struct FfprobeSideData {
+    side_data_type: Option<String>,
     rotation: Option<i64>,
+    // The "DOVI configuration record": from the dvcC/dvvC box of an MP4 or
+    // the block addition mapping of a Matroska file.
+    dv_version_major: Option<i64>,
+    dv_version_minor: Option<i64>,
+    dv_profile: Option<i64>,
+    dv_level: Option<i64>,
+    rpu_present_flag: Option<i64>,
+    el_present_flag: Option<i64>,
+    bl_present_flag: Option<i64>,
+    dv_bl_signal_compatibility_id: Option<i64>,
 }
 
 impl FfprobeStream {
+    fn dolby_vision(&self) -> Option<&FfprobeSideData> {
+        self.side_data_list
+            .iter()
+            .find(|data| {
+                data.side_data_type
+                    .as_deref()
+                    == Some("DOVI configuration record")
+                    || data
+                        .dv_profile
+                        .is_some()
+            })
+    }
+
     fn rotation(&self) -> Option<i64> {
         self.side_data_list
             .iter()
@@ -895,19 +924,35 @@ pub fn probe_media_with(
                     .forced
                     != 0;
 
-                // Detect HDR type from color_transfer reported by ffprobe.
-                let (video_range, video_range_type) = match s
-                    .color_transfer
-                    .as_deref()
-                {
-                    Some("smpte2084") => {
-                        (api::VideoRange::Hdr, api::VideoRangeType::Hdr10)
-                    }
-                    Some("arib-std-b67") => {
-                        (api::VideoRange::Hdr, api::VideoRangeType::Hlg)
-                    }
-                    _ => (api::VideoRange::Sdr, api::VideoRangeType::Sdr),
+                // The range from the colour transfer and the Dolby Vision
+                // configuration, as Jellyfin names it.
+                let dolby_vision = s.dolby_vision();
+                let colour = api::MediaStream {
+                    type_: api::MediaStreamType::Video,
+                    codec_tag: s
+                        .codec_tag_string
+                        .clone(),
+                    color_transfer: s
+                        .color_transfer
+                        .clone(),
+                    color_space: s
+                        .color_space
+                        .clone(),
+                    color_primaries: s
+                        .color_primaries
+                        .clone(),
+                    dv_version_major: dolby_vision.and_then(|dv| dv.dv_version_major),
+                    dv_version_minor: dolby_vision.and_then(|dv| dv.dv_version_minor),
+                    dv_profile: dolby_vision.and_then(|dv| dv.dv_profile),
+                    dv_level: dolby_vision.and_then(|dv| dv.dv_level),
+                    rpu_present_flag: dolby_vision.and_then(|dv| dv.rpu_present_flag),
+                    el_present_flag: dolby_vision.and_then(|dv| dv.el_present_flag),
+                    bl_present_flag: dolby_vision.and_then(|dv| dv.bl_present_flag),
+                    dv_bl_signal_compatibility_id: dolby_vision
+                        .and_then(|dv| dv.dv_bl_signal_compatibility_id),
+                    ..Default::default()
                 };
+                let (video_range, video_range_type) = colour.video_color_range();
 
                 let meta = StreamMeta {
                     language,
@@ -988,6 +1033,17 @@ pub fn probe_media_with(
                     display_title: display_title_video(&meta),
                     language: language.map(str::to_string),
                     title: None,
+                    color_transfer: colour.color_transfer,
+                    color_space: colour.color_space,
+                    color_primaries: colour.color_primaries,
+                    dv_version_major: colour.dv_version_major,
+                    dv_version_minor: colour.dv_version_minor,
+                    dv_profile: colour.dv_profile,
+                    dv_level: colour.dv_level,
+                    rpu_present_flag: colour.rpu_present_flag,
+                    el_present_flag: colour.el_present_flag,
+                    bl_present_flag: colour.bl_present_flag,
+                    dv_bl_signal_compatibility_id: colour.dv_bl_signal_compatibility_id,
                     ..Default::default()
                 });
                 video_idx += 1;
@@ -2043,6 +2099,37 @@ mod probe_tests {
                 (false, true, Some("English - Hearing Impaired - SRT"), None),
             ]
         );
+    }
+
+    #[test]
+    fn ffprobe_stream_reads_the_dolby_vision_configuration_record() {
+        let stream: FfprobeStream = serde_json::from_value(serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "color_transfer": "smpte2084",
+            "color_space": "bt2020nc",
+            "color_primaries": "bt2020",
+            "side_data_list": [{
+                "side_data_type": "DOVI configuration record",
+                "dv_version_major": 1,
+                "dv_version_minor": 0,
+                "dv_profile": 8,
+                "dv_level": 6,
+                "rpu_present_flag": 1,
+                "el_present_flag": 0,
+                "bl_present_flag": 1,
+                "dv_bl_signal_compatibility_id": 1,
+                "dv_md_compression": "none"
+            }]
+        }))
+        .expect("ffprobe stream");
+        let dolby_vision = stream
+            .dolby_vision()
+            .expect("configuration record");
+        assert_eq!(dolby_vision.dv_profile, Some(8));
+        assert_eq!(dolby_vision.dv_bl_signal_compatibility_id, Some(1));
+        assert_eq!(stream.rotation(), None);
     }
 
     #[test]

@@ -94,7 +94,9 @@ fn hunch_video_range_type(other: &[&str]) -> Option<api::VideoRangeType> {
 /// mean SDR, it just means hunch found nothing, so it stays `None` (unknown).
 fn video_range_from_type(t: Option<&api::VideoRangeType>) -> Option<api::VideoRange> {
     match t? {
-        api::VideoRangeType::Sdr => Some(api::VideoRange::Sdr),
+        api::VideoRangeType::Sdr | api::VideoRangeType::DoviWithSdr => {
+            Some(api::VideoRange::Sdr)
+        }
         api::VideoRangeType::Other => Some(api::VideoRange::Other),
         _ => Some(api::VideoRange::Hdr),
     }

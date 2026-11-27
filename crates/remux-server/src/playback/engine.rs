@@ -728,6 +728,9 @@ fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
             | Some(VideoRangeType::Dovi)
             | Some(VideoRangeType::DoviWithHdr10)
             | Some(VideoRangeType::DoviWithHlg)
+            | Some(VideoRangeType::DoviWithEl)
+            | Some(VideoRangeType::DoviWithHdr10Plus)
+            | Some(VideoRangeType::DoviWithElHdr10Plus)
     )
 }
 
@@ -1127,13 +1130,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             ]);
             // Strip embedded Dolby Vision RPU NALs only when the source is actually DoVi;
             // dovi_rpu only supports hevc/av1 and will crash ffmpeg on any other codec.
-            let is_dovi = matches!(
-                params.source_video_range_type,
-                Some(VideoRangeType::Dovi)
-                    | Some(VideoRangeType::DoviWithHdr10)
-                    | Some(VideoRangeType::DoviWithHlg)
-                    | Some(VideoRangeType::DoviWithSdr)
-            );
+            let is_dovi = params
+                .source_video_range_type
+                .as_ref()
+                .is_some_and(VideoRangeType::is_dolby_vision);
             if is_dovi {
                 args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
             }
@@ -2289,6 +2289,9 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
             Some(VideoRangeType::Hdr10)
             | Some(VideoRangeType::Hdr10Plus)
             | Some(VideoRangeType::DoviWithHdr10)
+            | Some(VideoRangeType::DoviWithEl)
+            | Some(VideoRangeType::DoviWithHdr10Plus)
+            | Some(VideoRangeType::DoviWithElHdr10Plus)
             | Some(VideoRangeType::Dovi) => ",VIDEO-RANGE=PQ",
             Some(VideoRangeType::Hlg) | Some(VideoRangeType::DoviWithHlg) => {
                 ",VIDEO-RANGE=HLG"
