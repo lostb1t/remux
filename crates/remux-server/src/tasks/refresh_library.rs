@@ -296,6 +296,16 @@ async fn refresh_metadata(
 
 pub struct RefreshLibraryTask;
 
+/// Reloads the addons so their manifests are fetched again. An addon's
+/// resources, types and id prefixes are read from its manifest only when the
+/// addons load (startup or an addon edit), so without this a manifest the
+/// addon later changes goes unseen until a restart.
+async fn reload_addon_manifests(ctx: &AppContext) -> Result<()> {
+    ctx.addons
+        .reload(&ctx.db, &ctx.config)
+        .await
+}
+
 #[async_trait]
 impl Task for RefreshLibraryTask {
     fn key(&self) -> &str {
@@ -320,6 +330,7 @@ impl Task for RefreshLibraryTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        reload_addon_manifests(&ctx).await?;
         let plan = plan_catalogs(&ctx, CatalogScope::All).await;
 
         // Size the overall progress total from all three phases' best-available
@@ -402,6 +413,7 @@ impl Task for RefreshCatalogsTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        reload_addon_manifests(&ctx).await?;
         let plan = plan_catalogs(&ctx, CatalogScope::All).await;
         let item_progress = ItemProgress::new(
             progress,
@@ -477,6 +489,112 @@ mod tests {
     fn scope_indexed_only_includes_addons_with_an_index() {
         assert!(CatalogScope::IndexedAddons.includes(true));
         assert!(!CatalogScope::IndexedAddons.includes(false));
+    }
+
+    fn stremio_manifest(id_prefixes: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "id": "manifest-refresh-test",
+            "name": "Manifest Refresh",
+            "version": "1.0.0",
+            "resources": [
+                {"name": "meta", "types": ["movie"], "idPrefixes": id_prefixes}
+            ],
+            "types": ["movie"],
+            "catalogs": []
+        })
+    }
+
+    /// A Stremio addon that changes its manifest is seen with the new one
+    /// after Refresh Catalogs, not only after a restart or an addon edit.
+    #[tokio::test]
+    async fn refresh_catalogs_picks_up_a_changed_addon_manifest() {
+        use crate::addons::addon::Addon;
+        use remux_sdks::remux::AddonPresetRef;
+
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        // Only the stub addon runs, so the task makes no other network calls.
+        sqlx::query("UPDATE addons SET enabled = 0")
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        let stub = httpmock::MockServer::start();
+        let mut old = stub.mock(|when, then| {
+            when.path("/manifest-refresh/manifest.json");
+            then.status(200)
+                .json_body(stremio_manifest(&["old"]));
+        });
+        let now = chrono::Utc::now().naive_utc();
+        let addon_id = Uuid::new_v4();
+        Addon {
+            id: addon_id,
+            name: "manifest-refresh-addon".to_string(),
+            preset: AddonPresetRef {
+                kind: "stremio".to_string(),
+                config:
+                    serde_json::json!({ "manifest_url": stub.url("/manifest-refresh/manifest.json") })
+                        .into(),
+            },
+            resources: vec![ResourceType::Meta],
+            types: None,
+            enabled: true,
+            priority: 0,
+            system: false,
+            is_default: false,
+            http_redirect_stream: false,
+            subtitle_extraction: false,
+            probe_on_scan: false,
+            service_filter: vec![],
+            created_at: now,
+            updated_at: now,
+        }
+        .insert(&ctx.db)
+        .await
+        .unwrap();
+        ctx.addons
+            .reload(&ctx.db, &ctx.config)
+            .await
+            .unwrap();
+
+        let meta_prefixes = || {
+            ctx.addons
+                .get(addon_id)
+                .unwrap()
+                .caps
+                .metadata
+                .supported_resources
+                .into_iter()
+                .find(|r| r.name == ResourceType::Meta)
+                .and_then(|r| r.id_prefixes)
+        };
+        assert_eq!(meta_prefixes(), Some(vec!["old".to_string()]));
+
+        old.delete();
+        // Stands in for the hour the manifest response stays in the HTTP cache.
+        crate::sdks::clear_http_cache();
+        stub.mock(|when, then| {
+            when.path("/manifest-refresh/manifest.json");
+            then.status(200)
+                .json_body(stremio_manifest(&["new"]));
+        });
+        let tasks = Arc::new(
+            TaskService::new(ctx.clone())
+                .await
+                .unwrap(),
+        );
+        RefreshCatalogsTask
+            .run(
+                ctx.clone(),
+                tasks,
+                ProgressReporter::new(Default::default()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta_prefixes(), Some(vec!["new".to_string()]));
     }
 }
 
