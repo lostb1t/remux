@@ -283,6 +283,88 @@ fn is_remote_enabled(cfg: &api::ServerConfiguration, kind: &db::MediaKind) -> bo
 /// Episodes are navigated through their series and season containers rather
 /// than being useful top-level search results. Keep them out of every search
 /// path, including `local:` searches that bypass the remote-search fan-out.
+/// How well an item's title matches the search query, best first.
+///
+/// 0 = the title (or original title) equals the query, 1 = it starts with the
+/// query, 2 = anything else. Comparison is case-insensitive on trimmed text.
+fn search_title_match_tier(query: &str, item: &api::BaseItemDto) -> u8 {
+    let q = query
+        .trim()
+        .to_lowercase();
+    if q.is_empty() {
+        return 2;
+    }
+    let titles = [
+        item.name
+            .as_deref(),
+        item.original_title
+            .as_deref(),
+    ];
+    let mut tier = 2;
+    for title in titles
+        .into_iter()
+        .flatten()
+    {
+        let t = title
+            .trim()
+            .to_lowercase();
+        if t == q {
+            return 0;
+        }
+        if t.starts_with(&q) {
+            tier = 1;
+        }
+    }
+    tier
+}
+
+/// Merge the per-kind remote search results into one relevance-ordered list.
+///
+/// Each input list is already in its addon's own order (TMDB ranks within a
+/// kind by popularity), so that order is kept. Items are grouped by title match
+/// tier — exact title, title starts with the query, everything else — and
+/// within a tier the kinds are interleaved round-robin. Appending the lists
+/// one kind after another put every movie before the first series, which hid
+/// an exact series match (e.g. "Columbo") behind a page of loosely matching
+/// movies.
+fn rank_remote_search_results(
+    query: &str,
+    per_kind: Vec<Vec<api::BaseItemDto>>,
+) -> Vec<api::BaseItemDto> {
+    let mut tiers: [Vec<std::collections::VecDeque<api::BaseItemDto>>; 3] =
+        [vec![], vec![], vec![]];
+    for list in per_kind {
+        let mut buckets: [std::collections::VecDeque<api::BaseItemDto>; 3] =
+            [Default::default(), Default::default(), Default::default()];
+        for item in list {
+            let tier = search_title_match_tier(query, &item) as usize;
+            buckets[tier].push_back(item);
+        }
+        for (tier, bucket) in buckets
+            .into_iter()
+            .enumerate()
+        {
+            if !bucket.is_empty() {
+                tiers[tier].push(bucket);
+            }
+        }
+    }
+
+    let mut out = vec![];
+    for mut lists in tiers {
+        // Round-robin across kinds until every list in this tier is drained.
+        while !lists.is_empty() {
+            lists.retain_mut(|l| {
+                if let Some(item) = l.pop_front() {
+                    out.push(item);
+                }
+                !l.is_empty()
+            });
+        }
+    }
+    out
+}
+
 fn exclude_episodes_from_search(q: &mut api::GetItemsQuery) {
     if q.search_term
         .is_none()
@@ -450,7 +532,8 @@ pub async fn get_items(
                 .collect();
             let remote_results = futures::future::join_all(remote_futs).await;
 
-            let mut all_items: Vec<api::BaseItemDto> = vec![];
+            // One list per remote kind, each in the addon's own relevance order.
+            let mut remote_lists: Vec<Vec<api::BaseItemDto>> = vec![];
             let mut debug_counts: Vec<(String, usize)> = vec![];
 
             for (kind, result) in remote_kinds
@@ -469,7 +552,7 @@ pub async fn get_items(
                             })
                             .collect();
                         debug_counts.push((kind.to_string(), items.len()));
-                        all_items.extend(items);
+                        remote_lists.push(items);
                     }
                     Err(e) => {
                         warn!(error = %e, ?kind, "get_items: remote search failed");
@@ -477,6 +560,11 @@ pub async fn get_items(
                     }
                 }
             }
+
+            // Merge the per-kind lists by title relevance instead of stacking one kind
+            // after another, so an exact series match is not buried under every movie
+            // whose title merely contains the query.
+            let mut all_items = rank_remote_search_results(s, remote_lists);
 
             // Local: single DB query for all local kinds combined.
             if !local_kinds.is_empty() {
@@ -4361,6 +4449,80 @@ pub async fn media_segments(
 #[cfg(test)]
 mod tests {
     use crate::ids::{ItemId, StreamGroupId, UserId};
+
+    #[test]
+    fn search_ranking_interleaves_kinds_and_prefers_exact_titles() {
+        use super::rank_remote_search_results;
+        use crate::api;
+        fn item(name: &str, kind: api::MediaType) -> api::BaseItemDto {
+            api::BaseItemDto {
+                name: Some(name.to_string()),
+                type_: kind,
+                ..Default::default()
+            }
+        }
+        let movies = vec![
+            item("Chris Columbo", api::MediaType::Movie),
+            item("Peter Falk versus Columbo", api::MediaType::Movie),
+            item("Columbo: Murder by the Book", api::MediaType::Movie),
+        ];
+        let series = vec![
+            item("Columbo", api::MediaType::Series),
+            item("Mrs. Columbo", api::MediaType::Series),
+        ];
+
+        let ranked = rank_remote_search_results("columbo", vec![movies, series]);
+        let names: Vec<_> = ranked
+            .iter()
+            .map(|i| {
+                i.name
+                    .as_deref()
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                // exact title first
+                "Columbo",
+                // then titles starting with the query
+                "Columbo: Murder by the Book",
+                // then the rest, movies and series interleaved in their own order
+                "Chris Columbo",
+                "Mrs. Columbo",
+                "Peter Falk versus Columbo",
+            ]
+        );
+    }
+
+    #[test]
+    fn search_ranking_keeps_each_kinds_order_and_handles_empty_lists() {
+        use super::rank_remote_search_results;
+        use crate::api;
+        fn item(name: &str, kind: api::MediaType) -> api::BaseItemDto {
+            api::BaseItemDto {
+                name: Some(name.to_string()),
+                type_: kind,
+                ..Default::default()
+            }
+        }
+        let movies = vec![
+            item("Alpha Primer", api::MediaType::Movie),
+            item("Beta Primer", api::MediaType::Movie),
+        ];
+        let ranked = rank_remote_search_results("primer", vec![movies, vec![]]);
+        let names: Vec<_> = ranked
+            .iter()
+            .map(|i| {
+                i.name
+                    .as_deref()
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(names, vec!["Alpha Primer", "Beta Primer"]);
+        assert!(rank_remote_search_results("primer", vec![]).is_empty());
+    }
     #[test]
     fn countdown_label_reads_naturally() {
         use super::countdown_label;
