@@ -280,9 +280,6 @@ fn is_remote_enabled(cfg: &api::ServerConfiguration, kind: &db::MediaKind) -> bo
     }
 }
 
-/// Episodes are navigated through their series and season containers rather
-/// than being useful top-level search results. Keep them out of every search
-/// path, including `local:` searches that bypass the remote-search fan-out.
 /// How well an item's title matches the search query, best first.
 ///
 /// 0 = the title (or original title) equals the query, 1 = it starts with the
@@ -365,6 +362,9 @@ fn rank_remote_search_results(
     out
 }
 
+/// Episodes are navigated through their series and season containers rather
+/// than being useful top-level search results. Keep them out of every search
+/// path, including `local:` searches that bypass the remote-search fan-out.
 fn exclude_episodes_from_search(q: &mut api::GetItemsQuery) {
     if q.search_term
         .is_none()
