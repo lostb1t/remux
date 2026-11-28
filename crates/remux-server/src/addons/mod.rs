@@ -1621,6 +1621,32 @@ impl AddonService {
         T: ?Sized + Send + Sync + 'static,
         AddonRuntime: PickCap<T>,
     {
+        let candidates = self
+            .scoped_for(media, db, user_id)
+            .await;
+        let picks = futures::future::join_all(
+            candidates
+                .iter()
+                .map(|r| PickCap::<T>::pick(r, media)),
+        )
+        .await;
+        candidates
+            .into_iter()
+            .zip(picks)
+            .filter_map(|(r, picked)| picked.then_some(r))
+            .collect()
+    }
+
+    /// The addons `user_id` is scoped to for `media`, before the per-capability
+    /// pick: system addons plus the user's `addon_users` override (or the
+    /// defaults), in override priority order. Empty when the override can't be
+    /// loaded.
+    async fn scoped_for(
+        &self,
+        media: &db::Media,
+        db: &SqlitePool,
+        user_id: Option<Uuid>,
+    ) -> Vec<AddonRuntime> {
         let override_ids = match user_id {
             Some(uid) => match addon::user_addon_override(db, uid).await {
                 Ok(ids) => ids,
@@ -1631,24 +1657,13 @@ impl AddonService {
             },
             None => None,
         };
-        let all = self
+        let mut out: Vec<AddonRuntime> = self
             .inner
-            .load();
-        let candidates: Vec<&AddonRuntime> = all
+            .load()
             .iter()
             .filter(|r| r.supports_type(&media.kind))
             .filter(|r| user_scoped(r, override_ids.as_deref()))
-            .collect();
-        let picks = futures::future::join_all(
-            candidates
-                .iter()
-                .map(|r| PickCap::<T>::pick(*r, media)),
-        )
-        .await;
-        let mut out: Vec<AddonRuntime> = candidates
-            .into_iter()
-            .zip(picks)
-            .filter_map(|(r, picked)| picked.then(|| r.clone()))
+            .cloned()
             .collect();
         if let Some(ids) = &override_ids {
             out.sort_by_key(|r| {
@@ -3662,17 +3677,48 @@ impl AddonService {
     ) -> Result<()> {
         const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+        // The stream addons (in priority order) each item's current stream
+        // rows came from. The rows hang off the item, not the user, so without
+        // this a user scoped to other addons (`addon_users`) would be served
+        // the last fetcher's list until the TTL ran out. Lost on restart,
+        // which only costs one extra refresh.
+        static STREAM_SCOPES: std::sync::LazyLock<
+            moka::sync::Cache<Uuid, Arc<[Uuid]>>,
+        > = std::sync::LazyLock::new(|| {
+            moka::sync::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(Duration::from_secs(STREAMS_TTL_SECS as u64))
+                .build()
+        });
 
         // A trailer plays its own URL; no addon has streams for it.
         if media.kind == db::MediaKind::Trailer {
             return Ok(());
         }
 
-        // Fast path: TTL not expired — skip the lock entirely.
+        let scope: Arc<[Uuid]> = self
+            .scoped_for(media, &ctx.db, user_id)
+            .await
+            .iter()
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Stream)
+            })
+            .map(|r| {
+                r.row
+                    .id
+            })
+            .collect();
+
+        // Fast path: TTL not expired and the rows came from this user's
+        // addons — skip the lock entirely.
         let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
             refreshed.is_some_and(|r| {
                 (chrono::Utc::now().naive_utc() - r).num_seconds() < STREAMS_TTL_SECS
-            })
+            }) && STREAM_SCOPES
+                .get(&media.id)
+                .is_some_and(|s| s == scope)
         };
         if is_fresh(media.streams_refreshed_at) {
             return Ok(());
@@ -3807,6 +3853,7 @@ impl AddonService {
             .execute(&ctx.db)
             .await?;
         media.streams_refreshed_at = Some(now);
+        STREAM_SCOPES.insert(media.id, scope.clone());
         let mut sources: Vec<db::Media> = deduped
             .into_iter()
             .enumerate()
@@ -6458,5 +6505,163 @@ mod tests {
         )
         .await;
         assert_eq!(titles, ["Inception (TMDB)"]);
+    }
+
+    /// Stream addon that serves one fixed URL and counts its fetches.
+    struct FixedStream {
+        url: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl StreamAddon for FixedStream {
+        fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+        async fn get_streams(
+            &self,
+            _media: &db::Media,
+            _ctx: &AppContext,
+            _id_prefixes: Option<&[String]>,
+        ) -> Result<Vec<crate::stream::StreamInfo>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(self.url),
+                ..Default::default()
+            }])
+        }
+    }
+
+    // Regression: stream rows hang off the item, so the 60 s TTL used to hand
+    // whoever came next the last fetcher's list, even when an `addon_users`
+    // override scoped them to different addons. Same addons still share.
+    #[tokio::test]
+    async fn stream_cache_is_per_addon_set() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let now = chrono::Utc::now().naive_utc();
+
+        let mut runtimes = Vec::new();
+        let mut stubs = Vec::new();
+        for (name, url) in [("EN", "http://en/coco.mkv"), ("ES", "http://es/coco.mkv")]
+        {
+            let row = Addon {
+                id: crate::common::get_uuid(),
+                name: name.into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Stream],
+                types: None,
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: true,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            };
+            row.insert(&ctx.db)
+                .await
+                .unwrap();
+            let stub = Arc::new(FixedStream {
+                url,
+                calls: Default::default(),
+            });
+            runtimes.push(AddonRuntime {
+                row,
+                caps: AddonCapabilities {
+                    stream: Some(stub.clone()),
+                    ..Default::default()
+                },
+            });
+            stubs.push(stub);
+        }
+        let (en, es) = (
+            runtimes[0]
+                .row
+                .id,
+            runtimes[1]
+                .row
+                .id,
+        );
+        ctx.addons
+            .replace_runtimes_for_test(runtimes);
+
+        let mut users = Vec::new();
+        for (name, addon) in [("earl", en), ("carl", en), ("annette", es)] {
+            let mut user =
+                db::User::new_with_password(String::new(), name.into(), "pw", None)
+                    .unwrap();
+            user.save(&ctx.db)
+                .await
+                .unwrap();
+            set_user_addon_override(&ctx.db, user.id, &[addon])
+                .await
+                .unwrap();
+            users.push(user.id);
+        }
+
+        let movie = crate::integration_test::seed_movie(ctx).await;
+        let urls_for = |user_id| async move {
+            let mut media = db::Media::get_by_id(&ctx.db, &movie.id)
+                .await
+                .unwrap()
+                .unwrap();
+            ctx.addons
+                .refresh_streams(&mut media, ctx, Some(user_id))
+                .await
+                .unwrap();
+            media
+                .streams(&ctx.db)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|s| {
+                    match s
+                        .stream_info
+                        .unwrap()
+                        .descriptor
+                    {
+                        crate::stream::StreamDescriptor::Http { url, .. } => url,
+                        other => panic!("unexpected descriptor {other:?}"),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(urls_for(users[0]).await, ["http://en/coco.mkv"]);
+        // Same addons within the TTL: served from the cache, no refetch.
+        assert_eq!(urls_for(users[1]).await, ["http://en/coco.mkv"]);
+        assert_eq!(
+            stubs[0]
+                .calls
+                .load(SeqCst),
+            1
+        );
+        // Different addons within the TTL: their own list, not the cached one.
+        assert_eq!(urls_for(users[2]).await, ["http://es/coco.mkv"]);
+        assert_eq!(
+            stubs[1]
+                .calls
+                .load(SeqCst),
+            1
+        );
+        // And back again: the ES list is not served to an EN user either.
+        assert_eq!(urls_for(users[0]).await, ["http://en/coco.mkv"]);
+        assert_eq!(
+            stubs[0]
+                .calls
+                .load(SeqCst),
+            2
+        );
     }
 }
