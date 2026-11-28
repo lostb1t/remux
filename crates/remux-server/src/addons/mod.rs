@@ -732,6 +732,29 @@ fn child_refresh_force(
     }
 }
 
+/// Flattens the addons' search answers in priority order, with each result's
+/// rank in a round robin over the addons: every addon's first result, then
+/// every addon's second, and so on. Appended one addon after another, a lower
+/// priority addon's best match ranked below the other's loosest one.
+fn interleaved_ranks(per_addon: Vec<Vec<db::Media>>) -> (Vec<db::Media>, Vec<usize>) {
+    let addons = per_addon.len();
+    let mut results = Vec::new();
+    let mut ranks = Vec::new();
+    for (addon, list) in per_addon
+        .into_iter()
+        .enumerate()
+    {
+        for (position, media) in list
+            .into_iter()
+            .enumerate()
+        {
+            results.push(media);
+            ranks.push(position * addons + addon);
+        }
+    }
+    (results, ranks)
+}
+
 fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     // Merge images onto the in-memory struct; db::Media::upsert persists them via
     // sync_from_media after the media row is committed, avoiding FK violations.
@@ -2198,19 +2221,24 @@ impl AddonService {
         let mut combined: Option<db::Media> = None;
         // Every addon answered, even if only to say it doesn't know the item.
         let mut all_answered = true;
+        // At least one addon answered. When none did (every addon errored or
+        // was skipped), the refresh didn't happen and must not count as done.
+        let mut any_answered = false;
         for (r, result) in applicable
             .iter()
             .zip(results)
         {
             match result {
                 Ok(Some(patch)) => {
+                    any_answered = true;
                     let acc = combined.get_or_insert_with(db::Media::default);
                     apply_meta(acc, patch, false);
                 }
-                Ok(None) => {}
+                Ok(None) => any_answered = true,
                 // The addon simply doesn't know this item; not worth an error
                 // per item on every refresh.
                 Err(e) if is_not_found(&e) => {
+                    any_answered = true;
                     debug!(addon = %r.row.name, error = %e, "meta addon has no entry")
                 }
                 Err(e) if e.is::<CooldownSkipped>() => {
@@ -2263,7 +2291,11 @@ impl AddonService {
             }
         }
 
-        media.refreshed_at = Some(chrono::Utc::now().naive_utc());
+        // Left unset when no addon answered, so the item is picked up again on
+        // the next refresh instead of waiting out the backoff window.
+        if any_answered {
+            media.refreshed_at = Some(chrono::Utc::now().naive_utc());
+        }
 
         Ok(())
     }
@@ -3124,9 +3156,9 @@ impl AddonService {
                 searches.push((r, search));
             }
         }
-        // `join_all` keeps priority order; on a duplicate the first
-        // (higher-priority) copy wins below.
-        let mut results: Vec<db::Media> = futures::future::join_all(
+        // `join_all` keeps priority order; on a duplicate the higher-priority
+        // copy's data wins below.
+        let per_addon: Vec<Vec<db::Media>> = futures::future::join_all(
             searches
                 .iter()
                 .map(|(r, search)| async move {
@@ -3141,16 +3173,30 @@ impl AddonService {
                     vec![]
                 }),
         )
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+        .await;
+        let (mut results, ranks) = interleaved_ranks(per_addon);
         // Adopt before deduping: two addons' copies of a stored item end up
         // with the same id even when they carry different external ids.
         db::Media::adopt_existing_rows(&ctx.db, &mut results).await;
         // Dedupe before truncating, so duplicates don't eat into the limit.
-        let mut merged =
-            db::Media::dedupe_by_title_year(db::Media::dedupe_by_identity(results));
+        // Results stay in priority order so the higher-priority copy is the
+        // one kept, at the best rank any addon gave it.
+        let earliest = |kept: &mut usize, dropped: usize| *kept = (*kept).min(dropped);
+        let mut ranked = db::Media::dedupe_by_title_year_with(
+            db::Media::dedupe_by_identity_with(
+                results
+                    .into_iter()
+                    .zip(ranks)
+                    .collect(),
+                earliest,
+            ),
+            earliest,
+        );
+        ranked.sort_by_key(|(_, rank)| *rank);
+        let mut merged: Vec<db::Media> = ranked
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
         merged.truncate(limit);
         for m in &merged {
             ctx.store
@@ -5673,6 +5719,94 @@ mod tests {
         );
     }
 
+    /// Fails every request, like an addon whose credentials were revoked.
+    struct FailingMeta;
+
+    #[async_trait]
+    impl MetaAddon for FailingMeta {
+        async fn supports(&self, _media: &db::Media) -> bool {
+            true
+        }
+
+        async fn meta_fetch(
+            &self,
+            _media: &db::Media,
+            _ctx: &AppContext,
+            _config: &crate::api::ServerConfiguration,
+        ) -> Result<Option<db::Media>> {
+            Err(anyhow::anyhow!("401 Unauthorized"))
+        }
+    }
+
+    fn meta_service(meta: Arc<dyn MetaAddon>) -> AddonService {
+        let now = chrono::Utc::now().naive_utc();
+        let runtime = AddonRuntime {
+            row: addon::Addon {
+                id: uuid::Uuid::new_v4(),
+                name: "meta".into(),
+                preset: AddonPresetRef {
+                    kind: "scripted".into(),
+                    config: serde_json::Value::Null.into(),
+                },
+                resources: vec![ResourceType::Meta],
+                types: None,
+                enabled: true,
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+                system: false,
+                is_default: true,
+                http_redirect_stream: false,
+                subtitle_extraction: false,
+                probe_on_scan: false,
+                service_filter: vec![],
+            },
+            caps: AddonCapabilities {
+                meta: Some(meta),
+                ..Default::default()
+            },
+        };
+        AddonService {
+            inner: Arc::new(arc_swap::ArcSwap::from_pointee(vec![runtime])),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_no_addon_answered_is_not_marked_done() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let episode = db::Media {
+            kind: db::MediaKind::Episode,
+            title: "Pilot".into(),
+            ..Default::default()
+        };
+
+        let mut failed = episode.clone();
+        meta_service(Arc::new(FailingMeta))
+            .refresh_meta(&mut failed, ctx, true, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            failed.refreshed_at, None,
+            "a refresh where every addon failed must be retried"
+        );
+
+        let mut answered = episode;
+        meta_service(Arc::new(AlwaysMeta))
+            .refresh_meta(&mut answered, ctx, true, &config)
+            .await
+            .unwrap();
+        assert!(
+            answered
+                .refreshed_at
+                .is_some(),
+            "an addon that answers, even with nothing, completes the refresh"
+        );
+    }
+
     struct AlwaysMeta;
 
     #[async_trait]
@@ -6188,11 +6322,11 @@ mod tests {
         search_titles(&service, &guard.0, "query", limit).await
     }
 
-    /// Results from every search addon are appended in priority order; the
+    /// Results from every search addon are interleaved in priority order; the
     /// same item from two addons (shared imdb id) appears once, as the
     /// higher-priority copy.
     #[tokio::test]
-    async fn search_appends_addons_in_priority_order_and_dedupes() {
+    async fn search_interleaves_addons_in_priority_order_and_dedupes() {
         let titles = search_with(
             vec![
                 search_runtime(vec![]),
@@ -6209,7 +6343,31 @@ mod tests {
             20,
         )
         .await;
-        assert_eq!(titles, ["Shared (high)", "High 2", "High 3", "Low 2"]);
+        assert_eq!(titles, ["Shared (high)", "High 2", "Low 2", "High 3"]);
+    }
+
+    /// A lower-priority addon's best match isn't ranked below the other
+    /// addon's loosest ones. Found by both, an item takes the better of its
+    /// two ranks and the higher-priority addon's copy.
+    #[tokio::test]
+    async fn search_ranks_a_shared_item_by_its_best_rank_with_the_higher_priority_copy()
+    {
+        let titles = search_with(
+            vec![
+                search_runtime(vec![
+                    search_hit("High 1", "tt9900001"),
+                    search_hit("High 2", "tt9900002"),
+                    search_hit("Shared (high)", "tt9900003"),
+                ]),
+                search_runtime(vec![
+                    search_hit("Shared (low)", "tt9900003"),
+                    search_hit("Low 2", "tt9900004"),
+                ]),
+            ],
+            20,
+        )
+        .await;
+        assert_eq!(titles, ["High 1", "Shared (high)", "High 2", "Low 2"]);
     }
 
     /// A higher-priority addon having answered doesn't cut off a slower

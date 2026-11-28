@@ -670,11 +670,19 @@ fn condition_satisfied_for_value(
         return true;
     }
     let actual = actual.as_deref();
-    // Jellyfin treats HDR10+ as satisfying HDR10 compatibility constraints.
-    // Keep this rule shared by both Conditions and ApplyConditions.
+    // A range a device doesn't list still plays as the base layer under it:
+    // HDR10+ as HDR10 (as Jellyfin treats it), and Dolby Vision with an
+    // HDR10, HLG or SDR base layer as that layer. Keep this rule shared by
+    // both Conditions and ApplyConditions.
     if property == &ProfileConditionProperty::VideoRangeType
-        && actual.is_some_and(|value| value.eq_ignore_ascii_case("HDR10Plus"))
-        && condition.is_satisfied_opt(Some("HDR10"))
+        && actual
+            .and_then(VideoRangeType::from_jellyfin_name)
+            .is_some_and(|range| {
+                range
+                    .fallbacks()
+                    .iter()
+                    .any(|fallback| condition.is_satisfied_opt(Some(fallback.as_str())))
+            })
     {
         return true;
     }
@@ -1310,14 +1318,14 @@ pub fn compute_transcode_reasons(
     reasons
 }
 
-/// Jellyfin's own three-way playback decision, derived from the same cost
-/// tiering used for ranking: tier 4 (no reasons) is Direct Play, tier 3
-/// (remux only — video and audio both copied) is Direct Stream, anything
-/// below that (an actual audio or video re-encode) is Transcode.
+/// The three-way playback decision as Jellyfin names it, derived from the
+/// same cost tiering used for ranking: tier 4 (no reasons) is Direct Play,
+/// tiers 3 and 2 (the video is copied, with only the container or the audio
+/// changed) are Direct Stream, and only a video re-encode is Transcode.
 pub fn playback_decision_label(reasons: &TranscodeReasons) -> &'static str {
     match transcode_cost_tier(reasons) {
         4 => "Direct Play",
-        3 => "Direct Stream",
+        2 | 3 => "Direct Stream",
         _ => "Transcode",
     }
 }
@@ -1470,7 +1478,11 @@ fn hdr_tier(stream: Option<&MediaStream>) -> u8 {
         s.video_range_type
             .as_ref()
     }) {
-        Some(VideoRangeType::Dovi) | Some(VideoRangeType::DoviWithHdr10) => 5,
+        Some(VideoRangeType::Dovi)
+        | Some(VideoRangeType::DoviWithHdr10)
+        | Some(VideoRangeType::DoviWithEl)
+        | Some(VideoRangeType::DoviWithHdr10Plus)
+        | Some(VideoRangeType::DoviWithElHdr10Plus) => 5,
         Some(VideoRangeType::Hdr10Plus) => 4,
         Some(VideoRangeType::Hdr10) => 3,
         Some(VideoRangeType::Hlg) | Some(VideoRangeType::DoviWithHlg) => 2,
@@ -2930,6 +2942,69 @@ mod tests {
         );
         assert!(
             transcode_cost_tier(&audio_reencode) > transcode_cost_tier(&video_reencode)
+        );
+    }
+
+    #[test]
+    fn dolby_vision_plays_as_its_base_layer_where_only_that_is_listed() {
+        let condition = |value: &str| ProfileCondition {
+            condition: Some(ProfileConditionType::EqualsAny),
+            property: Some(ProfileConditionProperty::VideoRangeType),
+            value: Some(value.to_string()),
+            is_required: Some(false),
+        };
+        let satisfied = |listed: &str, actual: VideoRangeType| {
+            super::condition_satisfied_for_value(
+                &condition(listed),
+                &ProfileConditionProperty::VideoRangeType,
+                &super::ConditionValue::Known(
+                    actual
+                        .as_str()
+                        .to_string(),
+                ),
+            )
+        };
+        assert!(satisfied("SDR|HDR10", VideoRangeType::DoviWithHdr10));
+        assert!(satisfied("SDR|HDR10", VideoRangeType::DoviWithEl));
+        assert!(satisfied("SDR|HDR10", VideoRangeType::DoviWithHdr10Plus));
+        assert!(satisfied("SDR|HLG", VideoRangeType::DoviWithHlg));
+        assert!(satisfied("SDR", VideoRangeType::DoviWithSdr));
+        assert!(satisfied("SDR|HDR10", VideoRangeType::Hdr10Plus));
+        assert!(!satisfied("SDR|HDR10", VideoRangeType::Dovi));
+        assert!(!satisfied("SDR", VideoRangeType::DoviWithHdr10));
+    }
+
+    #[test]
+    fn only_a_video_reencode_is_labelled_transcode() {
+        let label = |reason: Option<TranscodeReason>| {
+            let mut reasons = TranscodeReasons::default();
+            if let Some(reason) = reason {
+                reasons.insert(reason);
+            }
+            super::playback_decision_label(&reasons)
+        };
+        assert_eq!(label(None), "Direct Play");
+        assert_eq!(
+            label(Some(TranscodeReason::ContainerNotSupported(
+                "test".to_string()
+            ))),
+            "Direct Stream"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::AudioCodecNotSupported(
+                "test".to_string()
+            ))),
+            "Direct Stream"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::VideoCodecNotSupported(
+                "test".to_string()
+            ))),
+            "Transcode"
+        );
+        assert_eq!(
+            label(Some(TranscodeReason::ContainerBitrateExceedsLimit)),
+            "Transcode"
         );
     }
 

@@ -2414,6 +2414,19 @@ impl Media {
         self.kind == MediaKind::Track
     }
 
+    /// The last probe found an HLS playlist, which a URL need not show: a
+    /// relay such as Dispatcharr redirects its channel URL to one.
+    pub fn probes_as_hls(&self) -> bool {
+        self.probe_data
+            .as_ref()
+            .and_then(|probe| {
+                probe
+                    .container
+                    .as_ref()
+            })
+            .is_some_and(|container| container.is_hls_input())
+    }
+
     pub fn full_title(&self) -> String {
         match self.kind {
             MediaKind::Episode | MediaKind::TvProgram => {
@@ -3533,6 +3546,24 @@ impl Media {
     /// is one group although the first and last share nothing, because they
     /// would all resolve to one stored item. Kept items stay in input order.
     pub fn dedupe_by_identity(items: Vec<Media>) -> Vec<Media> {
+        Self::dedupe_by_identity_with(
+            items
+                .into_iter()
+                .map(|m| (m, ()))
+                .collect(),
+            |_, _| {},
+        )
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
+    }
+
+    /// `dedupe_by_identity` for items that carry a value, such as a search
+    /// rank: a dropped item's value is folded into the kept one with `fold`.
+    pub fn dedupe_by_identity_with<T>(
+        items: Vec<(Media, T)>,
+        mut fold: impl FnMut(&mut T, T),
+    ) -> Vec<(Media, T)> {
         // Union-find over indices. A union always hangs the higher root under
         // the lower one, so every group's root is its first item.
         fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -3552,7 +3583,7 @@ impl Media {
             (std::mem::Discriminant<MediaKind>, &'static str, IdValue),
             usize,
         > = HashMap::with_capacity(items.len());
-        for (i, m) in items
+        for (i, (m, _)) in items
             .iter()
             .enumerate()
         {
@@ -3566,12 +3597,25 @@ impl Media {
                 }
             }
         }
-        items
+        let roots: Vec<usize> = (0..items.len())
+            .map(|i| root(&mut parent, i))
+            .collect();
+        // A group's root is its first item, so it is already in `kept` by the
+        // time a later member folds into it.
+        let mut kept: Vec<(Media, T)> = Vec::new();
+        let mut slot: HashMap<usize, usize> = HashMap::new();
+        for (i, (m, value)) in items
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| root(&mut parent, *i) == *i)
-            .map(|(_, m)| m)
-            .collect()
+        {
+            if roots[i] == i {
+                slot.insert(i, kept.len());
+                kept.push((m, value));
+            } else {
+                fold(&mut kept[slot[&roots[i]]].1, value);
+            }
+        }
+        kept
     }
 
     /// Drops a movie or series that repeats an earlier one's title and year
@@ -3581,6 +3625,24 @@ impl Media {
     /// provider stay apart (two 2010 films called Frozen), as do any without
     /// a year. The first, from the higher-priority addon, is kept as it is.
     pub fn dedupe_by_title_year(items: Vec<Media>) -> Vec<Media> {
+        Self::dedupe_by_title_year_with(
+            items
+                .into_iter()
+                .map(|m| (m, ()))
+                .collect(),
+            |_, _| {},
+        )
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
+    }
+
+    /// `dedupe_by_title_year` for items that carry a value; see
+    /// `dedupe_by_identity_with`.
+    pub fn dedupe_by_title_year_with<T>(
+        items: Vec<(Media, T)>,
+        mut fold: impl FnMut(&mut T, T),
+    ) -> Vec<(Media, T)> {
         type Key = (std::mem::Discriminant<MediaKind>, String, i32);
         let key = |m: &Media| -> Option<Key> {
             if !matches!(m.kind, MediaKind::Movie | MediaKind::Series) {
@@ -3598,12 +3660,12 @@ impl Media {
             ))
         };
         // Per kept item: its ids, and those of every item folded into it.
-        let mut kept: Vec<(Media, Vec<(&'static str, IdValue)>)> = Vec::new();
-        for item in items {
+        let mut kept: Vec<(Media, T, Vec<(&'static str, IdValue)>)> = Vec::new();
+        for (item, value) in items {
             let ids = Self::external_id_fields(&item.kind, &item.external_ids);
             let duplicate_of = key(&item).and_then(|k| {
                 kept.iter()
-                    .position(|(other, other_ids)| {
+                    .position(|(other, _, other_ids)| {
                         key(other).as_ref() == Some(&k)
                             && !ids
                                 .iter()
@@ -3615,14 +3677,16 @@ impl Media {
                     })
             });
             match duplicate_of {
-                Some(i) => kept[i]
-                    .1
-                    .extend(ids),
-                None => kept.push((item, ids)),
+                Some(i) => {
+                    let (_, kept_value, kept_ids) = &mut kept[i];
+                    fold(kept_value, value);
+                    kept_ids.extend(ids);
+                }
+                None => kept.push((item, value, ids)),
             }
         }
         kept.into_iter()
-            .map(|(m, _)| m)
+            .map(|(m, value, _)| (m, value))
             .collect()
     }
 

@@ -1,8 +1,6 @@
 use crate::{
     ClientError, Endpoint, RestClient,
-    remux::{
-        MediaSourceInfo, MediaStream, MediaStreamType, VideoRange, VideoRangeType,
-    },
+    remux::{MediaSourceInfo, MediaStream, MediaStreamType, VideoRangeType},
 };
 use http::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -564,7 +562,11 @@ impl TryFrom<&MediaStream> for TrackPayload {
                 is_anamorphic: ms.is_anamorphic,
                 hdr10_plus_present: Some(matches!(
                     ms.video_range_type,
-                    Some(VideoRangeType::Hdr10Plus)
+                    Some(
+                        VideoRangeType::Hdr10Plus
+                            | VideoRangeType::DoviWithHdr10Plus
+                            | VideoRangeType::DoviWithElHdr10Plus
+                    )
                 )),
                 dv_profile: ms
                     .dv_profile
@@ -673,28 +675,6 @@ impl From<&TrackDetail> for MediaStream {
             "subtitle" => MediaStreamType::Subtitle,
             _ => MediaStreamType::Data,
         };
-        let range_type = if let Some(dv) = t.dv_profile {
-            if dv > 0 {
-                VideoRangeType::Dovi
-            } else {
-                VideoRangeType::Sdr
-            }
-        } else if t.hdr10_plus_present {
-            VideoRangeType::Hdr10Plus
-        } else {
-            match t
-                .color_transfer
-                .as_deref()
-            {
-                Some("smpte2084") => VideoRangeType::Hdr10,
-                Some("arib-std-b67") => VideoRangeType::Hlg,
-                _ => VideoRangeType::Sdr,
-            }
-        };
-        let video_range = match range_type {
-            VideoRangeType::Sdr | VideoRangeType::Other => VideoRange::Sdr,
-            _ => VideoRange::Hdr,
-        };
         // The title itself is not copied (see below); it only adds the forced
         // and hearing-impaired flags a release names there but left unset.
         let subtitle_title = t
@@ -704,7 +684,7 @@ impl From<&TrackDetail> for MediaStream {
         let title_forced = subtitle_title.is_some_and(MediaStream::title_marks_forced);
         let title_hearing_impaired =
             subtitle_title.is_some_and(MediaStream::title_marks_hearing_impaired);
-        MediaStream {
+        let mut stream = MediaStream {
             index: t.idx as i64,
             type_,
             codec: t
@@ -759,11 +739,11 @@ impl From<&TrackDetail> for MediaStream {
             rotation: t
                 .rotation
                 .map(|v| v as i64),
-            video_range: Some(video_range),
-            video_range_type: Some(range_type),
             dv_profile: t
                 .dv_profile
+                .filter(|&profile| profile > 0)
                 .map(|v| v as i64),
+            hdr10_plus_present_flag: Some(t.hdr10_plus_present),
             is_anamorphic: Some(t.is_anamorphic),
             level: t
                 .level
@@ -781,7 +761,32 @@ impl From<&TrackDetail> for MediaStream {
                 .channel_layout
                 .clone(),
             ..Default::default()
+        };
+        if stream.type_ == MediaStreamType::Video {
+            // RemuxDB keeps the Dolby Vision profile but not which base layer
+            // it carries, which the colour transfer tells.
+            stream.dv_bl_signal_compatibility_id = stream
+                .dv_profile
+                .map(|profile| {
+                    match (
+                        profile,
+                        stream
+                            .color_transfer
+                            .as_deref(),
+                    ) {
+                        (7, _) => 6,
+                        (5, _) => 0,
+                        (_, Some("smpte2084")) => 1,
+                        (_, Some("arib-std-b67")) => 4,
+                        (8, _) => 2,
+                        _ => 0,
+                    }
+                });
+            let (range, range_type) = stream.video_color_range();
+            stream.video_range = Some(range);
+            stream.video_range_type = Some(range_type);
         }
+        stream
     }
 }
 
@@ -958,6 +963,39 @@ mod tests {
         assert!(subtitle("[SRT] ENG SDH").is_hearing_impaired);
         assert!(!subtitle("[SRT] ENG SDH").is_forced);
         assert_eq!(subtitle("[PGS] ENG Forced").title, None);
+    }
+
+    #[test]
+    fn a_dolby_vision_track_is_named_by_its_profile_and_colour_transfer() {
+        let video = |profile: Option<i32>, transfer: &str| {
+            MediaStream::from(&TrackDetail {
+                kind: "video".to_string(),
+                dv_profile: profile,
+                color_transfer: Some(transfer.to_string()),
+                color_space: Some("bt2020_nc".to_string()),
+                color_primaries: Some("bt2020".to_string()),
+                ..Default::default()
+            })
+        };
+        let range = |stream: MediaStream| stream.video_range_type;
+        assert_eq!(
+            range(video(Some(8), "smpte2084")),
+            Some(VideoRangeType::DoviWithHdr10)
+        );
+        assert_eq!(
+            range(video(Some(7), "smpte2084")),
+            Some(VideoRangeType::DoviWithEl)
+        );
+        assert_eq!(
+            range(video(Some(5), "smpte2084")),
+            Some(VideoRangeType::Dovi)
+        );
+        assert_eq!(
+            range(video(Some(8), "bt709")),
+            Some(VideoRangeType::DoviWithSdr)
+        );
+        assert_eq!(range(video(None, "smpte2084")), Some(VideoRangeType::Hdr10));
+        assert_eq!(video(Some(8), "smpte2084").dv_profile, Some(8));
     }
 
     fn versions_endpoint(

@@ -3908,6 +3908,7 @@ pub struct MediaStream {
     pub dv_version_major: Option<i64>,
     pub dv_version_minor: Option<i64>,
     pub el_present_flag: Option<i64>,
+    pub hdr10_plus_present_flag: Option<bool>,
     pub height: Option<i64>,
     #[serde(default)]
     pub index: i64,
@@ -3964,6 +3965,113 @@ pub struct MediaStream {
 }
 
 impl MediaStream {
+    /// The video's range from its colour transfer and Dolby Vision
+    /// configuration, as Jellyfin's `MediaStream.GetVideoColorRange` names
+    /// it. Where Jellyfin would say `DOVIInvalid` (a Dolby Vision
+    /// configuration that doesn't match the picture), this names the range of
+    /// the picture itself, which is what a player shows.
+    pub fn video_color_range(&self) -> (VideoRange, VideoRangeType) {
+        let transfer = self
+            .color_transfer
+            .as_deref()
+            .map(str::to_ascii_lowercase);
+        let is_pq = transfer.as_deref() == Some("smpte2084");
+        let is_hlg = transfer.as_deref() == Some("arib-std-b67");
+        let hdr10_plus = self.hdr10_plus_present_flag == Some(true);
+        let base = if is_pq {
+            (
+                VideoRange::Hdr,
+                if hdr10_plus {
+                    VideoRangeType::Hdr10Plus
+                } else {
+                    VideoRangeType::Hdr10
+                },
+            )
+        } else if is_hlg {
+            (VideoRange::Hdr, VideoRangeType::Hlg)
+        } else {
+            (VideoRange::Sdr, VideoRangeType::Sdr)
+        };
+
+        let compat = self.dv_bl_signal_compatibility_id;
+        // A flag that is missing (RemuxDB stores only the profile) is not
+        // taken as absent.
+        let configured = matches!(self.dv_profile, Some(5 | 7 | 8 | 10))
+            && self.rpu_present_flag != Some(0)
+            && self.bl_present_flag != Some(0)
+            && matches!(compat, None | Some(0 | 1 | 2 | 4 | 6));
+        let tagged = self
+            .codec_tag
+            .as_deref()
+            .is_some_and(|tag| {
+                ["dovi", "dvh1", "dvhe", "dav1"]
+                    .iter()
+                    .any(|dv| tag.eq_ignore_ascii_case(dv))
+            });
+        if !configured && !tagged {
+            return base;
+        }
+
+        let with_base = |compat: Option<i64>| match compat {
+            Some(1) => Some((VideoRange::Hdr, VideoRangeType::DoviWithHdr10)),
+            Some(4) => Some((VideoRange::Hdr, VideoRangeType::DoviWithHlg)),
+            Some(2) => Some((VideoRange::Sdr, VideoRangeType::DoviWithSdr)),
+            _ => None,
+        };
+        let dolby_vision = match self.dv_profile {
+            Some(5) => Some((VideoRange::Hdr, VideoRangeType::Dovi)),
+            Some(7) => Some((VideoRange::Hdr, VideoRangeType::DoviWithEl)),
+            Some(8) => with_base(compat),
+            Some(10) if compat == Some(0) => {
+                Some((VideoRange::Hdr, VideoRangeType::Dovi))
+            }
+            Some(10) => with_base(compat),
+            _ => None,
+        };
+        let Some((range, range_type)) = dolby_vision else {
+            return base;
+        };
+
+        let expected_transfer = match range_type {
+            VideoRangeType::DoviWithHdr10 | VideoRangeType::DoviWithEl => {
+                Some("smpte2084")
+            }
+            VideoRangeType::DoviWithHlg => Some("arib-std-b67"),
+            _ => None,
+        };
+        // ffprobe says "bt2020nc", RemuxDB "bt2020_nc".
+        let is = |value: &Option<String>, expected: &str| {
+            value
+                .as_deref()
+                .is_some_and(|value| {
+                    value
+                        .replace('_', "")
+                        .eq_ignore_ascii_case(expected)
+                })
+        };
+        if let Some(expected) = expected_transfer {
+            if !is(&self.color_space, "bt2020nc")
+                || !is(&self.color_transfer, expected)
+                || !is(&self.color_primaries, "bt2020")
+            {
+                return base;
+            }
+        }
+
+        if hdr10_plus {
+            match range_type {
+                VideoRangeType::DoviWithHdr10 => {
+                    return (VideoRange::Hdr, VideoRangeType::DoviWithHdr10Plus);
+                }
+                VideoRangeType::DoviWithEl => {
+                    return (VideoRange::Hdr, VideoRangeType::DoviWithElHdr10Plus);
+                }
+                _ => {}
+            }
+        }
+        (range, range_type)
+    }
+
     pub fn subtitle_codec(&self) -> Option<SubtitleCodec> {
         self.codec
             .as_deref()?
@@ -5354,6 +5462,13 @@ pub enum VideoRangeType {
     DoviWithHlg,
     #[serde(rename = "DOVIWithSDR")]
     DoviWithSdr,
+    /// Profile 7: an HDR10 base layer with an enhancement layer.
+    #[serde(rename = "DOVIWithEL")]
+    DoviWithEl,
+    #[serde(rename = "DOVIWithHDR10Plus")]
+    DoviWithHdr10Plus,
+    #[serde(rename = "DOVIWithELHDR10Plus")]
+    DoviWithElHdr10Plus,
     #[serde(rename = "HDR10Plus")]
     Hdr10Plus,
 }
@@ -5369,7 +5484,65 @@ impl VideoRangeType {
             Self::DoviWithHdr10 => "DOVIWithHDR10",
             Self::DoviWithHlg => "DOVIWithHLG",
             Self::DoviWithSdr => "DOVIWithSDR",
+            Self::DoviWithEl => "DOVIWithEL",
+            Self::DoviWithHdr10Plus => "DOVIWithHDR10Plus",
+            Self::DoviWithElHdr10Plus => "DOVIWithELHDR10Plus",
             Self::Hdr10Plus => "HDR10Plus",
+        }
+    }
+
+    /// The range Jellyfin names `name` (any case).
+    pub fn from_jellyfin_name(name: &str) -> Option<Self> {
+        [
+            Self::Other,
+            Self::Sdr,
+            Self::Hdr10,
+            Self::Hlg,
+            Self::Dovi,
+            Self::DoviWithHdr10,
+            Self::DoviWithHlg,
+            Self::DoviWithSdr,
+            Self::DoviWithEl,
+            Self::DoviWithHdr10Plus,
+            Self::DoviWithElHdr10Plus,
+            Self::Hdr10Plus,
+        ]
+        .into_iter()
+        .find(|range| {
+            range
+                .as_str()
+                .eq_ignore_ascii_case(name)
+        })
+    }
+
+    /// Whether the stream carries Dolby Vision.
+    pub fn is_dolby_vision(&self) -> bool {
+        matches!(
+            self,
+            Self::Dovi
+                | Self::DoviWithHdr10
+                | Self::DoviWithHlg
+                | Self::DoviWithSdr
+                | Self::DoviWithEl
+                | Self::DoviWithHdr10Plus
+                | Self::DoviWithElHdr10Plus
+        )
+    }
+
+    /// The ranges a player without Dolby Vision (or HDR10+) shows the stream
+    /// as, from its base layer: a Dolby Vision file with an HDR10 base layer
+    /// plays as HDR10 there. Plain Dolby Vision has no such layer.
+    pub fn fallbacks(&self) -> &'static [VideoRangeType] {
+        match self {
+            Self::Hdr10Plus | Self::DoviWithHdr10 | Self::DoviWithEl => {
+                &[VideoRangeType::Hdr10]
+            }
+            Self::DoviWithHdr10Plus | Self::DoviWithElHdr10Plus => {
+                &[VideoRangeType::Hdr10Plus, VideoRangeType::Hdr10]
+            }
+            Self::DoviWithHlg => &[VideoRangeType::Hlg],
+            Self::DoviWithSdr => &[VideoRangeType::Sdr],
+            _ => &[],
         }
     }
 }
@@ -9645,6 +9818,74 @@ mod tests {
         cfg2.subtitle_mode = SubtitleMode::OnlyForced;
         src2.resolve_default_streams(&cfg2, None, None, None, None, None, None);
         assert_eq!(src2.default_subtitle_stream_index, None);
+    }
+
+    #[test]
+    fn dolby_vision_is_named_by_its_profile_and_base_layer() {
+        let video =
+            |profile: Option<i64>, compat: Option<i64>, transfer: &str| MediaStream {
+                type_: MediaStreamType::Video,
+                dv_profile: profile,
+                dv_bl_signal_compatibility_id: compat,
+                rpu_present_flag: profile.map(|_| 1),
+                bl_present_flag: profile.map(|_| 1),
+                color_transfer: Some(transfer.to_string()),
+                color_space: Some("bt2020nc".to_string()),
+                color_primaries: Some("bt2020".to_string()),
+                ..Default::default()
+            };
+        let range = |stream: MediaStream| {
+            stream
+                .video_color_range()
+                .1
+        };
+        assert_eq!(range(video(None, None, "smpte2084")), VideoRangeType::Hdr10);
+        assert_eq!(
+            range(video(None, None, "arib-std-b67")),
+            VideoRangeType::Hlg
+        );
+        assert_eq!(
+            range(video(Some(5), Some(0), "smpte2084")),
+            VideoRangeType::Dovi
+        );
+        assert_eq!(
+            range(video(Some(7), Some(6), "smpte2084")),
+            VideoRangeType::DoviWithEl
+        );
+        assert_eq!(
+            range(video(Some(8), Some(1), "smpte2084")),
+            VideoRangeType::DoviWithHdr10
+        );
+        assert_eq!(
+            range(video(Some(8), Some(4), "arib-std-b67")),
+            VideoRangeType::DoviWithHlg
+        );
+        assert_eq!(
+            range(video(Some(8), Some(2), "bt709")),
+            VideoRangeType::DoviWithSdr
+        );
+        assert_eq!(
+            range(video(Some(10), Some(0), "smpte2084")),
+            VideoRangeType::Dovi
+        );
+
+        let mut hdr10_plus = video(Some(8), Some(1), "smpte2084");
+        hdr10_plus.hdr10_plus_present_flag = Some(true);
+        assert_eq!(range(hdr10_plus), VideoRangeType::DoviWithHdr10Plus);
+
+        // A configuration that doesn't match the picture names the picture.
+        assert_eq!(range(video(Some(8), Some(1), "bt709")), VideoRangeType::Sdr);
+        assert_eq!(
+            range(video(Some(8), Some(6), "smpte2084")),
+            VideoRangeType::Hdr10
+        );
+
+        // An MP4's Dolby Vision sample entry is enough.
+        let mut tagged = video(None, None, "smpte2084");
+        tagged.codec_tag = Some("dvh1".to_string());
+        tagged.dv_profile = Some(8);
+        tagged.dv_bl_signal_compatibility_id = Some(1);
+        assert_eq!(range(tagged), VideoRangeType::DoviWithHdr10);
     }
 
     /// A subtitle language preference picks the full track, not a forced-only
