@@ -104,6 +104,7 @@ pub fn DashboardLayout() -> Element {
         Route::IptvRoute { .. } => "IPTV",
         Route::StreamingGeneralRoute => "Streaming General",
         Route::StreamingGroupsRoute => "Stream Groups",
+        Route::StreamingPreviewsRoute => "Seek Previews",
         Route::SettingsGeneralRoute => "General",
         Route::SettingsPlaybackRoute => "Playback",
         Route::SettingsSearchRoute => "Search",
@@ -183,7 +184,11 @@ pub fn DashboardLayout() -> Element {
 
                     SidebarGroup {
                         label: "Streaming",
-                        active: matches!(route, Route::StreamingGeneralRoute | Route::StreamingGroupsRoute),
+                        active: matches!(route,
+                            Route::StreamingGeneralRoute
+                            | Route::StreamingGroupsRoute
+                            | Route::StreamingPreviewsRoute
+                        ),
                         NavSubItem {
                             label: "General",
                             active: route == Route::StreamingGeneralRoute,
@@ -193,6 +198,11 @@ pub fn DashboardLayout() -> Element {
                             label: "Groups",
                             active: route == Route::StreamingGroupsRoute,
                             on_click: move |_| { navigator().push(Route::StreamingGroupsRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Seek Previews",
+                            active: route == Route::StreamingPreviewsRoute,
+                            on_click: move |_| { navigator().push(Route::StreamingPreviewsRoute); sidebar_open.set(false); },
                         }
                     }
 

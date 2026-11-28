@@ -146,6 +146,7 @@ impl AddonPreset for OpendalLocalPreset {
                 AddonMetadata::simple_resource(ResourceType::Stream),
                 AddonMetadata::simple_resource(ResourceType::Catalog),
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
+                AddonMetadata::simple_resource(ResourceType::SeekPreviews),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -155,6 +156,7 @@ impl AddonPreset for OpendalLocalPreset {
             supported_resources_user: vec![
                 ResourceType::Stream,
                 ResourceType::Subtitles,
+                ResourceType::SeekPreviews,
             ],
             supported_types_user: vec![
                 MediaKind::Movie,
@@ -236,6 +238,7 @@ impl AddonPreset for OpendalWebdavPreset {
                 AddonMetadata::simple_resource(ResourceType::Stream),
                 AddonMetadata::simple_resource(ResourceType::Catalog),
                 AddonMetadata::simple_resource(ResourceType::Subtitles),
+                AddonMetadata::simple_resource(ResourceType::SeekPreviews),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -245,6 +248,7 @@ impl AddonPreset for OpendalWebdavPreset {
             supported_resources_user: vec![
                 ResourceType::Stream,
                 ResourceType::Subtitles,
+                ResourceType::SeekPreviews,
             ],
             supported_types_user: vec![
                 MediaKind::Movie,
@@ -433,6 +437,7 @@ impl AddonKind for OpendalAddon {
         let mut resources = vec![
             make_ref(ResourceType::Stream),
             make_ref(ResourceType::Catalog),
+            make_ref(ResourceType::SeekPreviews),
         ];
         // The subtitle files next to the videos (see `SubtitleAddon::supports`).
         if matches!(self.media_kind, OpendalKind::Movie | OpendalKind::Episode) {

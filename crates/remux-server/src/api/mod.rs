@@ -35,6 +35,7 @@ pub mod stream_group;
 pub mod subtitles;
 pub mod system;
 pub mod tasks;
+pub mod trickplay;
 pub mod users;
 pub mod webhooks;
 

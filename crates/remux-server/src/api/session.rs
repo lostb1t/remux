@@ -213,6 +213,41 @@ pub async fn report_playback_start(
                 .device
                 .id,
         );
+    // Trick play pictures, keyed by the play session id as stored: a client
+    // that sent none was given one by `start`.
+    if let Some(playback) = playback
+        .as_ref()
+        .filter(|p| p.item_id == data.item_id)
+        && crate::trickplay::enabled(
+            &db::Settings::get_config_or_default(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await,
+        )
+    {
+        crate::trickplay::start_for_play(
+            &state.ctx,
+            crate::trickplay::PlayStart {
+                play_session_id: playback
+                    .play_session_id
+                    .clone(),
+                item_id: data.item_id,
+                media_source_id: data
+                    .media_source_id
+                    .as_deref()
+                    .and_then(|sid| Uuid::parse_str(sid).ok()),
+                device_id: session
+                    .device
+                    .id
+                    .clone(),
+                user_id: session
+                    .user
+                    .id,
+            },
+        );
+    }
     state
         .ctx
         .signals
@@ -819,14 +854,19 @@ pub(crate) async fn build_session_list(
 
         // Fallback: if media_source_id didn't yield probe data, try the first
         // Source child of the item (covers cases where media_source_id is missing
-        // or points to the parent item itself without probe data).
-        if source_media
+        // or points to the parent item itself without probe data). Probe data
+        // with no tracks (only a length) counts as none.
+        let has_tracks = |m: &db::Media| {
+            m.probe_data
+                .as_ref()
+                .is_some_and(|p| {
+                    !p.media_streams
+                        .is_empty()
+                })
+        };
+        if !source_media
             .as_ref()
-            .and_then(|m| {
-                m.probe_data
-                    .as_ref()
-            })
-            .is_none()
+            .is_some_and(has_tracks)
         {
             if let Some(m) = media.as_mut() {
                 if let Ok(sources) = m
@@ -839,10 +879,7 @@ pub(crate) async fn build_session_list(
                 {
                     if let Some(s) = sources
                         .into_iter()
-                        .find(|s| {
-                            s.probe_data
-                                .is_some()
-                        })
+                        .find(|s| has_tracks(s))
                     {
                         source_media = Some(s);
                     }

@@ -180,8 +180,15 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                     let id = addon.id;
                                     let id_string = id.to_string();
                                     let is_user_tab = *active_tab.read() == "user";
-                                    let res_list = if is_user_tab {
-                                        addon.supported_resources_user.clone()
+                                    // Leave out "seek previews" from what the kind could offer:
+                                    // it is a permission, not something the addon gives.
+                                    let res_list: Vec<ResourceType> = if is_user_tab {
+                                        addon
+                                            .supported_resources_user
+                                            .iter()
+                                            .filter(|r| **r != ResourceType::SeekPreviews)
+                                            .cloned()
+                                            .collect()
                                     } else {
                                         addon.resources.clone()
                                     };
@@ -395,14 +402,14 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 div { class: "addon-kind-card-desc", "{k.description}" }
                                                 div { class: "addon-kind-card-badges",
                                                     if is_user_tab {
-                                                        for res in k.supported_resources_user.iter() {
+                                                        for res in k.supported_resources_user.iter().filter(|r| **r != ResourceType::SeekPreviews) {
                                                             span { class: "addon-kind-badge", "{res}" }
                                                         }
                                                         for t in k.supported_types_user.iter() {
                                                             span { class: "addon-kind-type", "{t}" }
                                                         }
                                                     } else {
-                                                        for res in k.supported_resources.iter() {
+                                                        for res in k.supported_resources.iter().filter(|r| r.name != ResourceType::SeekPreviews) {
                                                             span { class: "addon-kind-badge", "{res.name}" }
                                                         }
                                                         for t in k.supported_types.iter() {
@@ -533,9 +540,14 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                 // Use supported_resources from the addon row (manifest-derived for Stremio,
                 // kind-static for others) as the checkbox option list.
                 let is_user_addon = !*edit_is_default.read();
+                // Seek previews are never made for music, so the switch is not offered there.
+                let is_music = edit_form_values.read().get("media_kind").and_then(|v| v.as_str()) == Some("track");
                 let resource_options: Vec<ResourceType> = find_addon(edit_id)
                     .map(|a| if is_user_addon { a.supported_resources_user } else { a.supported_resources })
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| !(is_music && *r == ResourceType::SeekPreviews))
+                    .collect();
                 rsx! {
                     div { class: "modal-backdrop",
                         div { class: "modal",
@@ -665,6 +677,11 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             oninput: move |e| edit_service_filter.set(e.value()),
                                         }
                                         span { class: "field-hint", "Comma-separated list of service IDs (from streamData.service.id) or addon names (from streamData.addon) to bypass Remux's proxy. Leave empty to apply to all." }
+                                    }
+                                }
+                                if edit_resources.read().contains("seek previews") {
+                                    div { class: "form-group",
+                                        span { class: "field-hint", "Remux reads this addon's files over a second connection to the source to make seek previews. With stream off, its streams are used only for previews and never offered to viewers." }
                                     }
                                 }
                                 if edit_kind.as_deref().is_some_and(|k| k.starts_with("opendal")) && edit_resources.read().contains("stream") {

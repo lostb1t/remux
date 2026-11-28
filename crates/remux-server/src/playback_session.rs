@@ -163,6 +163,8 @@ pub struct PlaybackSessionManager {
     // no transcode is attached after.
     handoff: Arc<std::sync::Mutex<bool>>,
     base_dir: PathBuf,
+    /// Background trick play passes, released with their play sessions.
+    pub trickplay: crate::trickplay::TrickplayPasses,
 }
 
 impl PlaybackSessionManager {
@@ -175,6 +177,7 @@ impl PlaybackSessionManager {
             pending_play_methods: Arc::new(DashMap::new()),
             handoff: Arc::new(std::sync::Mutex::new(false)),
             base_dir,
+            trickplay: crate::trickplay::TrickplayPasses::new(),
         }
     }
 
@@ -1125,6 +1128,9 @@ impl PlaybackSessionManager {
     /// Stop the transcode (if any) and remove the playback session entirely.
     /// Returns the removed session so callers can read final position/item data.
     pub async fn stop(&self, id: &str) -> Option<PlaybackSession> {
+        // First: the `?` below returns early for ids no longer in the map.
+        self.trickplay
+            .release(id);
         // Also release references captured before a playback-start report.
         let _handoff = self
             .handoff
@@ -1256,6 +1262,9 @@ impl PlaybackSessionManager {
         {
             warn!("timed out stopping playback sessions");
         }
+        self.trickplay
+            .kill_all()
+            .await;
     }
 
     /// Undo `stop_all`'s refusal of new transcodes, for a process that keeps

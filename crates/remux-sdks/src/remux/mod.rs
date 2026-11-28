@@ -828,6 +828,28 @@ pub struct ServerConfiguration {
     /// language anyway). Default: 1.
     #[default(Some(1_i64))]
     pub max_external_subtitles_per_language: Option<i64>,
+    /// Make trick play pictures (seek previews) in the background while a
+    /// video plays, by reading a file from an addon that has the "seek
+    /// previews" resource switched on: the version being played, another
+    /// version of the same length, or a stream of an addon kept for seek
+    /// previews only. Disabled by default: it can more than double what each
+    /// play fetches.
+    #[default(Some(false))]
+    pub trickplay_while_streaming: Option<bool>,
+    /// Disk space for seek previews, in MB. The ones shown longest ago are
+    /// deleted first. Default: 1024.
+    #[default(Some(1024_i64))]
+    pub trickplay_cache_size_mb: Option<i64>,
+    /// Days seek previews are kept after they were last shown. 0 never
+    /// deletes them by age. Default: 30.
+    #[default(Some(30_i64))]
+    pub trickplay_keep_days: Option<i64>,
+    /// Start making trick play pictures at the position being watched and
+    /// follow seeks, instead of in order from the start of the file. Disabled
+    /// by default: until a file's pictures are finished there can be a gap
+    /// below the viewer. Read only while `trickplay_while_streaming` is on.
+    #[default(Some(false))]
+    pub trickplay_start_at_position: Option<bool>,
 }
 
 #[derive(
@@ -3332,12 +3354,16 @@ impl MediaSourceInfo {
 /// best-effort parse of the release filename and must never count as a
 /// completed probe: it must not block a real ffprobe attempt or a RemuxDB
 /// lookup, and must never be used for playback/transcode decisions.
+/// `Container` is a measured length only, read from the file's own header as
+/// it was relayed; every other fact is what it was before (a filename guess,
+/// or nothing), so like `FilenameGuess` it is never a completed probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeOrigin {
     Ffprobe,
     RemuxDb,
     FilenameGuess,
+    Container,
     /// A live HLS master playlist ffmpeg refuses by mistake, so the client
     /// plays the provider's playlist itself: nothing is known about its
     /// tracks. Temporary, until ffmpeg reads these playlists again
@@ -3357,14 +3383,16 @@ pub struct MediaSourceRemuxInfo {
 
 impl MediaSourceInfo {
     /// True when this source's facts are a filename guess, not a completed
-    /// probe. Callers deciding whether to skip a real probe/RemuxDB lookup
-    /// must check this — `video_stream().is_some()` alone is not enough.
+    /// probe, also when only its length was since read from its header
+    /// (`ProbeOrigin::Container`). Callers deciding whether to skip a real
+    /// probe/RemuxDB lookup must check this — `video_stream().is_some()`
+    /// alone is not enough.
     pub fn is_filename_guess(&self) -> bool {
         matches!(
             self.remux
                 .as_ref()
                 .and_then(|r| r.source),
-            Some(ProbeOrigin::FilenameGuess)
+            Some(ProbeOrigin::FilenameGuess | ProbeOrigin::Container)
         )
     }
 
@@ -4919,7 +4947,21 @@ pub struct BaseItemDto {
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
+    /// Jellyfin's trick play manifest: media source id, then width, then info.
+    pub trickplay: Option<HashMap<String, HashMap<String, TrickplayInfoDto>>>,
     pub remux: Option<RemuxInfo>,
+}
+
+/// One trick play resolution of one media source, as Jellyfin sends it.
+#[dto]
+pub struct TrickplayInfoDto {
+    pub width: i32,
+    pub height: i32,
+    pub tile_width: i32,
+    pub tile_height: i32,
+    pub thumbnail_count: i32,
+    pub interval: i32,
+    pub bandwidth: i32,
 }
 
 #[dto]
