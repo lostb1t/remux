@@ -2414,6 +2414,19 @@ impl Media {
         self.kind == MediaKind::Track
     }
 
+    /// The last probe found an HLS playlist, which a URL need not show: a
+    /// relay such as Dispatcharr redirects its channel URL to one.
+    pub fn probes_as_hls(&self) -> bool {
+        self.probe_data
+            .as_ref()
+            .and_then(|probe| {
+                probe
+                    .container
+                    .as_ref()
+            })
+            .is_some_and(|container| container.is_hls_input())
+    }
+
     pub fn full_title(&self) -> String {
         match self.kind {
             MediaKind::Episode | MediaKind::TvProgram => {
