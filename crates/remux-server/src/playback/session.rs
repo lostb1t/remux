@@ -85,6 +85,8 @@ pub struct TranscodeSession {
     pub source_audio_index: Option<i32>,
     /// The client takes HEVC copies in MPEG-TS segments rather than fMP4.
     pub hevc_in_ts: bool,
+    /// See `TranscodeParams::input_is_hls`.
+    pub input_is_hls: bool,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
     pub segment_length: u32,
@@ -179,6 +181,7 @@ impl TranscodeSession {
             audio_channels: None,
             source_audio_index: None,
             hevc_in_ts: false,
+            input_is_hls: false,
             subtitle_stream_index,
             burn_subtitle,
             segment_length,

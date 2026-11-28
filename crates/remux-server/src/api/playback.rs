@@ -736,6 +736,28 @@ async fn items_playbackinfo_inner(
                 "rtsp".to_string(),
             ));
         }
+        // A live HLS playlist the client can't open itself is remuxed into
+        // our own HLS. Proxied as is, its relative segment URLs would resolve
+        // against our stream URL.
+        if cfg.is_live
+            && !source.is_passthrough()
+            && source
+                .container
+                .as_ref()
+                .is_some_and(|container| container.is_hls_input())
+            && effective_stream
+                .stream_info
+                .as_ref()
+                .and_then(|si| {
+                    si.descriptor
+                        .client_reachable_url()
+                })
+                .is_none()
+        {
+            transcode_reasons.insert(api::TranscodeReason::ContainerNotSupported(
+                "hls".to_string(),
+            ));
+        }
 
         debug!(
             stream_id = %stream.id,
@@ -1611,9 +1633,17 @@ async fn videos_stream_inner(
     {
         record_served(ServedPlayback::Direct);
         // A live HLS playlist is only played statically when the client plays
-        // it itself (`ProbeOrigin::Passthrough`). Proxied, its relative
-        // variant and segment URLs would resolve against our own URL.
-        if let Some(url) = descriptor.passthrough_hls_url()
+        // it itself (`ProbeOrigin::Passthrough`), or when it probed as HLS and
+        // the client can reach it, whatever its URL says. Proxied, its
+        // relative variant and segment URLs would resolve against our own URL.
+        if let Some(url) = descriptor
+            .passthrough_hls_url()
+            .or_else(|| {
+                media
+                    .probes_as_hls()
+                    .then(|| descriptor.client_reachable_url())
+                    .flatten()
+            })
             && db::Media::get_by_id(
                 &state
                     .ctx
@@ -1810,6 +1840,7 @@ async fn videos_stream_inner(
 
     let params = crate::playback::engine::ProgressiveTranscodeParams {
         input_url: url,
+        input_is_hls: media.probes_as_hls(),
         container: container.clone(),
         video_codec: video_codec.clone(),
         audio_codec: audio_codec.clone(),
@@ -4473,6 +4504,60 @@ mod tests {
                 .as_str()
                 .is_some(),
             "a TS source must come back as an HLS transcode: {source}"
+        );
+    }
+
+    /// A Dispatcharr channel URL names no `.m3u8` but redirects to a playlist
+    /// with relative segment URLs. On a host only we reach, the browser can't
+    /// open it, and proxied its segments would resolve against our URL, so it
+    /// is remuxed into our own HLS.
+    #[tokio::test]
+    async fn a_live_hls_source_the_client_cannot_reach_is_remuxed_to_hls() {
+        let (server, guard, token) = authenticated_server().await;
+        // A loopback host stands in for a tailnet one: both are internal, and
+        // the cached probe is only reused while the source answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener
+            .local_addr()
+            .unwrap();
+        tokio::spawn(async move {
+            let app = axum::Router::new().fallback(|| async { "#EXTM3U\n" });
+            axum::serve(listener, app)
+                .await
+                .unwrap();
+        });
+        let url = format!("http://{addr}/proxy/ts/stream/abc?output_format=hls");
+        let mut media = crate::integration_test::insert_test_source_with_container(
+            &guard.0,
+            crate::db::MediaKind::TvChannel,
+            VideoContainer::Other("hls".to_string()),
+        )
+        .await;
+        media.stream_info = Some(crate::stream::StreamInfo {
+            descriptor: crate::stream::StreamDescriptor::http(url),
+            ..Default::default()
+        });
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .unwrap();
+
+        let body = playback_info(&server, &token, media.id, web_client_profile()).await;
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], false, "{source}");
+        let transcoding_url = source["TranscodingUrl"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            transcoding_url.contains("/master.m3u8")
+                && transcoding_url.contains("VideoCodec=copy"),
+            "{source}"
         );
     }
 

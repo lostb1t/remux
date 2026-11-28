@@ -230,11 +230,9 @@ impl StreamDescriptor {
         Self::Rtsp { url: url.into() }
     }
 
-    /// The URL of an HLS playlist a client can open itself: an `.m3u8` on a
-    /// host it can reach, needing no request headers only we would send. A
-    /// live master playlist ffmpeg refuses by mistake is handed to the client
-    /// this way (see `is_rejected_master_playlist`).
-    pub fn passthrough_hls_url(&self) -> Option<&str> {
+    /// The URL of an HTTP source a client can open itself: on a host it can
+    /// reach, needing no request headers only we would send.
+    pub fn client_reachable_url(&self) -> Option<&str> {
         let Self::Http {
             url,
             request_headers,
@@ -246,15 +244,27 @@ impl StreamDescriptor {
         if !request_headers.is_empty() {
             return None;
         }
-        let parsed = url::Url::parse(url).ok()?;
-        let reachable = parsed
+        url::Url::parse(url)
+            .ok()?
             .host_str()
-            .is_some_and(|host| !is_internal_host(host));
-        let hls = parsed
-            .path()
-            .to_ascii_lowercase()
-            .ends_with(".m3u8");
-        (reachable && hls).then_some(url.as_str())
+            .is_some_and(|host| !is_internal_host(host))
+            .then_some(url.as_str())
+    }
+
+    /// The URL of an HLS playlist a client can open itself: an `.m3u8` it can
+    /// reach (see `client_reachable_url`). A live master playlist ffmpeg
+    /// refuses by mistake is handed to the client this way (see
+    /// `is_rejected_master_playlist`).
+    pub fn passthrough_hls_url(&self) -> Option<&str> {
+        self.client_reachable_url()
+            .filter(|url| {
+                url::Url::parse(url).is_ok_and(|parsed| {
+                    parsed
+                        .path()
+                        .to_ascii_lowercase()
+                        .ends_with(".m3u8")
+                })
+            })
     }
 
     /// Input URL/path for ffprobe and ffmpeg (server-side tools).
@@ -1183,6 +1193,28 @@ mod tests {
             StreamDescriptor::rtsp("rtsp://cam/live.m3u8").passthrough_hls_url(),
             None
         );
+    }
+
+    /// Dispatcharr's channel URLs name no `.m3u8`, and on a tailnet their host
+    /// is CGNAT, which only we can reach.
+    #[test]
+    fn a_source_on_a_private_or_cgnat_host_is_not_client_reachable() {
+        let public = "https://tv.example.com/proxy/ts/stream/abc?output_format=hls";
+        assert_eq!(
+            StreamDescriptor::http(public).client_reachable_url(),
+            Some(public)
+        );
+        assert_eq!(StreamDescriptor::http(public).passthrough_hls_url(), None);
+        for internal in [
+            "http://100.66.144.82:9191/proxy/ts/stream/abc?output_format=hls",
+            "http://192.168.1.10:9191/proxy/ts/stream/abc",
+        ] {
+            assert_eq!(
+                StreamDescriptor::http(internal).client_reachable_url(),
+                None,
+                "{internal}"
+            );
+        }
     }
 
     #[test]
