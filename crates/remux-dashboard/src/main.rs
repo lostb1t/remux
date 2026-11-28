@@ -3,8 +3,8 @@ use gloo_storage::{LocalStorage, Storage};
 use remux_sdks::{
     remux::{
         AuthenticateUserByName, CountryInfo, GetCountries, GetCurrentUser,
-        GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
-        PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+        GetSsoProviders, GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
+        PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SsoProvider,
         StartupConfiguration, StartupUser, Username,
     },
     ClientError,
@@ -23,7 +23,12 @@ mod state;
 
 use router::Route;
 
+/// Whether the page was opened with a stored session; read before a sign-out
+/// clears it. See `auto_redirect_target`.
+static OPENED_SIGNED_IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 fn main() {
+    let _ = OPENED_SIGNED_IN.set(get_stored_server().is_some());
     dioxus::launch(App);
 }
 
@@ -162,6 +167,45 @@ fn App() -> Element {
     }
 }
 
+/// `OIDC_AUTO_REDIRECT`: where to send the browser instead of showing the
+/// login form. Same rules as the web client: one provider only, never after
+/// a sign-out (the provider would sign the user straight back in), `?local`
+/// skips it, and at most one attempt per minute so a failing provider
+/// can't cause a redirect loop.
+fn auto_redirect_target(providers: &[SsoProvider]) -> Option<String> {
+    use gloo_storage::SessionStorage;
+    let [p] = providers else { return None };
+    if !p.auto_redirect || OPENED_SIGNED_IN.get() == Some(&true) {
+        return None;
+    }
+    let location = web_sys::window()?.location();
+    let query = location
+        .search()
+        .unwrap_or_default()
+        + &location
+            .hash()
+            .unwrap_or_default();
+    if query
+        .split(['?', '&', '#'])
+        .any(|t| {
+            t.eq_ignore_ascii_case("local")
+                || t.to_ascii_lowercase()
+                    .starts_with("local=")
+        })
+    {
+        return None;
+    }
+    const KEY: &str = "remux_sso_auto_redirect";
+    let now = js_sys::Date::now();
+    let last = SessionStorage::get::<f64>(KEY).unwrap_or(0.0);
+    if now - last < 60_000.0 {
+        return None;
+    }
+    let _ = SessionStorage::set(KEY, now);
+    // Provider names are URL-safe slugs (checked server-side).
+    Some(format!("/sso/oid/start/{}?redirect=%2Fadmin%2F", p.name))
+}
+
 #[component]
 fn Login(on_login: EventHandler) -> Element {
     let mut server_url: Signal<Option<String>> = use_signal(|| None);
@@ -170,17 +214,38 @@ fn Login(on_login: EventHandler) -> Element {
     let mut password = use_signal(String::new);
     let mut error = use_signal(|| Option::<String>::None);
     let mut loading = use_signal(|| false);
+    let mut sso_providers: Signal<Vec<SsoProvider>> = use_signal(Vec::new);
 
     use_effect(move || {
         spawn(async move {
             let origin = get_origin();
-            let reachable = match remux_sdks::remux::client(&origin) {
-                Ok(c) => c
+            let client = remux_sdks::remux::client(&origin).ok();
+            let reachable = match &client {
+                Some(c) => c
                     .execute(PublicSystemInfo::default())
                     .await
                     .is_ok(),
-                Err(_) => false,
+                None => false,
             };
+            // SSO buttons only make sense for the server serving this page;
+            // the sign-in redirects come back here.
+            if let (true, Some(c)) = (reachable, &client) {
+                if let Ok(providers) = c
+                    .execute(GetSsoProviders)
+                    .await
+                {
+                    if auto_redirect_target(&providers).is_some_and(|href| {
+                        web_sys::window().is_some_and(|w| {
+                            w.location()
+                                .replace(&href)
+                                .is_ok()
+                        })
+                    }) {
+                        return;
+                    }
+                    sso_providers.set(providers);
+                }
+            }
             server_url.set(Some(if reachable { origin } else { String::new() }));
         });
     });
@@ -336,6 +401,21 @@ fn Login(on_login: EventHandler) -> Element {
                                 class: "btn btn-primary login-btn",
                                 disabled: *loading.read(),
                                 if *loading.read() { "Signing in…" } else { "Sign In" }
+                            }
+                        }
+
+                        if !sso_providers.read().is_empty() {
+                            div {
+                                style: "display:flex;flex-direction:column;gap:10px;margin-top:14px;",
+                                for p in sso_providers.read().iter() {
+                                    a {
+                                        key: "{p.name}",
+                                        class: "btn btn-ghost login-btn",
+                                        // Provider names are URL-safe slugs (checked server-side).
+                                        href: "/sso/oid/start/{p.name}?redirect=%2Fadmin%2F",
+                                        "Sign in with {p.display_name}"
+                                    }
+                                }
                             }
                         }
                     }
