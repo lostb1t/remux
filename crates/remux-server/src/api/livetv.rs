@@ -1085,13 +1085,13 @@ pub async fn remux_patch_channel(
     Json(body): Json<PatchChannelBody>,
 ) -> Result<impl IntoResponse> {
     // Build a targeted UPDATE — only touch what was provided.
-    // We always update updated_at.
+    // An empty custom_name clears it. We always update updated_at.
     sqlx::query(
         r#"
         UPDATE media SET
             enabled    = COALESCE($1, enabled),
             sort_order = COALESCE($2, sort_order),
-            custom_name = $3,
+            custom_name = CASE WHEN $3 IS NULL THEN custom_name ELSE NULLIF($3, '') END,
             updated_at = datetime('now')
         WHERE id = $4 AND kind = 'tv_channel'
         "#,
@@ -1495,5 +1495,68 @@ mod tests {
                 .await;
             assert_eq!(resp.status_code(), items.status_code(), "{path}");
         }
+    }
+
+    /// The dashboard sends every field of the patch, `null` for the ones it
+    /// doesn't change: toggling a channel must keep its custom name.
+    #[tokio::test]
+    async fn channel_patch_keeps_the_custom_name_it_was_not_given() {
+        let (server, guard, token) = authenticated_server().await;
+        let db = &guard
+            .0
+            .db;
+        let auth = HeaderValue::from_str(&auth_header_with_token(&token)).unwrap();
+        let channel = insert_channel(db, "Test Channel A", 1).await;
+        let path = format!("/remux/iptv/channels/{}", channel.id);
+        let custom_name = || async {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT custom_name FROM media WHERE id = ?",
+            )
+            .bind(channel.id)
+            .fetch_one(db)
+            .await
+            .unwrap()
+        };
+        let patch = |body: serde_json::Value| {
+            server
+                .patch(&path)
+                .add_header(http::header::AUTHORIZATION, auth.clone())
+                .json(&body)
+        };
+
+        patch(serde_json::json!({ "custom_name": "My Channel" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            custom_name()
+                .await
+                .as_deref(),
+            Some("My Channel")
+        );
+
+        patch(serde_json::json!({ "enabled": false, "sort_order": null, "custom_name": null }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            custom_name()
+                .await
+                .as_deref(),
+            Some("My Channel")
+        );
+
+        patch(serde_json::json!({ "sort_order": 3 }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(
+            custom_name()
+                .await
+                .as_deref(),
+            Some("My Channel")
+        );
+
+        patch(serde_json::json!({ "custom_name": "" }))
+            .await
+            .assert_status(http::StatusCode::NO_CONTENT);
+        assert_eq!(custom_name().await, None);
     }
 }

@@ -450,6 +450,8 @@ fn hls_keyframe_args(
 /// Parameters for starting a new HLS transcode job.
 pub struct TranscodeParams {
     pub input_url: String,
+    /// The probe found the input to be HLS, whatever its URL says.
+    pub input_is_hls: bool,
     pub output_dir: PathBuf,
     pub video_codec: CodecTarget,
     pub audio_codec: CodecTarget,
@@ -514,6 +516,7 @@ impl Default for TranscodeParams {
     fn default() -> Self {
         Self {
             input_url: String::new(),
+            input_is_hls: false,
             output_dir: PathBuf::new(),
             video_codec: CodecTarget::Copy,
             audio_codec: CodecTarget::Transcode("aac".into()),
@@ -771,10 +774,20 @@ fn is_hls_input_url(input_url: &str) -> bool {
 /// can leave proxied master playlists waiting indefinitely before the first
 /// rendition is opened.
 pub(crate) fn ffmpeg_http_input_args(input_url: &str) -> &'static [&'static str] {
+    ffmpeg_http_input_args_for(input_url, false)
+}
+
+/// `ffmpeg_http_input_args`, for an input the probe already found to be HLS
+/// (`input_is_hls`) though its URL doesn't say so, such as a relay URL that
+/// redirects to the playlist.
+fn ffmpeg_http_input_args_for(
+    input_url: &str,
+    input_is_hls: bool,
+) -> &'static [&'static str] {
     match url::Url::parse(input_url) {
         Ok(url)
             if matches!(url.scheme(), "http" | "https")
-                && is_hls_input_url(input_url) =>
+                && (input_is_hls || is_hls_input_url(input_url)) =>
         {
             &["-http_persistent", "0"]
         }
@@ -790,8 +803,12 @@ pub(crate) fn ffmpeg_http_input_args(input_url: &str) -> &'static [&'static str]
     }
 }
 
-fn add_hls_extension_compat_args(args: &mut Vec<String>, input_url: &str) {
-    if is_hls_input_url(input_url) {
+fn add_hls_extension_compat_args(
+    args: &mut Vec<String>,
+    input_url: &str,
+    input_is_hls: bool,
+) {
+    if input_is_hls || is_hls_input_url(input_url) {
         args.extend([
             "-allowed_extensions".into(),
             "ALL".into(),
@@ -922,10 +939,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ]);
     }
 
-    add_hls_extension_compat_args(&mut args, &params.input_url);
+    add_hls_extension_compat_args(&mut args, &params.input_url, params.input_is_hls);
 
     args.extend(
-        ffmpeg_http_input_args(&params.input_url)
+        ffmpeg_http_input_args_for(&params.input_url, params.input_is_hls)
             .iter()
             .map(|s| (*s).into()),
     );
@@ -1561,6 +1578,8 @@ pub async fn start_transcode(
 /// Parameters for a progressive (non-HLS) transcode that streams to stdout.
 pub struct ProgressiveTranscodeParams {
     pub input_url: String,
+    /// See `TranscodeParams::input_is_hls`.
+    pub input_is_hls: bool,
     pub container: String, // "mp4", "ts", "mkv", "webm"
     pub video_codec: CodecTarget,
     pub audio_codec: CodecTarget,
@@ -1714,8 +1733,9 @@ pub(crate) fn build_progressive_args(
         "-probesize".into(),
         "5000000".into(),
     ];
+    add_hls_extension_compat_args(&mut args, &params.input_url, params.input_is_hls);
     args.extend(
-        ffmpeg_http_input_args(&params.input_url)
+        ffmpeg_http_input_args_for(&params.input_url, params.input_is_hls)
             .iter()
             .map(|s| (*s).into()),
     );
@@ -2689,6 +2709,7 @@ mod tests {
     fn default_progressive() -> ProgressiveTranscodeParams {
         ProgressiveTranscodeParams {
             input_url: "http://localhost/test.mkv".into(),
+            input_is_hls: false,
             container: "mp4".into(),
             video_codec: "copy".into(),
             audio_codec: "aac".into(),
@@ -3032,6 +3053,7 @@ mod tests {
             audio_channels: None,
             source_audio_index: None,
             hevc_in_ts: false,
+            input_is_hls: false,
             subtitle_stream_index: None,
             burn_subtitle: false,
             segment_length: 6,
@@ -3262,6 +3284,7 @@ mod tests {
             audio_channels: None,
             source_audio_index: None,
             hevc_in_ts: false,
+            input_is_hls: false,
             subtitle_stream_index: None,
             burn_subtitle: false,
             segment_length: 6,
@@ -4784,6 +4807,36 @@ mod tests {
             "https://relay.example/hls?url=https%3A%2F%2Forigin.example%2Flive.mpd",
         );
         assert!(dash.contains(&"-reconnect"));
+    }
+
+    /// Dispatcharr's channel URL redirects to its playlist, so only the probe
+    /// says the input is HLS.
+    #[test]
+    fn an_input_probed_as_hls_gets_the_hls_input_options_whatever_its_url() {
+        let input_url =
+            "http://100.66.144.82:9191/proxy/ts/stream/abc?output_format=hls";
+        let hls = build_hls_args(&TranscodeParams {
+            input_url: input_url.into(),
+            input_is_hls: true,
+            ..default_hls(PathBuf::from("/tmp/test_session"))
+        });
+        assert_eq!(arg_after(&hls, "-http_persistent"), Some("0"));
+        assert_eq!(arg_after(&hls, "-allowed_extensions"), Some("ALL"));
+        assert!(!args_contains(&hls, "-reconnect_streamed"));
+
+        let progressive = build_progressive_args(&ProgressiveTranscodeParams {
+            input_url: input_url.into(),
+            input_is_hls: true,
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&progressive, "-http_persistent"), Some("0"));
+        assert!(!args_contains(&progressive, "-reconnect_streamed"));
+
+        let unprobed = build_hls_args(&TranscodeParams {
+            input_url: input_url.into(),
+            ..default_hls(PathBuf::from("/tmp/test_session"))
+        });
+        assert!(args_contains(&unprobed, "-reconnect_streamed"));
     }
 
     #[test]
