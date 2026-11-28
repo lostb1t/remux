@@ -676,6 +676,7 @@ async fn create_hls_session(
             session.audio_channels = audio_channels;
             session.source_audio_index = source_audio.map(|s| s.index as i32);
             session.hevc_in_ts = hevc_in_ts;
+            session.input_is_hls = resolved_media.probes_as_hls();
         }
         if !state
             .ctx
@@ -698,6 +699,7 @@ async fn create_hls_session(
         let encoding_opts = encoding_opts_hls.clone();
         let params = crate::playback::engine::TranscodeParams {
             input_url,
+            input_is_hls: resolved_media.probes_as_hls(),
             output_dir: session
                 .read()
                 .await
@@ -1778,6 +1780,7 @@ async fn hls_segment_inner(
                     let input_url = s
                         .input_url
                         .clone();
+                    let input_is_hls = s.input_is_hls;
                     let video_codec = s
                         .video_codec
                         .clone();
@@ -1833,6 +1836,7 @@ async fn hls_segment_inner(
                     .unwrap_or_default();
                     let params = crate::playback::engine::TranscodeParams {
                         input_url,
+                        input_is_hls,
                         output_dir: output_dir.clone(),
                         video_codec,
                         audio_codec,
